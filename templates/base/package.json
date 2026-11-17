@@ -1,0 +1,6 @@
+{
+  "name": "@framework/template-base",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Semua komponen UI default; dipakai bersama oleh semua template"
+}

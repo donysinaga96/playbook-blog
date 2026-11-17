@@ -1,0 +1,6 @@
+{
+  "name": "@framework/template-kit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kontrak template: defineTemplate, tipe view model, token -> CSS variable"
+}

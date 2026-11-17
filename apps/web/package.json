@@ -1,0 +1,6 @@
+{
+  "name": "@framework/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Nuxt: public site + /admin + server/api (dibangun di M2)"
+}

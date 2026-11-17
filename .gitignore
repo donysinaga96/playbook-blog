@@ -1,0 +1,80 @@
+# =====================================================================
+# Yang TIDAK masuk Git. Tetap di-commit: .env.example, pnpm-lock.yaml,
+# migrations/, seed/, docs/, .vscode/settings.json & extensions.json.
+# =====================================================================
+
+# --- Rahasia & konfigurasi lokal ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+.npmrc.local
+docker-compose.override.yml
+compose.override.yml
+
+# --- Node / pnpm ---
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+.npm/
+.corepack/
+
+# --- Nuxt / Nitro / build ---
+.nuxt/
+.output/
+.nitro/
+.data/
+.cache/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Test & tooling cache ---
+coverage/
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+.eslintcache
+.stylelintcache
+.turbo/
+
+# --- Data lokal (storage adapter disk lokal, dump & backup database) ---
+storage/
+uploads/
+*.dump
+*.backup
+*.sql.gz
+backups/
+
+# --- Arsip & salinan lama ---
+_archive/
+*.zip
+*.tar.gz
+
+# --- Editor & OS ---
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Log ---
+logs/
+*.log
+
+# --- Claude Code: setelan pribadi (CLAUDE.md & .claude/settings.json tetap di-commit) ---
+.claude/settings.local.json
+
+# --- Wajib di-commit walau diabaikan ~/.gitignore_global (scripts/, seed/) ---
+# Aturan repo didahulukan daripada core.excludesFile.
+!scripts/
+!seed/

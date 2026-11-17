@@ -1,0 +1,73 @@
+== PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) / database blog_framework_test
+== 1. Migration
+apply  0001_core.sql
+migrate selesai: 1 dijalankan, 0 dilewati
+skip   0001_core.sql
+migrate selesai: 0 dijalankan, 1 dilewati
+PASS  runner idempotent
+== 2. Migration yang diubah
+PASS  runner menolak migration yang sudah diubah
+== 3. Role aplikasi
+app_role blog_app siap
+== 4. Seed
+seed   dev_seed.sql
+   article_revisions=7 article_tags=4 articles=7 authors=3 categories=6 media=5 menu_items=11 menus=4 pages=3 redirects=1 site_domains=3 site_members=3 site_themes=3 sites=2 tags=4 users=2
+PASS  seed idempotent
+== 5. Integrity tests
+--- 1. Relasi lintas site ditolak database (composite FK) ---
+PASS  artikel site B memakai kategori site A
+PASS  artikel site A memakai author site B
+PASS  artikel site A memakai featured media site B
+PASS  tag site B dipasang ke artikel site A
+PASS  parent kategori dari site lain
+PASS  menu item site A menunjuk halaman site B
+PASS  parent menu item dari menu lain
+PASS  menu item: site_id tidak cocok dengan menu
+PASS  author ditautkan ke user yang bukan anggota site
+PASS  logo site memakai media site lain
+--- 2. Keunikan dan format ---
+PASS  domain duplikat
+PASS  domain huruf besar
+PASS  domain dengan protokol
+PASS  domain dengan port
+PASS  dua domain primary dalam satu site
+PASS  dua theme aktif dalam satu site
+PASS  config template duplikat untuk site yang sama
+PASS  versi template bukan semver
+PASS  slug artikel duplikat dalam satu site
+PASS  slug sama di site berbeda diterima
+PASS  slug dengan spasi/huruf besar
+--- 3. Aturan status dan isi ---
+PASS  PUBLISHED tanpa published_at
+PASS  status tidak dikenal
+PASS  body tanpa array blocks
+PASS  menu CATEGORY tanpa category_id
+PASS  menu URL plus category_id sekaligus
+PASS  menu URL javascript:
+PASS  menu ROUTE protocol-relative //host
+--- 4. Perilaku ON DELETE dan trigger ---
+PASS  hapus media: featured_media_id jadi NULL, site_id tetap
+PASS  hapus anggota: author.user_id jadi NULL, author tetap ada
+PASS  hapus kategori yang masih punya artikel
+PASS  hapus kategori kosong: item menu yang menunjuknya ikut terhapus
+PASS  trigger updated_at berjalan
+PASS  uuidv7(): versi UUID = 7
+--- 5. Query publik ---
+PASS  feed publik site A: hanya 2 artikel (tanpa draft & terjadwal)
+PASS  feed publik site B tidak memuat artikel site A
+PASS  pencarian "rendang" di site B menemukan 1 artikel
+--- 6. Hard delete site membersihkan semua datanya ---
+PASS  tidak ada baris tersisa milik site yang dihapus
+--- 7. Index dipakai pada 100.000 artikel ---
+PASS  feed publik memakai idx_articles_public_feed
+PASS  listing kategori memakai idx_articles_public_category
+PASS  pencarian memakai idx_articles_search
+PASS  cek slug memakai uq_articles_site_slug
+--- SEMUA TEST LULUS ---
+== 6. Hak akses role aplikasi (blog_app)
+PASS  role aplikasi bisa membaca data (5 artikel PUBLISHED)
+PASS  role aplikasi bisa INSERT/UPDATE
+PASS  role aplikasi tidak bisa membuat tabel
+PASS  role aplikasi tidak bisa menghapus tabel
+PASS  role aplikasi tidak bisa membaca schema_migrations
+== SELESAI: semua pemeriksaan lulus
