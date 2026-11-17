@@ -51,6 +51,9 @@ uploads/
 *.sql.gz
 backups/
 
+# --- Output sementara drizzle-kit pull (dibuang oleh pull-schema.mjs) ---
+packages/db/drizzle/
+
 # --- Arsip & salinan lama ---
 _archive/
 *.zip

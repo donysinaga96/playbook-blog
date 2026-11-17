@@ -8,16 +8,20 @@
 #   5. 42 test integritas
 #   6. hak akses role aplikasi
 #
-# Pemakaian:  ./run_all.sh [nama_db]
+# Pemakaian:  APP_DB_PASSWORD=... ./run_all.sh [nama_db]
 # Koneksi lewat PGHOST, PGPORT, PGUSER, PGPASSWORD (pemilik schema).
 # Di Docker: docker compose --profile test run --rm db-test
+#
+# APP_DB_PASSWORD wajib dan tidak punya default: role PostgreSQL berlaku
+# untuk seluruh server, jadi password yang dipasang di sini juga menjadi
+# password blog_app milik database dev. Pakai nilai yang sama dengan .env.
 # =====================================================================
 set -euo pipefail
 
 DB="${1:-blog_framework_test}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_USER="${APP_DB_USER:-blog_app}"
-APP_PASS="${APP_DB_PASSWORD:-blog_app_dev_password}"
+APP_PASS="${APP_DB_PASSWORD:?APP_DB_PASSWORD wajib diisi (samakan dengan .env); tidak ada default agar password blog_app di database dev tidak tertimpa}"
 export PGOPTIONS="-c client_min_messages=warning"
 
 pass() { echo "PASS  $*"; }

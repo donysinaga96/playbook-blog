@@ -10,8 +10,36 @@ scripts/migrate.sh          runner migration: urut, satu transaksi per file, che
 scripts/app_role.sql/.sh    role aplikasi (DML saja, tanpa DDL, tanpa BYPASSRLS)
 scripts/seed.sh             menjalankan seed/*.sql
 scripts/setup.sh            migrate -> app_role -> seed (entry point service db-migrate)
+scripts/pull-schema.mjs     drizzle-kit pull -> src/schema/ (buang migration hasil drizzle-kit)
 run_all.sh                  uji lengkap: 50 pemeriksaan pada database baru
+src/client.ts               createDatabase(): pool pg + Drizzle; databaseUrlFromEnv()
+src/schema/                 schema.ts + relations.ts HASIL GENERATE (jangan diedit tangan)
+drizzle.config.ts           konfigurasi drizzle-kit, hanya untuk pull
 ```
+
+## Schema TypeScript (Drizzle)
+
+Drizzle (1.0.0-rc.5, ADR-004) hanya dipakai sebagai query builder bertipe. Schema-nya dibuat
+dari database, bukan sebaliknya (ADR-003):
+
+```bash
+pnpm db:migrate      # terapkan migration baru ke blog_dev
+pnpm db:pull         # buat ulang src/schema/schema.ts + relations.ts
+pnpm test            # schema.test.ts mengecek composite FK & partial index
+```
+
+Pemakaian dari package lain:
+
+```ts
+import { createDatabase, databaseUrlFromEnv, articles } from '@framework/db'
+
+const db = createDatabase({ connectionString: databaseUrlFromEnv() })
+const feed = await db.query.articles.findMany({ where: { siteId }, with: { category: true } })
+```
+
+`ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman
+karena constraint ditegakkan database; schema Drizzle tidak pernah dipakai untuk membuat
+migration.
 
 ## Menjalankan
 
@@ -26,9 +54,13 @@ Tanpa Docker, cukup `psql`, `createdb`, `dropdb` dan variabel libpq:
 
 ```bash
 export PGHOST=localhost PGUSER=blog PGPASSWORD=... PGDATABASE=blog_dev
+export APP_DB_PASSWORD=...        # wajib, samakan dengan .env
 sh scripts/migrate.sh
 ./run_all.sh blog_framework_test
 ```
+
+`run_all.sh` menolak jalan tanpa `APP_DB_PASSWORD`: role PostgreSQL berlaku untuk seluruh server,
+jadi password yang dipasang test juga menjadi password `blog_app` di database dev.
 
 Target PostgreSQL 18 (`uuidv7()` bawaan). PostgreSQL 15–17 jalan lewat shim di bagian 0 migration.
 

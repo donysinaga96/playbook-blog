@@ -1,5 +1,6 @@
 import js from '@eslint/js'
 import { defineConfig, globalIgnores } from 'eslint/config'
+import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 // Paket yang mengakses data. Template dan template-kit tidak boleh
@@ -17,6 +18,15 @@ export default defineConfig(
   ]),
   js.configs.recommended,
   tseslint.configs.recommended,
+
+  // Script dan config yang jalan di Node.
+  {
+    files: ['**/*.{js,mjs}', '**/scripts/**', '*.config.ts', 'packages/*/*.config.ts'],
+    languageOptions: { globals: globals.node },
+  },
+
+  // File hasil generate drizzle-kit pull: tidak diedit tangan, jadi tidak di-lint.
+  globalIgnores(['packages/db/src/schema/schema.ts', 'packages/db/src/schema/relations.ts']),
 
   // Template hanya boleh memakai kontrak template (template-kit) dan
   // komponen dasar (template-base). Tidak boleh core, db, atau driver

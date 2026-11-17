@@ -49,6 +49,7 @@ pnpm db:test                # 50 pemeriksaan packages/db
 | `pnpm test` | Vitest |
 | `pnpm db:up` | Menyalakan database, menjalankan migration, role aplikasi, dan seed |
 | `pnpm db:migrate` | Menjalankan migration baru + seed |
+| `pnpm db:pull` | Membuat ulang schema Drizzle dari database (`packages/db/src/schema/`) |
 | `pnpm db:test` | Uji lengkap `packages/db` di database terpisah |
 | `pnpm db:psql` | Masuk psql sebagai pemilik schema |
 | `pnpm db:adminer` | Adminer di http://localhost:8080 |

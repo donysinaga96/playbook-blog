@@ -2,5 +2,20 @@
   "name": "@framework/db",
   "version": "0.0.0",
   "private": true,
-  "description": "Migration SQL, seed, test integritas, schema Drizzle"
+  "description": "Migration SQL, seed, test integritas, schema Drizzle",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "pull": "node scripts/pull-schema.mjs"
+  },
+  "dependencies": {
+    "drizzle-orm": "1.0.0-rc.5",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "1.0.0-rc.5"
+  }
 }

@@ -40,8 +40,10 @@ mengubah cara aplikasi terhubung.
 
 1. Buat file baru `packages/db/migrations/0002_deskripsi.sql`. Jangan tulis `BEGIN`/`COMMIT`;
    runner membungkus setiap file dalam satu transaksi.
-2. `docker compose run --rm db-migrate`
-3. File yang sudah pernah dijalankan tidak boleh diedit. Runner menyimpan checksum dan akan
+2. `pnpm db:migrate` (= `docker compose run --rm db-migrate`)
+3. `pnpm db:pull` untuk membuat ulang schema Drizzle di `packages/db/src/schema/`, lalu
+   `pnpm test`.
+4. File yang sudah pernah dijalankan tidak boleh diedit. Runner menyimpan checksum dan akan
    menolak file yang berubah.
 
 ## Domain lokal (dipakai mulai M2)
