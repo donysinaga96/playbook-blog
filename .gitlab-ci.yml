@@ -1,0 +1,61 @@
+# =====================================================================
+# CI - framework web artikel multi-site / multi-template
+#   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack)
+#   db    : uji lengkap packages/db (run_all.sh, 50 pemeriksaan) di
+#           PostgreSQL 18 sebagai service
+# =====================================================================
+
+stages:
+  - check
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+check:
+  stage: check
+  image: node:24
+  variables:
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+  before_script:
+    - corepack enable pnpm
+    - pnpm config set store-dir "$PNPM_STORE_DIR"
+    - pnpm install --frozen-lockfile
+  script:
+    - pnpm lint
+    - pnpm typecheck
+    - pnpm test
+
+db:
+  stage: check
+  image: postgres:18.7
+  services:
+    - name: postgres:18.7
+      alias: db
+      command: ["postgres", "-c", "timezone=UTC"]
+  variables:
+    # Untuk container service
+    POSTGRES_USER: blog
+    POSTGRES_PASSWORD: ci_owner_password
+    POSTGRES_DB: postgres
+    # Untuk psql di job (libpq)
+    PGHOST: db
+    PGPORT: "5432"
+    PGUSER: blog
+    PGPASSWORD: ci_owner_password
+    PGDATABASE: postgres
+    APP_DB_USER: blog_app
+    APP_DB_PASSWORD: ci_app_password
+  script:
+    - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
+    - bash packages/db/run_all.sh blog_framework_test

@@ -43,6 +43,10 @@ pnpm db:test                # 50 pemeriksaan packages/db
 
 | Script | Fungsi |
 | --- | --- |
+| `pnpm check` | Lint + typecheck + test (sama dengan job `check` di CI) |
+| `pnpm lint` | ESLint, termasuk aturan import template (ADR-005) |
+| `pnpm typecheck` | TypeScript mode strict (`tsconfig.base.json`) |
+| `pnpm test` | Vitest |
 | `pnpm db:up` | Menyalakan database, menjalankan migration, role aplikasi, dan seed |
 | `pnpm db:migrate` | Menjalankan migration baru + seed |
 | `pnpm db:test` | Uji lengkap `packages/db` di database terpisah |
@@ -50,5 +54,11 @@ pnpm db:test                # 50 pemeriksaan packages/db
 | `pnpm db:adminer` | Adminer di http://localhost:8080 |
 | `pnpm db:down` | Mematikan database (data tetap) |
 | `pnpm db:reset` | Mengulang dari nol (data dev hilang) |
+
+CI GitLab (`.gitlab-ci.yml`) menjalankan job `check` (Node 24) dan `db` (`run_all.sh` di
+PostgreSQL 18.7). Keputusan arsitektur dicatat di [docs/adr/](docs/adr/README.md).
+
+Catatan versi: TypeScript dikunci di `~6.0` karena typescript-eslint belum mendukung
+TypeScript 7 (peer `typescript <6.1.0`).
 
 Detail ada di [docs/dev-setup.md](docs/dev-setup.md) dan [packages/db/README.md](packages/db/README.md).

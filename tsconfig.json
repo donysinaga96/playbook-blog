@@ -1,0 +1,10 @@
+{
+  // Typecheck root: config tooling + test arsitektur. Setiap package
+  // membuat tsconfig.json sendiri yang extends tsconfig.base.json saat
+  // kodenya mulai ditulis; apps/web memakai tsconfig dari Nuxt (M2).
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["*.ts", "tests/**/*.ts"]
+}

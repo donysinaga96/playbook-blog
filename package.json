@@ -2,11 +2,17 @@
   "name": "blog-framework",
   "private": true,
   "description": "Framework web artikel multi-site / multi-template",
+  "type": "module",
   "packageManager": "pnpm@12.21.0",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:migrate": "docker compose run --rm db-migrate",
@@ -14,5 +20,13 @@
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
     "db:adminer": "docker compose --profile tools up -d adminer"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.15.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "~8.72.2",
+    "vitest": "^5.1.0"
   }
 }
