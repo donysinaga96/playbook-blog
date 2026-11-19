@@ -1,6 +1,8 @@
 # =====================================================================
 # CI - framework web artikel multi-site / multi-template
-#   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack)
+#   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack),
+#           termasuk test repository yang membaca PostgreSQL 18 yang sudah
+#           di-migrate dan di-seed, sebagai role aplikasi blog_app
 #   db    : uji lengkap packages/db (run_all.sh, 50 pemeriksaan) di
 #           PostgreSQL 18 sebagai service
 # =====================================================================
@@ -18,9 +20,28 @@ workflow:
 check:
   stage: check
   image: node:24
+  services:
+    - name: postgres:18.7
+      alias: db
+      command: ["postgres", "-c", "timezone=UTC"]
   variables:
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
     PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+    # Container service
+    POSTGRES_USER: blog
+    POSTGRES_PASSWORD: ci_owner_password
+    POSTGRES_DB: blog_dev
+    # psql di job (libpq) = pemilik schema, untuk migration dan seed
+    PGHOST: db
+    PGPORT: "5432"
+    PGUSER: blog
+    PGPASSWORD: ci_owner_password
+    PGDATABASE: blog_dev
+    APP_DB_USER: blog_app
+    APP_DB_PASSWORD: ci_app_password
+    SEED_DEV_DATA: "true"
+    # Dipakai test (Vitest): koneksi sebagai role aplikasi, bukan pemilik schema
+    DATABASE_URL: "postgres://blog_app:ci_app_password@db:5432/blog_dev"
   cache:
     key:
       files:
@@ -28,10 +49,14 @@ check:
     paths:
       - .pnpm-store/
   before_script:
+    # psql untuk scripts/migrate.sh (image node:24 membawa klien 15; cukup untuk server 18)
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client
     - corepack enable pnpm
     - pnpm config set store-dir "$PNPM_STORE_DIR"
     - pnpm install --frozen-lockfile
   script:
+    - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
+    - sh packages/db/scripts/setup.sh
     - pnpm lint
     - pnpm typecheck
     - pnpm test

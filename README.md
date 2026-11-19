@@ -15,7 +15,7 @@ apps/
   web/              Nuxt: public site + /admin + server/api            (M2)
 packages/
   db/               migration SQL, seed, test integritas, schema Drizzle
-  core/             domain: service, repository, validasi Zod, view model
+  core/             domain: repository data, validasi Zod, block body, view model
   template-kit/     kontrak template: defineTemplate, tipe view model, token -> CSS variable
 templates/
   base/             semua komponen UI default
