@@ -1,0 +1,504 @@
+/*
+ * Gaya dasar, netral. Semua aturan di bawah .tpl (wrapper halaman) dan
+ * semua nilai visual dari variabel token (--color-*, --font-*, --radius-*),
+ * yang didefinisikan per template di .tpl-<key> oleh aplikasi.
+ *
+ * Template lain menimpa gaya ini dari CSS-nya sendiri, selalu di bawah
+ * kelas root-nya: .tpl-magazine .article-card { ... }
+ */
+
+.tpl {
+  /* Warna turunan dari tiga token warna. */
+  --c-muted: color-mix(in srgb, var(--color-text) 62%, var(--color-surface));
+  --c-border: color-mix(in srgb, var(--color-text) 14%, var(--color-surface));
+  --c-tint: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
+  --f-heading: var(--font-heading), system-ui, sans-serif;
+  --f-body: var(--font-body), system-ui, sans-serif;
+  --space: 1rem;
+  --container: 72rem;
+
+  min-height: 100vh;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--f-body);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tpl *,
+.tpl *::before,
+.tpl *::after {
+  box-sizing: border-box;
+}
+
+.tpl a {
+  color: var(--color-primary);
+  text-underline-offset: 0.15em;
+}
+
+.tpl h1,
+.tpl h2,
+.tpl h3,
+.tpl h4 {
+  font-family: var(--f-heading);
+  line-height: 1.2;
+  margin: 0 0 0.5em;
+}
+
+.tpl img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.tpl .container {
+  width: 100%;
+  max-width: var(--container);
+  margin-inline: auto;
+  padding-inline: var(--space);
+}
+
+.tpl .visually-hidden,
+.tpl .skip-link:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tpl .skip-link:focus {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 10;
+  padding: 0.5rem 1rem;
+  background: var(--color-surface);
+}
+
+/* ---------- Header dan menu ------------------------------------------ */
+
+.tpl .site-header {
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl .site-header__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding-block: 1.25rem;
+}
+
+.tpl .site-header--centered .site-header__inner {
+  flex-direction: column;
+  text-align: center;
+}
+
+.tpl .site-header__date {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .site-header--left .site-header__date {
+  order: 3;
+  margin-left: auto;
+}
+
+.tpl .site-header__brand {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tpl .site-header__logo {
+  height: 2.5rem;
+  width: auto;
+}
+
+.tpl .site-header__name {
+  font-family: var(--f-heading);
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.tpl .site-header__tagline {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
+.tpl .site-header__nav {
+  border-top: 1px solid var(--c-border);
+}
+
+.tpl .site-header--centered .menu-tree--root {
+  justify-content: center;
+}
+
+.tpl .menu-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tpl .menu-tree--root {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.25rem;
+}
+
+.tpl .menu-tree__item {
+  position: relative;
+}
+
+.tpl .menu-tree__link {
+  display: inline-block;
+  padding-block: 0.625rem;
+  color: var(--color-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tpl .menu-tree__link:hover {
+  color: var(--color-primary);
+}
+
+/* Submenu: muncul saat hover atau fokus di dalamnya (tanpa JavaScript). */
+.tpl .site-header .menu-tree--sub {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 5;
+  min-width: 12rem;
+  padding: 0.25rem 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
+}
+
+.tpl .site-header .menu-tree__item--parent:hover > .menu-tree--sub,
+.tpl .site-header .menu-tree__item--parent:focus-within > .menu-tree--sub {
+  display: block;
+}
+
+.tpl .menu-tree--sub .menu-tree__link {
+  font-weight: 400;
+}
+
+/* ---------- Isi --------------------------------------------------------- */
+
+.tpl .layout__main {
+  padding-block: 2rem 3rem;
+}
+
+.tpl .section-title {
+  font-size: 1.25rem;
+  margin-top: 2rem;
+}
+
+.tpl .article-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: 2rem 1.5rem;
+}
+
+.tpl .article-list__empty {
+  color: var(--c-muted);
+}
+
+.tpl .article-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tpl .article-card__media img {
+  width: 100%;
+  border-radius: var(--radius-card);
+}
+
+.tpl .article-card__category,
+.tpl .article__category {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tpl .article-card__title {
+  margin: 0.25rem 0;
+  font-size: 1.25rem;
+}
+
+.tpl .article-card--lead .article-card__title {
+  font-size: 2rem;
+}
+
+.tpl .article-card__title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tpl .article-card__title a:hover {
+  text-decoration: underline;
+}
+
+.tpl .article-card__excerpt {
+  margin: 0;
+  color: var(--c-muted);
+}
+
+.tpl .article-card__meta,
+.tpl .article__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin: 0.25rem 0 0;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .article-card__author,
+.tpl .article__author {
+  color: inherit;
+}
+
+.tpl .home__featured {
+  display: grid;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+/* ---------- Artikel dan halaman --------------------------------------- */
+
+.tpl .article,
+.tpl .page {
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+.tpl .article__title,
+.tpl .page__title,
+.tpl .listing__title,
+.tpl .not-found__title {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+}
+
+.tpl .article__excerpt {
+  font-size: 1.1875rem;
+  color: var(--c-muted);
+}
+
+.tpl .article__image {
+  margin: 1.5rem 0;
+}
+
+.tpl .article__image img {
+  width: 100%;
+  border-radius: var(--radius-card);
+}
+
+.tpl figcaption {
+  margin-top: 0.5rem;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .prose__credit {
+  margin-left: 0.5rem;
+  font-style: italic;
+}
+
+.tpl .prose > * {
+  margin-block: 0 1.1em;
+}
+
+.tpl .prose h2,
+.tpl .prose h3,
+.tpl .prose h4 {
+  margin-top: 1.6em;
+}
+
+.tpl .prose blockquote {
+  margin-inline: 0;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  border-left: 4px solid var(--color-primary);
+  font-size: 1.1875rem;
+}
+
+.tpl .prose blockquote footer {
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
+.tpl .prose__embed--frame {
+  margin-inline: 0;
+}
+
+.tpl .prose__embed--frame iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: var(--radius-card);
+}
+
+.tpl .prose__figure img {
+  border-radius: var(--radius-card);
+}
+
+.tpl .article__tags ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0;
+}
+
+.tpl .article__tags a {
+  display: inline-block;
+  padding: 0.125rem 0.625rem;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+
+/* ---------- Listing, pencarian, navigasi ------------------------------ */
+
+.tpl .listing__header {
+  margin-bottom: 2rem;
+}
+
+.tpl .listing__kicker {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.tpl .listing__description {
+  color: var(--c-muted);
+}
+
+.tpl .listing__children {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  list-style: none;
+  padding: 0;
+}
+
+.tpl .author {
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+}
+
+.tpl .author__avatar {
+  width: 6rem;
+  border-radius: 50%;
+}
+
+.tpl .search-form {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 32rem;
+}
+
+.tpl .search-form input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
+  font: inherit;
+  color: inherit;
+  background: var(--color-surface);
+}
+
+.tpl .search-form button {
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: var(--radius-card);
+  background: var(--color-primary);
+  color: var(--color-surface);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tpl .breadcrumb ol,
+.tpl .pagination__pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tpl .breadcrumb {
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.tpl .breadcrumb li + li::before {
+  content: "/";
+  margin-right: 0.5rem;
+  color: var(--c-muted);
+}
+
+.tpl .pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 2.5rem;
+}
+
+.tpl .pagination__pages a,
+.tpl .pagination__current,
+.tpl .pagination__gap {
+  display: inline-block;
+  min-width: 2.25rem;
+  padding: 0.25rem 0.5rem;
+  text-align: center;
+  border-radius: var(--radius-card);
+}
+
+.tpl .pagination__current {
+  background: var(--c-tint);
+  font-weight: 700;
+}
+
+/* ---------- Footer ------------------------------------------------------ */
+
+.tpl .site-footer {
+  border-top: 1px solid var(--c-border);
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
+.tpl .site-footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 2rem;
+}
+
+.tpl .site-footer .menu-tree--root {
+  gap: 0 1rem;
+}
+
+.tpl .site-footer .menu-tree__link {
+  font-weight: 400;
+  color: inherit;
+}
+
+.tpl .site-footer .menu-tree--sub {
+  display: none;
+}

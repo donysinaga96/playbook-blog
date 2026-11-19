@@ -1,0 +1,11 @@
+{
+  // Tsconfig dibuat Nuxt di .nuxt/ (nuxt prepare, otomatis saat pnpm install).
+  // Satu file per lingkungan: app (browser + SSR), server (Nitro), shared, node (config).
+  "files": [],
+  "references": [
+    { "path": "./.nuxt/tsconfig.app.json" },
+    { "path": "./.nuxt/tsconfig.server.json" },
+    { "path": "./.nuxt/tsconfig.shared.json" },
+    { "path": "./.nuxt/tsconfig.node.json" }
+  ]
+}

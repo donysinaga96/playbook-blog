@@ -109,6 +109,20 @@ export interface AuthorDetail extends AuthorRef {
   links: Record<string, unknown>
 }
 
+/** Semua URL publik site untuk sitemap.xml; hanya konten yang tampil publik. */
+export interface SitemapEntries {
+  articles: { id: string; slug: string; categorySlug: string; publishedAt: Date; updatedAt: Date }[]
+  pages: { id: string; slug: string; updatedAt: Date }[]
+  /** Kategori ACTIVE. */
+  categories: { id: string; slug: string }[]
+  /** Hanya tag dan penulis yang punya artikel tampil (halaman kosong tidak diumumkan). */
+  tags: { id: string; slug: string }[]
+  authors: { id: string; slug: string }[]
+}
+
+/** Batas URL per file sitemap (protokol sitemaps.org). */
+export const SITEMAP_MAX_ARTICLES = 50_000
+
 export interface RedirectRule {
   toPath: string
   statusCode: 301 | 302 | 307 | 308
@@ -425,6 +439,64 @@ export function createContentRepository(ctx: RepositoryContext) {
         bio: row.bio,
         avatar: (row.avatarMediaId && avatar.get(row.avatarMediaId)) || null,
         links: row.links as Record<string, unknown>,
+      }
+    },
+
+    /**
+     * Media milik site ini per id, mis. untuk block gambar di body artikel.
+     * Id milik site lain atau yang tidak ada diam-diam tidak ikut.
+     */
+    async getMediaByIds(siteId: SiteId, ids: string[]): Promise<MediaRef[]> {
+      const found = await loadMedia(ctx, siteId, ids)
+      return [...found.values()]
+    },
+
+    async listSitemapEntries(siteId: SiteId): Promise<SitemapEntries> {
+      const visible = and(eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now()))
+      const [articleRows, pageRows, categoryRows, tagRows, authorRows] = await Promise.all([
+        db
+          .select({
+            id: articles.id,
+            slug: articles.slug,
+            categorySlug: categories.slug,
+            publishedAt: articles.publishedAt,
+            updatedAt: articles.updatedAt,
+          })
+          .from(articles)
+          .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
+          .where(visible)
+          .orderBy(desc(articles.publishedAt), desc(articles.id))
+          .limit(SITEMAP_MAX_ARTICLES),
+        db
+          .select({ id: pages.id, slug: pages.slug, updatedAt: pages.updatedAt })
+          .from(pages)
+          .where(and(eq(pages.siteId, siteId), publiclyVisible(pages, ctx.now())))
+          .orderBy(asc(pages.slug)),
+        db
+          .select({ id: categories.id, slug: categories.slug })
+          .from(categories)
+          .where(and(eq(categories.siteId, siteId), eq(categories.status, 'ACTIVE')))
+          .orderBy(asc(categories.slug)),
+        db
+          .selectDistinct({ id: tags.id, slug: tags.slug })
+          .from(tags)
+          .innerJoin(articleTags, and(eq(articleTags.siteId, tags.siteId), eq(articleTags.tagId, tags.id)))
+          .innerJoin(articles, and(eq(articles.siteId, articleTags.siteId), eq(articles.id, articleTags.articleId)))
+          .where(and(eq(tags.siteId, siteId), visible))
+          .orderBy(asc(tags.slug)),
+        db
+          .selectDistinct({ id: authors.id, slug: authors.slug })
+          .from(authors)
+          .innerJoin(articles, and(eq(articles.siteId, authors.siteId), eq(articles.authorId, authors.id)))
+          .where(and(eq(authors.siteId, siteId), eq(authors.status, 'ACTIVE'), visible))
+          .orderBy(asc(authors.slug)),
+      ])
+      return {
+        articles: articleRows.map((r) => ({ ...r, publishedAt: r.publishedAt as Date })),
+        pages: pageRows,
+        categories: categoryRows,
+        tags: tagRows,
+        authors: authorRows,
       }
     },
 

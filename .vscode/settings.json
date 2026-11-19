@@ -1,0 +1,38 @@
+{
+  "pgsql.connections": [
+    {
+      "server": "localhost",
+      "port": "5432",
+      "database": "blog_dev",
+      "authenticationType": "SqlLogin",
+      "sslmode": "disable",
+      "connectTimeout": 15,
+      "clientEncoding": "utf8",
+      "applicationName": "vscode-pgsql",
+      "id": "659e48fa-57ea-4a4f-ad9b-351d5e761fab",
+      "profileName": "playbook · blog_dev (owner blog)",
+      "user": "blog",
+      "groupId": "2FB46C33-0E79-4248-9D23-5B01213581FD",
+      "expiresOn": 0,
+      "password": "",
+      "sshPassword": ""
+    },
+    {
+      "server": "localhost",
+      "port": "5432",
+      "database": "blog_dev",
+      "authenticationType": "SqlLogin",
+      "sslmode": "disable",
+      "connectTimeout": 15,
+      "clientEncoding": "utf8",
+      "applicationName": "vscode-pgsql",
+      "id": "0a3c882d-9d18-464d-a5fb-155aba3b9b4d",
+      "profileName": "playbook · blog_dev (app blog_app)",
+      "user": "blog_app",
+      "groupId": "2FB46C33-0E79-4248-9D23-5B01213581FD",
+      "expiresOn": 0,
+      "password": "",
+      "sshPassword": ""
+    }
+  ]
+}

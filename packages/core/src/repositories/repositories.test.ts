@@ -285,6 +285,8 @@ describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
       getTag: ['android'],
       getAuthor: ['redaksi'],
       findRedirect: ['/gadget/ponsel-lipat-murah'],
+      getMediaByIds: [['01930000-0000-7000-8000-000000000202', '01930000-0000-7000-8000-000000000212']],
+      listSitemapEntries: [],
       getMenuTree: ['header'],
     }
     const fns = { ...content, ...menuRepo } as unknown as Record<string, (siteId: string, ...a: unknown[]) => Promise<unknown>>
@@ -301,6 +303,9 @@ describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
         const empty =
           result === null ||
           (Array.isArray(result) && result.length === 0) ||
+          // Object berisi daftar (listSitemapEntries): semua daftar kosong.
+          (typeof result === 'object' && !('items' in (result as object)) && !Array.isArray(result)
+            && Object.values(result as object).every((v) => Array.isArray(v) && v.length === 0)) ||
           (typeof result === 'object' && 'items' in (result as object) && (result as { items: unknown[] }).items.length === 0)
         expect(empty, `${name}(siteId tidak ada) mengembalikan data`).toBe(true)
       }
@@ -349,6 +354,9 @@ describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
       for (const slug of ['android', 'laptop', 'pedas', 'tradisional']) results.push(await content.getTag(siteId, slug))
       for (const slug of ['redaksi', 'budi-santoso']) results.push(await content.getAuthor(siteId, slug))
       for (const loc of ['header', 'footer']) results.push(await menuRepo.getMenuTree(siteId, loc))
+      results.push(await content.listSitemapEntries(siteId))
+      // Id media kedua site sekaligus: hanya milik pembaca yang kembali.
+      results.push(await content.getMediaByIds(siteId, ['01930000-0000-7000-8000-000000000202', '01930000-0000-7000-8000-000000000212']))
       return results
     }
 
@@ -364,6 +372,27 @@ describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
       for (const id of seen) {
         expect(foreign.has(id), `id ${id} milik site lain muncul`).toBe(false)
       }
+    })
+
+    it('listSitemapEntries: hanya konten tampil; tag/penulis tanpa artikel tampil tidak ikut', async () => {
+      const a = await content.listSitemapEntries(A)
+      // laptop-terbaik-mahasiswa-2030 terjadwal, draf-ulasan-earbuds DRAFT: tidak ikut.
+      expect(a.articles.map((x) => [x.categorySlug, x.slug])).toEqual([
+        ['kecerdasan-buatan', 'cara-kerja-model-bahasa'],
+        ['review', 'ponsel-lipat-makin-murah'],
+      ])
+      expect(a.pages.map((x) => x.slug)).toEqual(['tentang-kami'])
+      expect(a.categories.map((x) => x.slug)).toEqual(['gadget', 'kecerdasan-buatan', 'review'])
+      // tag laptop hanya dipakai artikel terjadwal.
+      expect(a.tags.map((x) => x.slug)).toEqual(['android'])
+      expect(a.authors.map((x) => x.slug)).toEqual(['budi-santoso', 'redaksi'])
+    })
+
+    it('getMediaByIds hanya mengembalikan media site pembaca', async () => {
+      const ids = ['01930000-0000-7000-8000-000000000202', '01930000-0000-7000-8000-000000000212', randomUUID()]
+      expect((await content.getMediaByIds(A, ids)).map((m) => m.storageKey)).toEqual(['kabar-tekno/2026/11/hp.webp'])
+      expect((await content.getMediaByIds(B, ids)).map((m) => m.storageKey)).toEqual(['dapur-nusantara/2026/11/rendang.webp'])
+      expect(await content.getMediaByIds(A, [])).toEqual([])
     })
 
     it('media (gambar unggulan dan logo) selalu milik site pembacanya', async () => {

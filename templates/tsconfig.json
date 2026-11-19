@@ -1,0 +1,11 @@
+{
+  // Typecheck semua template (.ts dan .vue) dengan vue-tsc: pnpm typecheck.
+  // Template hanya boleh memakai API browser + Vue, jadi tanpa tipe Node,
+  // kecuali file test yang berjalan di Vitest.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["*/src/**/*.ts", "*/src/**/*.vue", "env.d.ts"]
+}

@@ -5,6 +5,9 @@
 #           di-migrate dan di-seed, sebagai role aplikasi blog_app
 #   db    : uji lengkap packages/db (run_all.sh, 50 pemeriksaan) di
 #           PostgreSQL 18 sebagai service
+#   build : nuxt build apps/web + smoke test hasil build: tanpa database
+#           (/api/health 503, bukan crash), lalu dengan database ber-seed
+#           (health 200 + halaman tekno/kuliner dirender)
 # =====================================================================
 
 stages:
@@ -60,6 +63,54 @@ check:
     - pnpm lint
     - pnpm typecheck
     - pnpm test
+
+build:
+  stage: check
+  image: node:24
+  services:
+    - name: postgres:18.7
+      alias: db
+      command: ["postgres", "-c", "timezone=UTC"]
+  variables:
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+    POSTGRES_USER: blog
+    POSTGRES_PASSWORD: ci_owner_password
+    POSTGRES_DB: blog_dev
+    PGHOST: db
+    PGPORT: "5432"
+    PGUSER: blog
+    PGPASSWORD: ci_owner_password
+    PGDATABASE: blog_dev
+    APP_DB_USER: blog_app
+    APP_DB_PASSWORD: ci_app_password
+    SEED_DEV_DATA: "true"
+    SITE_MODE: multi
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+    policy: pull
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client
+    - corepack enable pnpm
+    - pnpm config set store-dir "$PNPM_STORE_DIR"
+    - pnpm install --frozen-lockfile
+  script:
+    - pnpm build
+    # 1. Tanpa database: server tetap start, /api/health menjawab 503 (bukan crash).
+    - DATABASE_URL="postgres://smoke:smoke@127.0.0.1:1/smoke" EXPECT_STATUS=503 pnpm --filter @framework/web smoke
+    # 2. Database ber-seed: health 200 dan halaman kedua domain seed dirender
+    #    (menangkap bug yang hanya muncul di bundle produksi).
+    - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
+    - sh packages/db/scripts/setup.sh
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.local.test,kuliner.local.test pnpm --filter @framework/web smoke
+  artifacts:
+    paths:
+      - apps/web/.output/
+    expire_in: 1 week
 
 db:
   stage: check

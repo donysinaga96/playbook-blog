@@ -25,6 +25,121 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Melihat query lambat (> 250 ms) | `docker compose logs -f db` |
 | Mematikan (data tetap) | `docker compose down` |
 | Mengulang dari nol (data dev hilang) | `docker compose down -v && docker compose up -d` |
+| Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.local.test:3000 (lihat "Domain site di dev"), cek `/api/health` |
+| Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
+| Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+
+## Aplikasi web
+
+`apps/web` (Nuxt 4.6) berjalan di host, bukan di container. `pnpm dev` membaca `.env` di root
+repo (`nuxt dev --dotenv ../../.env`), jadi `DATABASE_URL` cukup ditulis sekali di sana.
+`GET /api/health` mengembalikan `{"status":"ok","database":"ok"}` bila database bisa dihubungi,
+atau HTTP 503 bila tidak. Folder `.nuxt/` dibuat ulang otomatis oleh `nuxt prepare` setiap
+`pnpm install`.
+
+Job CI `build` menjalankan `pnpm build` lalu smoke test yang sama, tetapi tanpa database
+(`EXPECT_STATUS=503`): server harus start dan menjawab 503, bukan crash. Hasil build
+(`apps/web/.output/`) disimpan sebagai artifact selama satu minggu.
+
+## Domain site di dev
+
+Setiap request dipetakan ke site lewat header `Host` (`SITE_MODE=multi` di `.env`). Host yang
+tidak terdaftar di `site_domains` dijawab 404, termasuk `localhost`. Hanya `/api/health` yang
+tidak butuh site. Domain dari seed:
+
+| Domain | Site | Perilaku |
+| --- | --- | --- |
+| `tekno.local.test` | Kabar Tekno | Dilayani |
+| `www.tekno.local.test` | Kabar Tekno | 301 ke `tekno.local.test` (alias) |
+| `kuliner.local.test` | Dapur Nusantara | Dilayani |
+
+Untuk membukanya di browser, tambahkan baris ini ke `/etc/hosts`. Di WSL dengan browser
+Windows, tambahkan ke `C:\Windows\System32\drivers\etc\hosts` (sebagai Administrator):
+
+```
+127.0.0.1 tekno.local.test www.tekno.local.test kuliner.local.test
+```
+
+Tanpa mengubah file hosts, cukup kirim header Host dengan curl:
+
+```bash
+curl -H 'Host: kuliner.local.test' http://127.0.0.1:3000/
+```
+
+Dev server Vite hanya mengizinkan `localhost` dan `*.local.test` (`vite.server.allowedHosts` di
+`nuxt.config.ts`). Host lain mendapat 403 `Blocked request` dari Vite sebelum sampai ke
+middleware; di server produksi, Host lain mendapat 404.
+
+Mode single-site: `SITE_MODE=single` dan `SITE_CODE=<sites.code>`. Domain tetap dicek, jadi
+domain milik site lain di database yang sama dijawab 404. Config yang salah (mis. `SITE_MODE`
+kosong, atau `SITE_CODE` diisi saat `multi`) membuat server gagal start dengan pesan
+`SiteModeConfigError` yang menyebut variabel bermasalah.
+
+
+`pnpm dev` hanya mendengarkan di `localhost` (`--host localhost`): dev server menyajikan source
+code tanpa autentikasi, jadi tidak dibuka ke jaringan. Browser Windows di WSL tetap bisa
+membukanya karena WSL meneruskan `localhost`.
+
+## Halaman publik
+
+Skema URL ada di [ADR-006](adr/006-skema-url.md); halaman dirender penuh di server
+([ADR-007](adr/007-render-halaman-server.md)). Contoh di data seed:
+
+| Halaman | Contoh |
+| --- | --- |
+| Home | http://tekno.local.test:3000/ |
+| Artikel (`settings.permalink`) | http://tekno.local.test:3000/review/ponsel-lipat-makin-murah |
+| Kategori | http://tekno.local.test:3000/category/gadget |
+| Tag, penulis | http://tekno.local.test:3000/tag/android, http://tekno.local.test:3000/author/budi-santoso |
+| Halaman statis | http://kuliner.local.test:3000/p/kontak |
+| Pencarian | http://tekno.local.test:3000/search?q=ponsel |
+| Redirect lama (tabel `redirects`) | http://tekno.local.test:3000/gadget/ponsel-lipat-murah → 301 |
+
+View model dibangun di `server/middleware/site.ts` lewat `createPageBuilder` (`packages/core`),
+lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicatat di log server:
+`[page] site <kode> <path>: ...`.
+
+## SEO dan feed
+
+- `<head>` setiap halaman diisi dari `page.seo` (dibangun `packages/core/src/views/seo.ts`):
+  title lewat `settings.seo.titleTemplate`, description, canonical, robots, Open Graph, tautan RSS.
+- URL absolut (canonical, `og:url`, sitemap, RSS) selalu di domain **primary** site. Skema
+  (`http`/`https`) diambil dari request atau header `X-Forwarded-Proto`, jadi reverse proxy TLS di
+  produksi wajib mengirim header itu.
+- Kolom `seo` di artikel, halaman, dan kategori (`title`, `description`, `canonical`,
+  `og_image_id`, `robots`) menimpa nilai otomatis; nilai yang tidak valid diabaikan per key.
+- Pencarian dan 404 diberi `noindex, follow`; `robots.txt` juga melarang crawl `/search` dan
+  `/api/`.
+- Feed per domain: http://tekno.local.test:3000/sitemap.xml, `/rss.xml` (20 artikel terbaru),
+  `/robots.txt`. Artikel terjadwal baru muncul setelah `published_at` lewat. Tag dan penulis
+  tanpa artikel tampil tidak masuk sitemap.
+- Embed YouTube memakai `youtube-nocookie.com`, Vimeo memakai `dnt=1`. X tampil sebagai tautan
+  (embed X butuh script widget mereka).
+
+## Template dan theme
+
+- Setiap request halaman memuat baris aktif `site_themes`, lalu registry di
+  `apps/web/app/templates.ts` memilih template berdasarkan `template_key`. Template yang tidak
+  terdaftar (mis. `news` milik `dapur-nusantara`, baru ada di M3) jatuh ke `base`.
+- Token dan opsi divalidasi per key terhadap skema manifest; nilai yang salah memakai default.
+- Masalah theme (template tidak terdaftar, nilai tidak valid, key tidak dikenal) dicatat sekali
+  per proses di log server: `[theme] site <kode>: ...`.
+- Halaman dibungkus `<div class="tpl tpl-<key>">`. Token menjadi CSS variable di
+  `<style data-hid="theme-tokens">` di `<head>`.
+- Font (Inter, Merriweather, Source Sans 3) di-self-host dari paket `@fontsource`. File woff2 ikut
+  di-bundle ke `/_nuxt/`, tanpa CDN pihak ketiga.
+- Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
+  `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
+  SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Media
+
+`GET /media/<storage_key>` menyajikan file dari `MEDIA_DIR` (lihat `.env.example`):
+
+- Hanya media milik site request itu: `storage_key` harus diawali kode site.
+- Di dev, file yang tidak ada diganti placeholder SVG abu-abu bertuliskan nama file. Media seed
+  jadi tampil tanpa menyimpan gambar di Git.
+- Di produksi tanpa file, responsnya 404.
 
 ## Dua role database
 
@@ -45,14 +160,6 @@ mengubah cara aplikasi terhubung.
    `pnpm test`.
 4. File yang sudah pernah dijalankan tidak boleh diedit. Runner menyimpan checksum dan akan
    menolak file yang berubah.
-
-## Domain lokal (dipakai mulai M2)
-
-Tambahkan ke `/etc/hosts` (Windows: `C:\Windows\System32\drivers\etc\hosts`):
-
-```
-127.0.0.1  tekno.local.test www.tekno.local.test kuliner.local.test
-```
 
 ## Catatan penting
 

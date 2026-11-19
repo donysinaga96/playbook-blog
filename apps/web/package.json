@@ -2,5 +2,28 @@
   "name": "@framework/web",
   "version": "0.0.0",
   "private": true,
-  "description": "Nuxt: public site + /admin + server/api (dibangun di M2)"
+  "description": "Nuxt: public site + /admin + server/api",
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --dotenv ../../.env --host localhost",
+    "build": "nuxt build",
+    "preview": "node --env-file-if-exists=../../.env .output/server/index.mjs",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs"
+  },
+  "dependencies": {
+    "@framework/core": "workspace:*",
+    "@framework/db": "workspace:*",
+    "@framework/template-base": "workspace:*",
+    "@framework/template-kit": "workspace:*",
+    "@framework/template-magazine": "workspace:*",
+    "nuxt": "4.6.4",
+    "vue": "^3.5.45",
+    "vue-router": "^5.5.1"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vue-tsc": "^3.3.14"
+  }
 }

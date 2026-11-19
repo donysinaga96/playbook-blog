@@ -1,0 +1,21 @@
+// Data per request yang diisi middleware server/middleware/site.ts.
+// Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
+import type { SeoMeta, SiteInfo } from '@framework/core'
+import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+
+declare module 'nuxt/schema' {
+  interface RequestEventContext {
+    /** Site yang melayani request ini. Tidak ada untuk route yang dilewati resolver (/api/health). */
+    site?: SiteInfo
+    /** Domain (sudah dinormalisasi) yang cocok dengan Host request. */
+    siteDomain?: string
+    /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
+    siteOrigin?: string
+    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
+    theme?: StoredTheme | null
+    /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
+    page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+  }
+}
+
+export {}

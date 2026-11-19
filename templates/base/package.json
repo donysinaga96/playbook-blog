@@ -2,5 +2,21 @@
   "name": "@framework/template-base",
   "version": "0.0.0",
   "private": true,
-  "description": "Semua komponen UI default; dipakai bersama oleh semua template"
+  "description": "Semua komponen UI default; dipakai bersama oleh semua template",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/merriweather": "^5.3.0",
+    "@fontsource/source-sans-3": "^5.3.1",
+    "@framework/template-kit": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
 }

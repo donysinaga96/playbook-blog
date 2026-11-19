@@ -12,11 +12,11 @@ Rencana lengkap, keputusan arsitektur, dan roadmap M0–M5 ada di dokumen
 
 ```
 apps/
-  web/              Nuxt: public site + /admin + server/api            (M2)
+  web/              Nuxt 4.6: public site + /admin + server/api
 packages/
   db/               migration SQL, seed, test integritas, schema Drizzle
   core/             domain: repository data, validasi Zod, block body, view model
-  template-kit/     kontrak template: defineTemplate, tipe view model, token -> CSS variable
+  template-kit/     kontrak template: defineTemplate, tipe view model, token -> CSS variable, registry
 templates/
   base/             semua komponen UI default
   magazine/         template pertama
@@ -26,8 +26,11 @@ docs/
   adr/              catatan keputusan arsitektur
 ```
 
-Aturan dependency: `templates/*` hanya boleh import `@framework/template-kit`, tidak pernah
-`core` atau `db`.
+Aturan dependency (dijaga ESLint, diuji di `tests/architecture.test.ts`):
+
+- `templates/*` hanya boleh import `@framework/template-kit` dan `@framework/template-base`,
+  tidak pernah `core` atau `db`.
+- Kode Vue di `apps/web/app/` hanya boleh import tipe dari `core` dan `db`.
 
 ## Mulai
 
@@ -44,8 +47,8 @@ pnpm db:test                # 50 pemeriksaan packages/db
 | Script | Fungsi |
 | --- | --- |
 | `pnpm check` | Lint + typecheck + test (sama dengan job `check` di CI) |
-| `pnpm lint` | ESLint, termasuk aturan import template (ADR-005) |
-| `pnpm typecheck` | TypeScript mode strict (`tsconfig.base.json`) |
+| `pnpm lint` | ESLint untuk `.ts` dan `.vue`, termasuk aturan import template (ADR-005) |
+| `pnpm typecheck` | TypeScript mode strict (`tsconfig.base.json`) + vue-tsc untuk `templates/` + `nuxt typecheck` untuk `apps/web` |
 | `pnpm test` | Vitest |
 | `pnpm db:up` | Menyalakan database, menjalankan migration, role aplikasi, dan seed |
 | `pnpm db:migrate` | Menjalankan migration baru + seed |

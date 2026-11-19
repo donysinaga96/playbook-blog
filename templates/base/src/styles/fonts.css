@@ -1,0 +1,12 @@
+/*
+ * Font yang boleh dipilih lewat token (config.ts: FONTS), di-self-host dari
+ * paket @fontsource: file woff2 ikut di-bundle ke /_nuxt/, tanpa CDN pihak
+ * ketiga. Browser hanya mengunduh family yang benar-benar dipakai halaman,
+ * dan hanya subset karakter yang dibutuhkan (unicode-range).
+ */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/700.css';
+@import '@fontsource/merriweather/400.css';
+@import '@fontsource/merriweather/700.css';
+@import '@fontsource/source-sans-3/400.css';
+@import '@fontsource/source-sans-3/700.css';

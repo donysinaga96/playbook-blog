@@ -5,10 +5,12 @@
   "description": "Domain: service, repository, validasi Zod, block schema, view model",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./media": "./src/media/storage.ts"
   },
   "dependencies": {
     "@framework/db": "workspace:*",
+    "@framework/template-kit": "workspace:*",
     "zod": "^4.6.7"
   }
 }

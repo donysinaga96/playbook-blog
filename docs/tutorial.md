@@ -1,0 +1,11970 @@
+# Menyiapkan Komputer Kerja
+
+1. Gunakan Linux, macOS, atau Windows dengan WSL2. Semua perintah di buku ini dijalankan dari terminal Linux (bash).
+2. Pasang Node.js 24 (LTS). Periksa dengan `node --version`; hasilnya harus `v24.x`.
+3. Pasang Docker Engine beserta plugin Compose (di Windows: Docker Desktop dengan integrasi WSL). Periksa dengan `docker compose version`.
+4. Aktifkan pnpm lewat corepack, tanpa memasang pnpm secara global:
+
+```bash
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+corepack enable pnpm
+pnpm --version
+```
+
+5. Simpan `export COREPACK_ENABLE_DOWNLOAD_PROMPT=0` di `~/.bashrc`. Tanpa variabel ini, perintah `corepack` pertama kali akan menunggu konfirmasi unduhan dan terminal terlihat macet.
+6. Anda tidak perlu memasang `psql` di komputer. Migration dan test database dijalankan di dalam container PostgreSQL.
+7. Opsional: pasang Git dan editor VS Code. Bila memakai VS Code, ekstensi PostgreSQL (`ms-ossdata.vscode-pgsql`) memudahkan melihat isi database. Koneksinya bisa disimpan di `.vscode/settings.json` tanpa password:
+
+`.vscode/settings.json`
+
+```json
+{
+  "pgsql.connections": [
+    {
+      "server": "localhost",
+      "port": "5432",
+      "database": "blog_dev",
+      "authenticationType": "SqlLogin",
+      "sslmode": "disable",
+      "connectTimeout": 15,
+      "clientEncoding": "utf8",
+      "applicationName": "vscode-pgsql",
+      "id": "659e48fa-57ea-4a4f-ad9b-351d5e761fab",
+      "profileName": "playbook · blog_dev (owner blog)",
+      "user": "blog",
+      "groupId": "2FB46C33-0E79-4248-9D23-5B01213581FD",
+      "expiresOn": 0,
+      "password": "",
+      "sshPassword": ""
+    },
+    {
+      "server": "localhost",
+      "port": "5432",
+      "database": "blog_dev",
+      "authenticationType": "SqlLogin",
+      "sslmode": "disable",
+      "connectTimeout": 15,
+      "clientEncoding": "utf8",
+      "applicationName": "vscode-pgsql",
+      "id": "0a3c882d-9d18-464d-a5fb-155aba3b9b4d",
+      "profileName": "playbook · blog_dev (app blog_app)",
+      "user": "blog_app",
+      "groupId": "2FB46C33-0E79-4248-9D23-5B01213581FD",
+      "expiresOn": 0,
+      "password": "",
+      "sshPassword": ""
+    }
+  ]
+}
+```
+
+# Membangun Monorepo dengan pnpm Workspace
+
+1. Buat repository Git baru, lalu clone ke komputer. Semua langkah berikut dijalankan dari root repository.
+2. Rancang struktur folder. Satu aplikasi Nuxt, beberapa paket pendukung, dan beberapa template:
+
+```text
+apps/
+  web/              Nuxt: public site + /admin + server/api
+packages/
+  db/               migration SQL, test integritas, schema Drizzle
+  core/             domain: repository data, validasi Zod, block body, view model
+  template-kit/     kontrak template: defineTemplate, tipe view model, token -> CSS variable
+templates/
+  base/             semua komponen UI default
+  magazine/         template pertama
+  news/             template kedua, pembuktian kontrak
+docs/
+  dev-setup.md      setup development
+  adr/              catatan keputusan arsitektur
+tests/              test lintas paket (arsitektur, CI)
+```
+
+3. Pegang satu aturan arah dependency sejak awal: `templates/*` hanya boleh import `@framework/template-kit` dan `@framework/template-base`, tidak pernah `core` atau `db`. Aturan ini yang menjaga template tetap bisa ditukar. Nanti aturan ini dipasang di ESLint dan diuji.
+4. Kunci versi Node untuk semua orang dan CI dengan file `.nvmrc`:
+
+`.nvmrc`
+
+```text
+24
+```
+
+5. Daftarkan folder workspace di `pnpm-workspace.yaml`. Bagian `allowBuilds` baru dibutuhkan saat Nuxt dipasang (bab aplikasi web): pnpm 12 tidak menjalankan build script dependency kecuali diizinkan satu per satu:
+
+`pnpm-workspace.yaml`
+
+```yaml
+packages:
+  - apps/*
+  - packages/*
+  - templates/*
+allowBuilds:
+  esbuild: true
+```
+
+6. Buat `package.json` di root. `packageManager` membuat corepack memakai versi pnpm yang sama di semua mesin. Script `db:*` membungkus Docker Compose agar Anda tidak perlu menghafal perintahnya. Script `lint`, `typecheck`, dan `test` baru berguna setelah bab TypeScript/ESLint/Vitest, sedangkan `dev` dan `build` setelah bab aplikasi web, tetapi bentuk akhirnya seperti ini:
+
+`package.json`
+
+```json
+{
+  "name": "blog-framework",
+  "private": true,
+  "description": "Framework web artikel multi-site / multi-template",
+  "type": "module",
+  "packageManager": "pnpm@12.21.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @framework/web dev",
+    "build": "pnpm --filter @framework/web build",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json && vue-tsc -p templates/tsconfig.json --noEmit && pnpm --filter @framework/web typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:migrate": "docker compose run --rm db-migrate",
+    "db:pull": "pnpm --filter @framework/db pull",
+    "db:test": "docker compose --profile test run --rm db-test",
+    "db:reset": "docker compose down -v && docker compose up -d",
+    "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
+    "db:adminer": "docker compose --profile tools up -d adminer"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "@vitejs/plugin-vue": "6.0.11",
+    "eslint": "^10.15.0",
+    "eslint-plugin-vue": "^10.12.1",
+    "globals": "^17.14.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "~8.72.2",
+    "vitest": "^5.1.0",
+    "vue": "^3.5.45",
+    "vue-eslint-parser": "^10.4.2",
+    "vue-tsc": "^3.3.14"
+  }
+}
+```
+
+7. Buat `package.json` minimal untuk setiap paket yang belum berisi kode. Semua nama paket memakai scope `@framework/`:
+
+`apps/web/package.json` (isi awal; dependency Nuxt ditambah di bab aplikasi web)
+
+```json
+{
+  "name": "@framework/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Nuxt: public site + /admin + server/api"
+}
+```
+
+`packages/template-kit/package.json` (isi awal; dilengkapi di bab "Membangun Sistem Template")
+
+```json
+{
+  "name": "@framework/template-kit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kontrak template: defineTemplate, tipe view model, token -> CSS variable"
+}
+```
+
+`templates/base/package.json` (isi awal; dilengkapi di bab "Membangun Sistem Template")
+
+```json
+{
+  "name": "@framework/template-base",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Semua komponen UI default; dipakai bersama oleh semua template"
+}
+```
+
+`templates/magazine/package.json` (isi awal; dilengkapi di bab "Membangun Sistem Template")
+
+```json
+{
+  "name": "@framework/template-magazine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Template pertama"
+}
+```
+
+`templates/news/package.json`
+
+```json
+{
+  "name": "@framework/template-news",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Template kedua, pembuktian kontrak"
+}
+```
+
+8. Buat `.gitignore`. Bagian penting: `.env` tidak boleh masuk Git (kecuali `.env.example`), hasil build Nuxt diabaikan, dan `.vscode/settings.json` sengaja tidak diabaikan. Dua baris terakhir (`!scripts/`, `!seed/`) memastikan folder itu tetap masuk Git walau gitignore global Anda mengabaikannya:
+
+`.gitignore`
+
+```gitignore
+# =====================================================================
+# Yang TIDAK masuk Git. Tetap di-commit: .env.example, pnpm-lock.yaml,
+# migrations/, seed/, docs/, .vscode/settings.json & extensions.json.
+# =====================================================================
+
+# --- Rahasia & konfigurasi lokal ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+.npmrc.local
+docker-compose.override.yml
+compose.override.yml
+
+# --- Node / pnpm ---
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+.npm/
+.corepack/
+
+# --- Nuxt / Nitro / build ---
+.nuxt/
+.output/
+.nitro/
+.data/
+.cache/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Test & tooling cache ---
+coverage/
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+.eslintcache
+.stylelintcache
+.turbo/
+
+# --- Data lokal (storage adapter disk lokal, dump & backup database) ---
+storage/
+uploads/
+*.dump
+*.backup
+*.sql.gz
+backups/
+
+# --- Output sementara drizzle-kit pull (dibuang oleh pull-schema.mjs) ---
+packages/db/drizzle/
+
+# --- Arsip & salinan lama ---
+_archive/
+*.zip
+*.tar.gz
+
+# --- Editor & OS ---
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Log ---
+logs/
+*.log
+
+# --- Claude Code: setelan pribadi (CLAUDE.md & .claude/settings.json tetap di-commit) ---
+.claude/settings.local.json
+
+# --- Wajib di-commit walau diabaikan ~/.gitignore_global (scripts/, seed/) ---
+# Aturan repo didahulukan daripada core.excludesFile.
+!scripts/
+!seed/
+```
+
+9. Jalankan `pnpm install` agar `pnpm-lock.yaml` terbentuk, lalu commit.
+
+# Menjalankan PostgreSQL 18 dengan Docker Compose
+
+1. Pilih PostgreSQL 18. Versi ini punya fungsi `uuidv7()` bawaan. UUIDv7 berurutan waktu, jadi index primary key lebih rapat dibanding UUIDv4.
+2. Pisahkan dua role database sejak awal:
+   - Pemilik schema (`blog`) dipakai migration, test, dan tool admin.
+   - Role aplikasi (`blog_app`) dipakai Nuxt. Role ini hanya boleh SELECT/INSERT/UPDATE/DELETE, tanpa DDL.
+   Pemisahan ini membatasi dampak bila aplikasi bocor, dan menjadi prasyarat RLS di kemudian hari.
+3. Buat `.env.example` sebagai contoh konfigurasi. File ini masuk Git; isinya hanya placeholder. Bagian `SITE_MODE` baru dipakai di bab "Memilih Site dari Domain Request":
+
+`.env.example`
+
+```dotenv
+# Salin ke .env lalu ganti password. File .env tidak boleh masuk Git.
+
+# --- PostgreSQL (pemilik schema; dipakai migration & tooling) ---
+POSTGRES_USER=blog
+POSTGRES_PASSWORD=ganti_password_pemilik
+POSTGRES_DB=blog_dev
+POSTGRES_PORT=5432
+
+# --- Role aplikasi (dipakai Nuxt; hanya baca/tulis data, tanpa DDL) ---
+APP_DB_USER=blog_app
+APP_DB_PASSWORD=ganti_password_aplikasi
+
+# --- Development ---
+SEED_DEV_DATA=true
+ADMINER_PORT=8080
+
+# --- Dibaca aplikasi Nuxt yang berjalan di host ---
+# Samakan user/password/port dengan nilai di atas.
+DATABASE_URL=postgres://blog_app:ganti_password_aplikasi@localhost:5432/blog_dev
+
+# --- Mode deploy (ADR-001), divalidasi saat server start ---
+# multi : site dipilih dari Host request (site_domains); SITE_CODE dikosongkan
+# single: satu site; isi SITE_CODE dengan sites.code, domain tetap dicek
+SITE_MODE=multi
+# SITE_CODE=kabar-tekno
+
+# --- Media (sisi baca; upload menyusul di M4) ---
+# Folder file media di disk lokal; file dicari di MEDIA_DIR/<storage_key>.
+# Kosong: di dev semua media diganti gambar placeholder, di produksi 404.
+# MEDIA_DIR=/srv/blog/media
+# Awalan URL media. Default /media (dilayani aplikasi). Ganti ke URL CDN bila perlu.
+# MEDIA_BASE_URL=/media
+```
+
+4. Salin menjadi `.env` (`cp .env.example .env`), lalu ganti kedua password. Samakan password di `DATABASE_URL` dengan `APP_DB_PASSWORD`.
+5. Tulis `docker-compose.yml` dengan empat service:
+   - `db`: PostgreSQL 18.7, zona waktu server UTC, log query yang lebih lambat dari 250 ms, port hanya dibuka ke `127.0.0.1`.
+   - `db-migrate`: berjalan sekali setiap `up`, menjalankan migration lalu membuat role aplikasi. Aman diulang.
+   - `db-test` (profile `test`): uji lengkap database di database terpisah.
+   - `adminer` (profile `tools`): UI database opsional.
+
+`docker-compose.yml`
+
+```yaml
+# =====================================================================
+# Development stack - framework web artikel multi-site / multi-template
+#
+#   docker compose up -d                              # db + migration + role app + seed
+#   docker compose --profile test  run --rm db-test   # 50 pemeriksaan packages/db
+#   docker compose --profile tools up -d adminer      # UI database di http://localhost:8080
+#
+# Aplikasi Nuxt TIDAK jalan di sini saat development: jalankan `pnpm dev`
+# di host (hot reload lebih cepat) dan arahkan ke DATABASE_URL di .env.
+# Redis/BullMQ belum dibutuhkan sampai fitur AI (M6+).
+# =====================================================================
+name: blog-framework
+
+x-pg-image: &pg-image postgres:18.7
+
+# Koneksi pemilik schema untuk service tooling (migrate, test).
+x-pg-owner-env: &pg-owner-env
+  PGHOST: db
+  PGPORT: "5432"
+  PGUSER: ${POSTGRES_USER:-blog}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+  PGDATABASE: ${POSTGRES_DB:-blog_dev}
+
+services:
+  db:
+    image: *pg-image
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-blog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+      POSTGRES_DB: ${POSTGRES_DB:-blog_dev}
+    command:
+      - postgres
+      - -c
+      - timezone=UTC
+      - -c
+      - log_min_duration_statement=250   # log query lebih lambat dari 250 ms
+    # PostgreSQL 18+: volume di /var/lib/postgresql (BUKAN .../data);
+    # PGDATA image = /var/lib/postgresql/18/docker.
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # Sekali jalan: migration -> role aplikasi -> seed dev. Aman diulang.
+  db-migrate:
+    image: *pg-image
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["sh", "/db/scripts/setup.sh"]
+    environment:
+      <<: *pg-owner-env
+      APP_DB_USER: ${APP_DB_USER:-blog_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+      SEED_DEV_DATA: ${SEED_DEV_DATA:-true}
+    volumes:
+      - ./packages/db:/db:ro
+
+  # Uji lengkap packages/db di database terpisah (blog_framework_test).
+  db-test:
+    profiles: ["test"]
+    image: *pg-image
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["bash", "/db/run_all.sh", "blog_framework_test"]
+    environment:
+      <<: *pg-owner-env
+      PGDATABASE: postgres
+      APP_DB_USER: ${APP_DB_USER:-blog_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+    volumes:
+      - ./packages/db:/db:ro
+
+  # UI database opsional. Login: System PostgreSQL, server db.
+  adminer:
+    profiles: ["tools"]
+    image: adminer:5.4.2
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8080}:8080"
+
+volumes:
+  pgdata:
+```
+
+6. Perhatikan path volume. Mulai PostgreSQL 18, volume dipasang di `/var/lib/postgresql`, bukan `/var/lib/postgresql/data` seperti panduan untuk versi 17 ke bawah.
+7. Perhatikan cara password dibaca. Password di `.env` hanya dibaca saat volume pertama kali dibuat. Mengubahnya setelah itu tidak mengganti password role `blog`; pakai `docker compose down -v` (data dev hilang) atau `ALTER ROLE`. Password `blog_app` selalu disinkronkan ulang oleh `db-migrate`.
+8. Aplikasi Nuxt nantinya dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
+9. Tulis panduan singkat untuk diri sendiri di `docs/dev-setup.md`:
+
+`docs/dev-setup.md`
+
+````markdown
+# Setup development
+
+Stack lokal berjalan lewat Docker Compose: PostgreSQL 18.7, service sekali-jalan untuk migration
+dan seed, service test, dan Adminer sebagai UI (User Interface) database opsional. Aplikasi Nuxt
+dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
+
+## Pertama kali
+
+1. `cp .env.example .env`, lalu ganti `POSTGRES_PASSWORD` dan `APP_DB_PASSWORD`.
+   Samakan password di `DATABASE_URL` dengan `APP_DB_PASSWORD`.
+2. `docker compose up -d`
+3. `docker compose logs db-migrate` harus berakhir dengan `database blog_dev siap`.
+4. `docker compose --profile test run --rm db-test` harus berakhir dengan
+   `SELESAI: semua pemeriksaan lulus` (50 pemeriksaan).
+
+## Perintah sehari-hari
+
+| Kebutuhan | Perintah |
+| --- | --- |
+| Menyalakan database | `docker compose up -d` |
+| Menjalankan migration baru + seed | `docker compose run --rm db-migrate` |
+| Uji lengkap `packages/db` | `docker compose --profile test run --rm db-test` |
+| Membuka Adminer | `docker compose --profile tools up -d adminer` → http://localhost:8080 (System: PostgreSQL, Server: `db`) |
+| Masuk psql | `docker compose exec db psql -U blog -d blog_dev` |
+| Melihat query lambat (> 250 ms) | `docker compose logs -f db` |
+| Mematikan (data tetap) | `docker compose down` |
+| Mengulang dari nol (data dev hilang) | `docker compose down -v && docker compose up -d` |
+| Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.local.test:3000 (lihat "Domain site di dev"), cek `/api/health` |
+| Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
+| Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+
+## Aplikasi web
+
+`apps/web` (Nuxt 4.6) berjalan di host, bukan di container. `pnpm dev` membaca `.env` di root
+repo (`nuxt dev --dotenv ../../.env`), jadi `DATABASE_URL` cukup ditulis sekali di sana.
+`GET /api/health` mengembalikan `{"status":"ok","database":"ok"}` bila database bisa dihubungi,
+atau HTTP 503 bila tidak. Folder `.nuxt/` dibuat ulang otomatis oleh `nuxt prepare` setiap
+`pnpm install`.
+
+Job CI `build` menjalankan `pnpm build` lalu smoke test yang sama, tetapi tanpa database
+(`EXPECT_STATUS=503`): server harus start dan menjawab 503, bukan crash. Hasil build
+(`apps/web/.output/`) disimpan sebagai artifact selama satu minggu.
+
+## Domain site di dev
+
+Setiap request dipetakan ke site lewat header `Host` (`SITE_MODE=multi` di `.env`). Host yang
+tidak terdaftar di `site_domains` dijawab 404, termasuk `localhost`. Hanya `/api/health` yang
+tidak butuh site. Domain dari seed:
+
+| Domain | Site | Perilaku |
+| --- | --- | --- |
+| `tekno.local.test` | Kabar Tekno | Dilayani |
+| `www.tekno.local.test` | Kabar Tekno | 301 ke `tekno.local.test` (alias) |
+| `kuliner.local.test` | Dapur Nusantara | Dilayani |
+
+Untuk membukanya di browser, tambahkan baris ini ke `/etc/hosts`. Di WSL dengan browser
+Windows, tambahkan ke `C:\Windows\System32\drivers\etc\hosts` (sebagai Administrator):
+
+```
+127.0.0.1 tekno.local.test www.tekno.local.test kuliner.local.test
+```
+
+Tanpa mengubah file hosts, cukup kirim header Host dengan curl:
+
+```bash
+curl -H 'Host: kuliner.local.test' http://127.0.0.1:3000/
+```
+
+Dev server Vite hanya mengizinkan `localhost` dan `*.local.test` (`vite.server.allowedHosts` di
+`nuxt.config.ts`). Host lain mendapat 403 `Blocked request` dari Vite sebelum sampai ke
+middleware; di server produksi, Host lain mendapat 404.
+
+Mode single-site: `SITE_MODE=single` dan `SITE_CODE=<sites.code>`. Domain tetap dicek, jadi
+domain milik site lain di database yang sama dijawab 404. Config yang salah (mis. `SITE_MODE`
+kosong, atau `SITE_CODE` diisi saat `multi`) membuat server gagal start dengan pesan
+`SiteModeConfigError` yang menyebut variabel bermasalah.
+
+
+`pnpm dev` hanya mendengarkan di `localhost` (`--host localhost`): dev server menyajikan source
+code tanpa autentikasi, jadi tidak dibuka ke jaringan. Browser Windows di WSL tetap bisa
+membukanya karena WSL meneruskan `localhost`.
+
+## Halaman publik
+
+Skema URL ada di [ADR-006](adr/006-skema-url.md); halaman dirender penuh di server
+([ADR-007](adr/007-render-halaman-server.md)). Contoh di data seed:
+
+| Halaman | Contoh |
+| --- | --- |
+| Home | http://tekno.local.test:3000/ |
+| Artikel (`settings.permalink`) | http://tekno.local.test:3000/review/ponsel-lipat-makin-murah |
+| Kategori | http://tekno.local.test:3000/category/gadget |
+| Tag, penulis | http://tekno.local.test:3000/tag/android, http://tekno.local.test:3000/author/budi-santoso |
+| Halaman statis | http://kuliner.local.test:3000/p/kontak |
+| Pencarian | http://tekno.local.test:3000/search?q=ponsel |
+| Redirect lama (tabel `redirects`) | http://tekno.local.test:3000/gadget/ponsel-lipat-murah → 301 |
+
+View model dibangun di `server/middleware/site.ts` lewat `createPageBuilder` (`packages/core`),
+lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicatat di log server:
+`[page] site <kode> <path>: ...`.
+
+## SEO dan feed
+
+- `<head>` setiap halaman diisi dari `page.seo` (dibangun `packages/core/src/views/seo.ts`):
+  title lewat `settings.seo.titleTemplate`, description, canonical, robots, Open Graph, tautan RSS.
+- URL absolut (canonical, `og:url`, sitemap, RSS) selalu di domain **primary** site. Skema
+  (`http`/`https`) diambil dari request atau header `X-Forwarded-Proto`, jadi reverse proxy TLS di
+  produksi wajib mengirim header itu.
+- Kolom `seo` di artikel, halaman, dan kategori (`title`, `description`, `canonical`,
+  `og_image_id`, `robots`) menimpa nilai otomatis; nilai yang tidak valid diabaikan per key.
+- Pencarian dan 404 diberi `noindex, follow`; `robots.txt` juga melarang crawl `/search` dan
+  `/api/`.
+- Feed per domain: http://tekno.local.test:3000/sitemap.xml, `/rss.xml` (20 artikel terbaru),
+  `/robots.txt`. Artikel terjadwal baru muncul setelah `published_at` lewat. Tag dan penulis
+  tanpa artikel tampil tidak masuk sitemap.
+- Embed YouTube memakai `youtube-nocookie.com`, Vimeo memakai `dnt=1`. X tampil sebagai tautan
+  (embed X butuh script widget mereka).
+
+## Template dan theme
+
+- Setiap request halaman memuat baris aktif `site_themes`, lalu registry di
+  `apps/web/app/templates.ts` memilih template berdasarkan `template_key`. Template yang tidak
+  terdaftar (mis. `news` milik `dapur-nusantara`, baru ada di M3) jatuh ke `base`.
+- Token dan opsi divalidasi per key terhadap skema manifest; nilai yang salah memakai default.
+- Masalah theme (template tidak terdaftar, nilai tidak valid, key tidak dikenal) dicatat sekali
+  per proses di log server: `[theme] site <kode>: ...`.
+- Halaman dibungkus `<div class="tpl tpl-<key>">`. Token menjadi CSS variable di
+  `<style data-hid="theme-tokens">` di `<head>`.
+- Font (Inter, Merriweather, Source Sans 3) di-self-host dari paket `@fontsource`. File woff2 ikut
+  di-bundle ke `/_nuxt/`, tanpa CDN pihak ketiga.
+- Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
+  `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
+  SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Media
+
+`GET /media/<storage_key>` menyajikan file dari `MEDIA_DIR` (lihat `.env.example`):
+
+- Hanya media milik site request itu: `storage_key` harus diawali kode site.
+- Di dev, file yang tidak ada diganti placeholder SVG abu-abu bertuliskan nama file. Media seed
+  jadi tampil tanpa menyimpan gambar di Git.
+- Di produksi tanpa file, responsnya 404.
+
+## Dua role database
+
+| Role | Dipakai oleh | Hak |
+| --- | --- | --- |
+| `POSTGRES_USER` (`blog`) | Migration, test, Adminer | Pemilik schema, superuser di container dev |
+| `APP_DB_USER` (`blog_app`) | Aplikasi Nuxt lewat `DATABASE_URL` | Hanya SELECT/INSERT/UPDATE/DELETE; tanpa DDL (Data Definition Language), tanpa akses `schema_migrations` |
+
+Pemisahan ini sudah berlaku sejak awal agar RLS (Row-Level Security) bisa diaktifkan nanti tanpa
+mengubah cara aplikasi terhubung.
+
+## Menambah migration
+
+1. Buat file baru `packages/db/migrations/0002_deskripsi.sql`. Jangan tulis `BEGIN`/`COMMIT`;
+   runner membungkus setiap file dalam satu transaksi.
+2. `pnpm db:migrate` (= `docker compose run --rm db-migrate`)
+3. `pnpm db:pull` untuk membuat ulang schema Drizzle di `packages/db/src/schema/`, lalu
+   `pnpm test`.
+4. File yang sudah pernah dijalankan tidak boleh diedit. Runner menyimpan checksum dan akan
+   menolak file yang berubah.
+
+## Catatan penting
+
+- **Password di `.env` hanya dibaca saat volume pertama kali dibuat.** Mengubahnya setelah itu
+  tidak mengganti password role `blog`; pakai `docker compose down -v` (data dev hilang) atau
+  `ALTER ROLE`. Password `blog_app` selalu disinkronkan oleh `db-migrate`.
+- **Volume PostgreSQL 18 dipasang di `/var/lib/postgresql`**, bukan `/var/lib/postgresql/data`
+  seperti panduan lama untuk versi 17 ke bawah.
+- **Upgrade minor** (mis. 18.7 → 18.8): ganti tag image lalu `docker compose up -d`.
+  **Upgrade mayor** (18 → 19) butuh `pg_upgrade` atau dump/restore; jangan hanya mengganti tag.
+- Port database dan Adminer hanya dibuka ke `127.0.0.1`, tidak ke jaringan lain.
+- Waktu server di-set UTC (Coordinated Universal Time); konversi zona waktu dilakukan aplikasi.
+- Compose ini khusus development. Compose produksi (tanpa seed, tanpa Adminer, dengan backup)
+  dibuat di M5.
+````
+
+# Merancang Schema Database Multi-Site
+
+1. Tetapkan model tenant: satu baris `sites` = satu website. Satu schema dipakai dalam dua mode deploy:
+   - Single-site: satu database per produk, site dipilih lewat env `SITE_CODE`.
+   - Multi-site: satu database bersama, site dipilih dari Host request lewat `site_domains`.
+   Karena semua primary key UUID, satu site bisa dipindah antar database dengan menyalin baris ber-`site_id` yang sama tanpa bentrok ID.
+2. Tetapkan konvensi sebelum menulis tabel:
+   - Primary key UUIDv7, dibuat database (`DEFAULT uuidv7()`).
+   - Setiap tabel milik site punya `site_id NOT NULL` dan `UNIQUE (site_id, id)` sebagai target composite FK.
+   - Relasi antar tabel milik site selalu lewat composite FK `(site_id, x_id) → (site_id, id)`. Dengan begitu database sendiri yang menolak relasi lintas site, bukan hanya aplikasi.
+   - FK opsional memakai `ON DELETE SET NULL (kolom)`: hanya kolom rujukan yang dikosongkan, `site_id` tetap. Fitur ini butuh PostgreSQL 15+.
+   - Status disimpan sebagai `text` + `CHECK`, bukan `ENUM`, agar nilai baru cukup ditambah lewat migration.
+   - JSONB dipakai untuk bentuk yang ditentukan aplikasi atau template (`settings`, `tokens`, `layouts`, `seo`, `attributes`, `body`). Database hanya menjaga bentuk luarnya (harus object); isinya divalidasi Zod di aplikasi.
+   - Semua waktu `timestamptz` (disimpan UTC); `updated_at` diisi trigger.
+   - Domain dan slug wajib sudah dinormalisasi; `CHECK` menolak huruf besar, protokol, port, dan spasi.
+3. Kelompokkan 16 tabel:
+
+| Kelompok | Tabel | Aturan penting |
+|---|---|---|
+| Site | `sites` | `code` unik; `settings` JSONB; logo/favicon harus media site itu sendiri |
+| Site | `site_domains` | Domain unik global; maksimal satu primary per site |
+| Site | `site_themes` | Unik (site, template); maksimal satu aktif per site; versi semver |
+| Akses | `users` | Email unik dan huruf kecil; `is_superadmin` untuk mode semua site |
+| Akses | `site_members` | Role OWNER, EDITOR, AUTHOR; permission di kode |
+| Konten | `media` | `storage_key` (bukan URL); titik fokus untuk crop per template |
+| Konten | `authors` | Byline publik; boleh tanpa akun, bila tertaut user harus anggota site |
+| Konten | `categories` | Bertingkat; slug unik per site; parent harus satu site |
+| Konten | `tags` | Slug unik per site |
+| Konten | `articles` | Slug unik per site; body `{version, blocks}`; `version` untuk optimistic locking |
+| Konten | `article_tags` | Artikel dan tag wajib satu site |
+| Konten | `article_revisions` | Snapshot lengkap; `revision_no` = `articles.version` |
+| Konten | `pages` | `view_key` memilih varian view template |
+| Navigasi | `menus` | Unik (site, location) |
+| Navigasi | `menu_items` | Target bertipe dengan FK nyata; URL `javascript:` dan `//host` ditolak |
+| Navigasi | `redirects` | Unik (site, from_path) |
+
+4. Catat keputusan desain yang memengaruhi kode nanti:
+   - Jadwal terbit tanpa queue: artikel terjadwal = `PUBLISHED` dengan `published_at` di masa depan. Query publik selalu memfilter `published_at <= now()`.
+   - Ganti template tidak menghapus config: setiap template punya barisnya sendiri di `site_themes`; mengaktifkan template lain hanya memindah `is_active`.
+   - `attributes` adalah titik ekstensi per topik (rating untuk site review, waktu masak untuk site resep) tanpa migration.
+   - Pencarian memakai konfigurasi `simple`, bukan `indonesian`. Stemmer `indonesian` keliru untuk sebagian kata ("memasak" menjadi "pasak"). `body_text` diisi aplikasi dengan teks polos hasil ekstraksi block.
+   - Siklus kategori lebih dari satu level (A → B → A) dicegah di aplikasi; database hanya menolak kategori menjadi parent dirinya sendiri.
+   - Site produksi diarsipkan (`ARCHIVED`), bukan dihapus.
+5. Tulis semuanya sebagai SQL tangan di `packages/db/migrations/0001_core.sql`. Jangan tulis `BEGIN`/`COMMIT` di dalamnya; runner di bab berikutnya yang membungkus transaksi. Bagian 0 membuat shim `uuidv7()` hanya bila server lebih tua dari PostgreSQL 18:
+
+`packages/db/migrations/0001_core.sql`
+
+```sql
+-- =====================================================================
+-- 0001_core.sql  -  Schema inti v1
+-- Site, domain, tema/template, user, media, author, kategori, tag,
+-- artikel (+ revisi), halaman statis, menu, redirect.
+--
+-- Target  : PostgreSQL 18 (uuidv7() bawaan). PostgreSQL 15-17 didukung
+--           lewat shim uuidv7() di bagian 0 (butuh PG 15+ untuk
+--           ON DELETE SET NULL (kolom)).
+-- Aturan  : 1. Setiap tabel milik site punya site_id NOT NULL.
+--           2. Setiap tabel yang dirujuk lintas tabel punya
+--              UNIQUE (site_id, id) agar bisa jadi target composite FK.
+--           3. Relasi antar tabel milik site SELALU lewat composite FK
+--              (site_id, xxx_id) -> (site_id, id). Database menolak relasi
+--              lintas site, bukan hanya aplikasi.
+--           4. Status disimpan sebagai text + CHECK (mudah dievolusi),
+--              bukan PostgreSQL ENUM.
+--           5. Semua waktu timestamptz (disimpan UTC).
+-- Jalankan: scripts/migrate.sh membungkus file ini + catatan di
+--           schema_migrations dalam SATU transaksi. Karena itu file
+--           migration TIDAK boleh berisi BEGIN/COMMIT sendiri.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 0. Kompatibilitas: uuidv7() untuk PostgreSQL < 18
+--    Di PG 18 fungsi bawaan pg_catalog.uuidv7() dipakai dan shim ini
+--    tidak dibuat. Setelah upgrade ke 18, pg_catalog didahulukan oleh
+--    search_path, jadi shim lama otomatis tidak terpakai.
+-- ---------------------------------------------------------------------
+DO $do$
+BEGIN
+  IF current_setting('server_version_num')::int < 180000 THEN
+    EXECUTE $f$
+      CREATE OR REPLACE FUNCTION public.uuidv7() RETURNS uuid
+      LANGUAGE sql VOLATILE AS $body$
+        SELECT encode(
+                 set_bit(
+                   set_bit(
+                     overlay(uuid_send(gen_random_uuid())
+                             PLACING substring(int8send(floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint) FROM 3)
+                             FROM 1 FOR 6),
+                     52, 1),
+                   53, 1),
+                 'hex')::uuid
+      $body$
+    $f$;
+  END IF;
+END
+$do$;
+
+-- ---------------------------------------------------------------------
+-- 1. Helper: updated_at otomatis
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END
+$$;
+
+-- =====================================================================
+-- A. TENANT ROOT
+-- =====================================================================
+
+CREATE TABLE sites (
+  id                uuid        PRIMARY KEY DEFAULT uuidv7(),
+  code              text        NOT NULL,
+  name              text        NOT NULL,
+  status            text        NOT NULL DEFAULT 'ACTIVE',
+  default_locale    text        NOT NULL DEFAULT 'id-ID',
+  timezone          text        NOT NULL DEFAULT 'Asia/Jakarta',
+  -- Identitas & default non-visual: tagline, permalink pattern, SEO default,
+  -- social links, analytics id. Divalidasi skema Zod di packages/core.
+  settings          jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  logo_media_id     uuid,
+  favicon_media_id  uuid,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT sites_code_format     CHECK (code ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(code) <= 50),
+  CONSTRAINT sites_status_valid    CHECK (status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')),
+  CONSTRAINT sites_settings_object CHECK (jsonb_typeof(settings) = 'object')
+);
+CREATE UNIQUE INDEX uq_sites_code ON sites (code);
+COMMENT ON TABLE sites IS 'Satu baris = satu website/produk (tenant). Produksi: arsipkan (ARCHIVED), jangan hapus.';
+
+CREATE TABLE site_domains (
+  id           uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id      uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  -- Disimpan sudah dinormalisasi: huruf kecil, tanpa protokol, path, atau port.
+  domain       text        NOT NULL,
+  is_primary   boolean     NOT NULL DEFAULT false,
+  status       text        NOT NULL DEFAULT 'ACTIVE',
+  verified_at  timestamptz,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT site_domains_status_valid  CHECK (status IN ('PENDING', 'ACTIVE', 'DISABLED')),
+  CONSTRAINT site_domains_domain_format CHECK (
+    domain = lower(domain)
+    AND length(domain) <= 253
+    AND domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+  )
+);
+CREATE UNIQUE INDEX uq_site_domains_domain      ON site_domains (domain);
+CREATE UNIQUE INDEX uq_site_domains_one_primary ON site_domains (site_id) WHERE is_primary;
+CREATE INDEX        idx_site_domains_site       ON site_domains (site_id);
+COMMENT ON TABLE site_domains IS 'Host -> site. Domain lokal harus punya titik, mis. tekno.local.test.';
+
+-- Konfigurasi tampilan per site PER template. Ganti template = pindah baris
+-- aktif; config template lama tetap tersimpan bila admin kembali.
+CREATE TABLE site_themes (
+  id                uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id           uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  template_key      text        NOT NULL,                 -- 'magazine', 'news', ...
+  template_version  text        NOT NULL,                 -- versi manifest saat config disimpan
+  tokens            jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- design token -> CSS variable
+  options           jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- opsi non-token (gaya header, slot iklan, dst.)
+  layouts           jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- susunan section per jenis halaman
+  is_active         boolean     NOT NULL DEFAULT false,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT site_themes_key_format     CHECK (template_key ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+  CONSTRAINT site_themes_version_semver CHECK (template_version ~ '^[0-9]+\.[0-9]+\.[0-9]+$'),
+  CONSTRAINT site_themes_json_objects   CHECK (jsonb_typeof(tokens) = 'object'
+                                           AND jsonb_typeof(options) = 'object'
+                                           AND jsonb_typeof(layouts) = 'object')
+);
+CREATE UNIQUE INDEX uq_site_themes_site_template ON site_themes (site_id, template_key);
+CREATE UNIQUE INDEX uq_site_themes_one_active    ON site_themes (site_id) WHERE is_active;
+
+-- =====================================================================
+-- B. IDENTITAS & AKSES
+-- =====================================================================
+
+CREATE TABLE users (
+  id             uuid        PRIMARY KEY DEFAULT uuidv7(),
+  email          text        NOT NULL,
+  password_hash  text,                                   -- Argon2id; NULL bila login lewat provider lain
+  display_name   text        NOT NULL,
+  is_superadmin  boolean     NOT NULL DEFAULT false,     -- akses semua site (mode ALL SITES)
+  status         text        NOT NULL DEFAULT 'ACTIVE',
+  last_login_at  timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT users_email_normalized CHECK (email = lower(email) AND position('@' IN email) > 1),
+  CONSTRAINT users_status_valid     CHECK (status IN ('ACTIVE', 'DISABLED'))
+);
+CREATE UNIQUE INDEX uq_users_email ON users (email);
+COMMENT ON TABLE users IS 'Akun login global. Bukan byline publik (lihat authors).';
+
+-- Pengganti site_users + user_site_roles + roles + permissions.
+-- Matriks role -> permission ada di kode (packages/core) sampai butuh tabel.
+CREATE TABLE site_members (
+  site_id     uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  role        text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (site_id, user_id),
+  CONSTRAINT site_members_role_valid CHECK (role IN ('OWNER', 'EDITOR', 'AUTHOR'))
+);
+CREATE INDEX idx_site_members_user ON site_members (user_id);
+
+-- =====================================================================
+-- C. MEDIA
+-- =====================================================================
+
+CREATE TABLE media (
+  id           uuid         PRIMARY KEY DEFAULT uuidv7(),
+  site_id      uuid         NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  storage_key  text         NOT NULL,                   -- mis. 'tekno/2026/11/<uuid>.webp' (bukan URL)
+  mime_type    text         NOT NULL,
+  size_bytes   bigint       NOT NULL,
+  width        integer,
+  height       integer,
+  alt_text     text,
+  caption      text,
+  credit       text,
+  -- Titik fokus 0..1: template berbeda bisa crop rasio berbeda tanpa
+  -- kehilangan subjek gambar.
+  focal_x      numeric(4,3) NOT NULL DEFAULT 0.5,
+  focal_y      numeric(4,3) NOT NULL DEFAULT 0.5,
+  created_by   uuid         REFERENCES users (id) ON DELETE SET NULL,
+  created_at   timestamptz  NOT NULL DEFAULT now(),
+  updated_at   timestamptz  NOT NULL DEFAULT now(),
+  CONSTRAINT media_site_id_id     UNIQUE (site_id, id),
+  CONSTRAINT media_size_positive  CHECK (size_bytes > 0),
+  CONSTRAINT media_dimensions     CHECK ((width IS NULL) = (height IS NULL) AND (width IS NULL OR (width > 0 AND height > 0))),
+  CONSTRAINT media_focal_range    CHECK (focal_x BETWEEN 0 AND 1 AND focal_y BETWEEN 0 AND 1)
+);
+CREATE UNIQUE INDEX uq_media_storage_key ON media (storage_key);
+CREATE INDEX        idx_media_site_created ON media (site_id, created_at DESC);
+
+-- Logo & favicon site harus media milik site itu sendiri.
+ALTER TABLE sites
+  ADD CONSTRAINT fk_sites_logo_same_site
+      FOREIGN KEY (id, logo_media_id) REFERENCES media (site_id, id) ON DELETE SET NULL (logo_media_id),
+  ADD CONSTRAINT fk_sites_favicon_same_site
+      FOREIGN KEY (id, favicon_media_id) REFERENCES media (site_id, id) ON DELETE SET NULL (favicon_media_id);
+
+-- =====================================================================
+-- D. KONTEN
+-- =====================================================================
+
+-- Byline publik per site. Boleh tertaut ke akun login (harus anggota site),
+-- boleh juga persona tanpa akun (mis. "Redaksi").
+CREATE TABLE authors (
+  id               uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id          uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  user_id          uuid,
+  name             text        NOT NULL,
+  slug             text        NOT NULL,
+  bio              text,
+  avatar_media_id  uuid,
+  links            jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  status           text        NOT NULL DEFAULT 'ACTIVE',
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT authors_site_id_id    UNIQUE (site_id, id),
+  CONSTRAINT authors_slug_format   CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 200),
+  CONSTRAINT authors_status_valid  CHECK (status IN ('ACTIVE', 'HIDDEN')),
+  CONSTRAINT authors_links_object  CHECK (jsonb_typeof(links) = 'object'),
+  CONSTRAINT fk_authors_member     FOREIGN KEY (site_id, user_id)
+             REFERENCES site_members (site_id, user_id) ON DELETE SET NULL (user_id),
+  CONSTRAINT fk_authors_avatar     FOREIGN KEY (site_id, avatar_media_id)
+             REFERENCES media (site_id, id) ON DELETE SET NULL (avatar_media_id)
+);
+CREATE UNIQUE INDEX uq_authors_site_slug ON authors (site_id, slug);
+CREATE UNIQUE INDEX uq_authors_site_user ON authors (site_id, user_id) WHERE user_id IS NOT NULL;
+
+CREATE TABLE categories (
+  id           uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id      uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  parent_id    uuid,
+  name         text        NOT NULL,
+  slug         text        NOT NULL,
+  description  text,
+  sort_order   integer     NOT NULL DEFAULT 0,
+  status       text        NOT NULL DEFAULT 'ACTIVE',
+  seo          jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT categories_site_id_id      UNIQUE (site_id, id),
+  CONSTRAINT categories_slug_format     CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 200),
+  CONSTRAINT categories_status_valid    CHECK (status IN ('ACTIVE', 'HIDDEN')),
+  CONSTRAINT categories_not_own_parent  CHECK (parent_id IS DISTINCT FROM id),
+  CONSTRAINT categories_seo_object      CHECK (jsonb_typeof(seo) = 'object'),
+  -- Siklus lebih dari 1 level (A->B->A) dicegah di packages/core.
+  CONSTRAINT fk_categories_parent_same_site FOREIGN KEY (site_id, parent_id)
+             REFERENCES categories (site_id, id)
+);
+CREATE UNIQUE INDEX uq_categories_site_slug ON categories (site_id, slug);
+CREATE INDEX        idx_categories_parent   ON categories (site_id, parent_id, sort_order);
+
+CREATE TABLE tags (
+  id          uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id     uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  name        text        NOT NULL,
+  slug        text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT tags_site_id_id    UNIQUE (site_id, id),
+  CONSTRAINT tags_slug_format   CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 200)
+);
+CREATE UNIQUE INDEX uq_tags_site_slug ON tags (site_id, slug);
+
+-- Status: DRAFT -> (REVIEW) -> PUBLISHED -> ARCHIVED.
+-- Terjadwal  = status PUBLISHED + published_at > now()  (tidak perlu queue).
+-- Tampil publik = status PUBLISHED + published_at <= now().
+CREATE TABLE articles (
+  id                 uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id            uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  category_id        uuid        NOT NULL,
+  author_id          uuid,
+  featured_media_id  uuid,
+  title              text        NOT NULL,
+  slug               text        NOT NULL,
+  excerpt            text,
+  body               jsonb       NOT NULL DEFAULT '{"version": 1, "blocks": []}'::jsonb,
+  body_text          text        NOT NULL DEFAULT '',   -- teks polos hasil ekstraksi block oleh aplikasi
+  format             text        NOT NULL DEFAULT 'STANDARD',
+  status             text        NOT NULL DEFAULT 'DRAFT',
+  is_featured        boolean     NOT NULL DEFAULT false,
+  published_at       timestamptz,
+  seo                jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- title, description, canonical, og_image_id, robots
+  attributes         jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- titik ekstensi per topik (rating review, waktu masak, ...)
+  version            integer     NOT NULL DEFAULT 1,            -- optimistic locking; = revision_no snapshot terakhir
+  created_by         uuid        REFERENCES users (id) ON DELETE SET NULL,
+  updated_by         uuid        REFERENCES users (id) ON DELETE SET NULL,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  updated_at         timestamptz NOT NULL DEFAULT now(),
+  search_vector      tsvector GENERATED ALWAYS AS (
+                       setweight(to_tsvector('simple', coalesce(title, '')),   'A') ||
+                       setweight(to_tsvector('simple', coalesce(excerpt, '')), 'B') ||
+                       setweight(to_tsvector('simple', body_text),             'C')
+                     ) STORED,
+  CONSTRAINT articles_site_id_id          UNIQUE (site_id, id),
+  CONSTRAINT articles_slug_format         CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 200),
+  CONSTRAINT articles_status_valid        CHECK (status IN ('DRAFT', 'REVIEW', 'PUBLISHED', 'ARCHIVED')),
+  CONSTRAINT articles_format_valid        CHECK (format IN ('STANDARD', 'LISTICLE', 'GALLERY', 'VIDEO')),
+  CONSTRAINT articles_published_has_date  CHECK (status <> 'PUBLISHED' OR published_at IS NOT NULL),
+  CONSTRAINT articles_version_positive    CHECK (version > 0),
+  CONSTRAINT articles_body_shape          CHECK (jsonb_typeof(body) = 'object'
+                                              AND jsonb_typeof(body -> 'version') = 'number'
+                                              AND jsonb_typeof(body -> 'blocks')  = 'array'),
+  CONSTRAINT articles_json_objects        CHECK (jsonb_typeof(seo) = 'object' AND jsonb_typeof(attributes) = 'object'),
+  CONSTRAINT fk_articles_category_same_site FOREIGN KEY (site_id, category_id)
+             REFERENCES categories (site_id, id),
+  CONSTRAINT fk_articles_author_same_site   FOREIGN KEY (site_id, author_id)
+             REFERENCES authors (site_id, id) ON DELETE SET NULL (author_id),
+  CONSTRAINT fk_articles_media_same_site    FOREIGN KEY (site_id, featured_media_id)
+             REFERENCES media (site_id, id) ON DELETE SET NULL (featured_media_id)
+);
+CREATE UNIQUE INDEX uq_articles_site_slug         ON articles (site_id, slug);
+-- Index publik: partial, hanya baris PUBLISHED -> kecil & cepat.
+CREATE INDEX idx_articles_public_feed      ON articles (site_id, published_at DESC) WHERE status = 'PUBLISHED';
+CREATE INDEX idx_articles_public_category  ON articles (site_id, category_id, published_at DESC) WHERE status = 'PUBLISHED';
+CREATE INDEX idx_articles_public_author    ON articles (site_id, author_id, published_at DESC) WHERE status = 'PUBLISHED';
+CREATE INDEX idx_articles_public_featured  ON articles (site_id, published_at DESC) WHERE status = 'PUBLISHED' AND is_featured;
+-- Index admin & pencarian.
+CREATE INDEX idx_articles_admin_list       ON articles (site_id, status, updated_at DESC);
+CREATE INDEX idx_articles_search           ON articles USING gin (search_vector);
+
+CREATE TABLE article_tags (
+  site_id     uuid     NOT NULL,
+  article_id  uuid     NOT NULL,
+  tag_id      uuid     NOT NULL,
+  sort_order  smallint NOT NULL DEFAULT 0,
+  PRIMARY KEY (article_id, tag_id),
+  CONSTRAINT fk_article_tags_article_same_site FOREIGN KEY (site_id, article_id)
+             REFERENCES articles (site_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_article_tags_tag_same_site     FOREIGN KEY (site_id, tag_id)
+             REFERENCES tags (site_id, id) ON DELETE CASCADE
+);
+CREATE INDEX idx_article_tags_tag ON article_tags (site_id, tag_id);
+
+-- Snapshot lengkap (bukan hanya body) agar restore tidak kehilangan data.
+-- revision_no = articles.version saat snapshot dibuat.
+CREATE TABLE article_revisions (
+  id           uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id      uuid        NOT NULL,
+  article_id   uuid        NOT NULL,
+  revision_no  integer     NOT NULL,
+  snapshot     jsonb       NOT NULL,   -- title, slug, excerpt, body, category_id, author_id, featured_media_id, tag_ids, seo, attributes, format
+  change_note  text,
+  created_by   uuid        REFERENCES users (id) ON DELETE SET NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT article_revisions_no_positive    CHECK (revision_no > 0),
+  CONSTRAINT article_revisions_snapshot_obj   CHECK (jsonb_typeof(snapshot) = 'object'),
+  CONSTRAINT fk_article_revisions_same_site   FOREIGN KEY (site_id, article_id)
+             REFERENCES articles (site_id, id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX uq_article_revisions_article_no ON article_revisions (article_id, revision_no);
+
+-- Halaman statis: Tentang, Kontak, Kebijakan Privasi, dst.
+CREATE TABLE pages (
+  id            uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  title         text        NOT NULL,
+  slug          text        NOT NULL,
+  body          jsonb       NOT NULL DEFAULT '{"version": 1, "blocks": []}'::jsonb,
+  view_key      text        NOT NULL DEFAULT 'default',  -- varian view template, mis. 'contact'
+  status        text        NOT NULL DEFAULT 'DRAFT',
+  published_at  timestamptz,
+  seo           jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT pages_site_id_id          UNIQUE (site_id, id),
+  CONSTRAINT pages_slug_format         CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 200),
+  CONSTRAINT pages_view_key_format     CHECK (view_key ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+  CONSTRAINT pages_status_valid        CHECK (status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')),
+  CONSTRAINT pages_published_has_date  CHECK (status <> 'PUBLISHED' OR published_at IS NOT NULL),
+  CONSTRAINT pages_body_shape          CHECK (jsonb_typeof(body) = 'object'
+                                          AND jsonb_typeof(body -> 'version') = 'number'
+                                          AND jsonb_typeof(body -> 'blocks')  = 'array'),
+  CONSTRAINT pages_seo_object          CHECK (jsonb_typeof(seo) = 'object')
+);
+CREATE UNIQUE INDEX uq_pages_site_slug ON pages (site_id, slug);
+
+-- =====================================================================
+-- E. NAVIGASI & URL
+-- =====================================================================
+
+CREATE TABLE menus (
+  id          uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id     uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  location    text        NOT NULL,   -- 'header', 'footer', ... (didefinisikan template)
+  name        text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT menus_site_id_id       UNIQUE (site_id, id),
+  CONSTRAINT menus_location_format  CHECK (location ~ '^[a-z0-9]+(_[a-z0-9]+)*$')
+);
+CREATE UNIQUE INDEX uq_menus_site_location ON menus (site_id, location);
+
+-- Target bertipe dengan FK nyata (bukan entity_type + entity_id polimorfik).
+-- Item ikut terhapus bila kategori/artikel/halaman/tag tujuannya dihapus.
+CREATE TABLE menu_items (
+  id               uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id          uuid        NOT NULL,
+  menu_id          uuid        NOT NULL,
+  parent_id        uuid,
+  label            text        NOT NULL,
+  item_type        text        NOT NULL,
+  category_id      uuid,
+  article_id       uuid,
+  page_id          uuid,
+  tag_id           uuid,
+  url              text,       -- URL: https://...  ROUTE: /path internal
+  open_in_new_tab  boolean     NOT NULL DEFAULT false,
+  sort_order       integer     NOT NULL DEFAULT 0,
+  is_active        boolean     NOT NULL DEFAULT true,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT menu_items_menu_id_id       UNIQUE (menu_id, id),
+  CONSTRAINT menu_items_type_valid       CHECK (item_type IN ('CATEGORY', 'ARTICLE', 'PAGE', 'TAG', 'URL', 'ROUTE')),
+  CONSTRAINT menu_items_target_matches   CHECK (
+        (item_type = 'CATEGORY')          = (category_id IS NOT NULL)
+    AND (item_type = 'ARTICLE')           = (article_id  IS NOT NULL)
+    AND (item_type = 'PAGE')              = (page_id     IS NOT NULL)
+    AND (item_type = 'TAG')               = (tag_id      IS NOT NULL)
+    AND (item_type IN ('URL', 'ROUTE'))   = (url         IS NOT NULL)
+  ),
+  -- Menolak javascript:, data:, dan URL protocol-relative (//host).
+  CONSTRAINT menu_items_url_safe         CHECK (
+        url IS NULL
+     OR (item_type = 'URL'   AND url ~ '^https?://[^[:space:]]+$')
+     OR (item_type = 'ROUTE' AND url ~ '^/[^[:space:]]*$' AND url !~ '^//')
+  ),
+  CONSTRAINT menu_items_not_own_parent   CHECK (parent_id IS DISTINCT FROM id),
+  CONSTRAINT fk_menu_items_menu_same_site   FOREIGN KEY (site_id, menu_id)
+             REFERENCES menus (site_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_menu_items_parent_same_menu FOREIGN KEY (menu_id, parent_id)
+             REFERENCES menu_items (menu_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_menu_items_category  FOREIGN KEY (site_id, category_id) REFERENCES categories (site_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_menu_items_article   FOREIGN KEY (site_id, article_id)  REFERENCES articles   (site_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_menu_items_page      FOREIGN KEY (site_id, page_id)     REFERENCES pages      (site_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_menu_items_tag       FOREIGN KEY (site_id, tag_id)      REFERENCES tags       (site_id, id) ON DELETE CASCADE
+);
+CREATE INDEX idx_menu_items_tree ON menu_items (menu_id, parent_id, sort_order);
+
+-- Dibuat otomatis oleh aplikasi saat slug artikel/kategori/halaman berubah.
+CREATE TABLE redirects (
+  id           uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id      uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  from_path    text        NOT NULL,
+  to_path      text        NOT NULL,
+  status_code  smallint    NOT NULL DEFAULT 301,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT redirects_status_valid CHECK (status_code IN (301, 302, 307, 308)),
+  CONSTRAINT redirects_from_path    CHECK (from_path ~ '^/[^[:space:]]*$' AND from_path !~ '^//'),
+  CONSTRAINT redirects_to_path      CHECK ((to_path ~ '^/[^[:space:]]*$' AND to_path !~ '^//')
+                                        OR to_path ~ '^https?://[^[:space:]]+$'),
+  CONSTRAINT redirects_not_self     CHECK (from_path <> to_path)
+);
+CREATE UNIQUE INDEX uq_redirects_site_from ON redirects (site_id, from_path);
+
+-- =====================================================================
+-- F. Trigger updated_at untuk semua tabel yang punya kolomnya
+-- =====================================================================
+DO $do$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'sites', 'site_domains', 'site_themes', 'users', 'media', 'authors',
+    'categories', 'tags', 'articles', 'pages', 'menus', 'menu_items', 'redirects'
+  ]
+  LOOP
+    EXECUTE format(
+      'CREATE TRIGGER trg_%1$s_updated_at BEFORE UPDATE ON %1$I
+         FOR EACH ROW EXECUTE FUNCTION set_updated_at()', t);
+  END LOOP;
+END
+$do$;
+```
+
+6. Tabel yang sengaja ditunda dan baru ditambah lewat migration baru saat dibutuhkan: `sessions` (auth), `audit_logs` (lebih dari satu admin), tabel AI, `publishing_logs` (queue/scheduler), `roles`/`permissions` (role di kode tidak lagi cukup), dan policy RLS.
+
+# Menulis Runner Migration dan Role Aplikasi
+
+1. Tulis runner migration sendiri dalam POSIX sh, sekitar 80 baris, tanpa tool tambahan. Aturannya:
+   - File di `migrations/` dijalankan berurutan nama (`0001_`, `0002_`, ...).
+   - Setiap file beserta catatannya di `schema_migrations` berjalan dalam satu transaksi.
+   - Checksum SHA-256 disimpan. File yang sudah dijalankan lalu diubah ditolak, karena migration bersifat append-only.
+   - File yang berisi `BEGIN`/`COMMIT` ditolak.
+
+`packages/db/scripts/migrate.sh`
+
+```sh
+#!/bin/sh
+# =====================================================================
+# migrate.sh  -  Menjalankan migration SQL yang belum pernah dijalankan.
+#
+# - File di migrations/ dijalankan berurutan nama (0001_, 0002_, ...).
+# - Setiap file + catatannya di schema_migrations berjalan dalam SATU
+#   transaksi: gagal di tengah = tidak ada yang tersimpan.
+# - Checksum disimpan. File yang sudah dijalankan lalu diubah isinya
+#   ditolak, karena migration bersifat append-only: buat file baru.
+# - Koneksi lewat variabel standar libpq:
+#   PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE.
+# - POSIX sh: jalan di image postgres (Debian/Alpine) maupun di host.
+# =====================================================================
+set -eu
+
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+MIGRATIONS_DIR=${MIGRATIONS_DIR:-$DIR/migrations}
+export PGOPTIONS="${PGOPTIONS:-} -c client_min_messages=warning"
+
+psql_run() { psql -X -q -v ON_ERROR_STOP=1 "$@"; }
+
+psql_run <<'SQL'
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename    text        PRIMARY KEY,
+  checksum    text        NOT NULL,
+  applied_at  timestamptz NOT NULL DEFAULT now()
+);
+SQL
+
+applied=0
+skipped=0
+found=0
+
+for f in "$MIGRATIONS_DIR"/*.sql; do
+  [ -e "$f" ] || break
+  found=$((found + 1))
+  name=$(basename "$f")
+
+  case "$name" in
+    [0-9][0-9][0-9][0-9]_*.sql) ;;
+    *) echo "ERROR  $name: nama harus NNNN_deskripsi.sql" >&2; exit 1 ;;
+  esac
+  case "$name" in
+    *[!A-Za-z0-9_.-]*) echo "ERROR  $name: hanya huruf, angka, _ . -" >&2; exit 1 ;;
+  esac
+
+  if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|ROLLBACK|START[[:space:]]+TRANSACTION)[[:space:]]*;' "$f"; then
+    echo "ERROR  $name: jangan tulis BEGIN/COMMIT; runner sudah membungkus transaksi" >&2
+    exit 1
+  fi
+
+  sum=$(sha256sum "$f" | cut -d' ' -f1)
+  stored=$(echo "SELECT checksum FROM schema_migrations WHERE filename = :'name';" \
+             | psql_run -tA -v name="$name")
+
+  if [ -n "$stored" ]; then
+    if [ "$stored" != "$sum" ]; then
+      echo "ERROR  $name sudah pernah dijalankan, tetapi isinya berubah." >&2
+      echo "       Kembalikan file itu, lalu tulis perubahan di migration baru." >&2
+      exit 1
+    fi
+    echo "skip   $name"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  echo "apply  $name"
+  {
+    echo "BEGIN;"
+    cat "$f"
+    echo ""
+    echo "INSERT INTO schema_migrations (filename, checksum) VALUES (:'name', :'sum');"
+    echo "COMMIT;"
+  } | psql_run -v name="$name" -v sum="$sum"
+  applied=$((applied + 1))
+done
+
+if [ "$found" -eq 0 ]; then
+  echo "ERROR  tidak ada file .sql di $MIGRATIONS_DIR" >&2
+  exit 1
+fi
+echo "migrate selesai: $applied dijalankan, $skipped dilewati"
+```
+
+2. Tulis SQL role aplikasi. File ini idempotent: membuat role bila belum ada, lalu selalu menyetel ulang password dan hak aksesnya. `ALTER DEFAULT PRIVILEGES` memastikan tabel dari migration berikutnya otomatis bisa diakses. Tabel `schema_migrations` dicabut dari role aplikasi:
+
+`packages/db/scripts/app_role.sql`
+
+```sql
+-- =====================================================================
+-- app_role.sql  -  Role database untuk aplikasi (Nuxt server).
+--
+-- Migration dijalankan oleh pemilik schema (POSTGRES_USER). Aplikasi
+-- login sebagai role terpisah yang hanya boleh baca/tulis data:
+-- tidak boleh DDL, bukan superuser, tanpa BYPASSRLS. Ini prasyarat
+-- RLS di kemudian hari, dan membatasi dampak bila aplikasi bocor.
+--
+-- Idempotent. Dipanggil oleh scripts/app_role.sh dengan variabel psql:
+--   -v app_user=...  -v app_password=...
+-- =====================================================================
+
+SELECT format('CREATE ROLE %I LOGIN', :'app_user')
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user')
+\gexec
+
+SELECT format('ALTER ROLE %I WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L',
+              :'app_user', :'app_password')
+\gexec
+
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'app_user')
+\gexec
+
+GRANT USAGE ON SCHEMA public TO :"app_user";
+
+-- Tabel & sequence yang sudah ada ...
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO :"app_user";
+GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO :"app_user";
+
+-- ... dan yang dibuat migration berikutnya oleh role yang sama.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO :"app_user";
+
+-- Catatan migration hanya urusan runner.
+REVOKE ALL ON TABLE schema_migrations FROM :"app_user";
+```
+
+3. Bungkus dengan skrip shell yang mengirim nama dan password role sebagai variabel psql:
+
+`packages/db/scripts/app_role.sh`
+
+```sh
+#!/bin/sh
+# app_role.sh  -  Membuat/memperbarui role aplikasi (lihat app_role.sql).
+# Butuh APP_DB_USER dan APP_DB_PASSWORD. Dilewati bila APP_DB_USER kosong.
+set -eu
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+export PGOPTIONS="${PGOPTIONS:-} -c client_min_messages=warning"
+
+if [ -z "${APP_DB_USER:-}" ]; then
+  echo "app_role dilewati (APP_DB_USER kosong)"
+  exit 0
+fi
+: "${APP_DB_PASSWORD:?APP_DB_PASSWORD wajib diisi bila APP_DB_USER diisi}"
+
+psql -X -q -v ON_ERROR_STOP=1 \
+     -v app_user="$APP_DB_USER" -v app_password="$APP_DB_PASSWORD" \
+     -f "$DIR/app_role.sql"
+echo "app_role $APP_DB_USER siap"
+```
+
+4. Tulis skrip pemuat data contoh. Skrip ini hanya menjalankan setiap file `seed/*.sql`; isi data contohnya Anda tulis sendiri sesuai kebutuhan, dan setiap file seed harus idempotent (mis. `INSERT ... ON CONFLICT DO NOTHING`). Jangan pernah jalankan di produksi:
+
+`packages/db/scripts/seed.sh`
+
+```sh
+#!/bin/sh
+# seed.sh  -  Mengisi data contoh development. Semua file seed idempotent,
+# jadi aman dijalankan berulang. JANGAN dijalankan di produksi.
+set -eu
+
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+export PGOPTIONS="${PGOPTIONS:-} -c client_min_messages=warning"
+
+for f in "$DIR"/seed/*.sql; do
+  [ -e "$f" ] || { echo "tidak ada file seed"; exit 0; }
+  echo "seed   $(basename "$f")"
+  psql -X -q -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
+5. Tulis entry point service `db-migrate` yang merangkai ketiganya:
+
+`packages/db/scripts/setup.sh`
+
+```sh
+#!/bin/sh
+# setup.sh  -  Entry point service db-migrate di docker-compose:
+#   1. migration   2. role aplikasi   3. seed dev (bila SEED_DEV_DATA=true)
+set -eu
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+
+sh "$DIR/migrate.sh"
+sh "$DIR/app_role.sh"
+
+if [ "${SEED_DEV_DATA:-false}" = "true" ]; then
+  sh "$DIR/seed.sh"
+else
+  echo "seed dilewati (SEED_DEV_DATA bukan true)"
+fi
+
+echo "database $PGDATABASE siap"
+```
+
+6. Nyalakan stack dan periksa hasilnya:
+
+```bash
+docker compose up -d
+docker compose logs db-migrate     # harus berakhir dengan "database blog_dev siap"
+```
+
+7. Untuk menambah perubahan schema di kemudian hari: buat file baru `packages/db/migrations/0002_deskripsi.sql`, jalankan `pnpm db:migrate`, lalu `pnpm db:pull` (bab Drizzle). Jangan pernah mengedit file migration yang sudah dijalankan.
+
+# Menguji Integritas Database
+
+1. Setiap aturan di database harus punya test yang gagal bila aturan itu dilanggar. Tulis test dalam SQL murni di `packages/db/tests/integrity_test.sql`. Seluruh file berjalan dalam satu transaksi lalu `ROLLBACK`, jadi data tidak berubah.
+2. Siapkan tiga helper di awal file: "SQL ini harus gagal dengan SQLSTATE tertentu", "kondisi ini harus benar", dan "rencana query harus memakai index tertentu".
+3. Kelompokkan 42 test:
+
+| Kelompok | Jumlah | Contoh |
+|---|---|---|
+| Relasi lintas site ditolak | 10 | Artikel site B memakai kategori site A; logo site memakai media site lain |
+| Keunikan dan format | 11 | Domain huruf besar, protokol, port; dua theme aktif; slug sama di site berbeda diterima |
+| Status dan isi | 7 | PUBLISHED tanpa tanggal; body tanpa blocks; menu `javascript:` dan `//host` |
+| ON DELETE dan trigger | 6 | Hapus media → `featured_media_id` NULL, `site_id` tetap; kategori berisi artikel tidak bisa dihapus |
+| Query publik | 3 | Feed tanpa draft dan artikel terjadwal; pencarian |
+| Hard delete site | 1 | Tidak ada baris tersisa |
+| Index pada 100.000 artikel | 4 | Feed, listing kategori, pencarian, cek slug |
+
+4. Test ini membaca dua site contoh (site A dan site B) dari data seed Anda. Sesuaikan UUID di bagian atas file dengan data seed yang Anda tulis:
+
+`packages/db/tests/integrity_test.sql`
+
+```sql
+-- =====================================================================
+-- integrity_test.sql  -  Uji integritas schema v1 (jalankan setelah seed)
+-- Seluruh file berjalan di dalam satu transaksi lalu ROLLBACK, jadi data
+-- seed tidak berubah. Gagal satu test = psql berhenti (ON_ERROR_STOP).
+--   Site A = kabar-tekno     01930000-0000-7000-8000-000000000101
+--   Site B = dapur-nusantara 01930000-0000-7000-8000-000000000102
+-- =====================================================================
+
+\set ON_ERROR_STOP on
+\set QUIET on
+SET client_min_messages = notice;
+\o /dev/null
+
+BEGIN;
+
+-- Helper: jalankan SQL, harus gagal dengan SQLSTATE tertentu.
+CREATE FUNCTION pg_temp.expect_error(label text, expected_state text, stmt text) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  BEGIN
+    EXECUTE stmt;
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLSTATE = expected_state THEN
+      RAISE NOTICE 'PASS  %', label;
+      RETURN;
+    END IF;
+    RAISE EXCEPTION 'FAIL  % -> expected SQLSTATE %, got % (%)', label, expected_state, SQLSTATE, SQLERRM;
+  END;
+  RAISE EXCEPTION 'FAIL  % -> statement succeeded, expected SQLSTATE %', label, expected_state;
+END
+$$;
+
+-- Helper: kondisi harus benar.
+CREATE FUNCTION pg_temp.expect_true(label text, cond boolean) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF cond IS TRUE THEN
+    RAISE NOTICE 'PASS  %', label;
+  ELSE
+    RAISE EXCEPTION 'FAIL  % -> condition is %', label, cond;
+  END IF;
+END
+$$;
+
+-- Helper: rencana query harus memakai index tertentu.
+CREATE FUNCTION pg_temp.expect_index(label text, index_name text, stmt text) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  line text;
+  plan text := '';
+BEGIN
+  FOR line IN EXECUTE 'EXPLAIN ' || stmt LOOP
+    plan := plan || line || E'\n';
+  END LOOP;
+  IF position(index_name IN plan) > 0 THEN
+    RAISE NOTICE 'PASS  %', label;
+  ELSE
+    RAISE EXCEPTION 'FAIL  % -> % not used. Plan:%', label, index_name, E'\n' || plan;
+  END IF;
+END
+$$;
+
+\echo '--- 1. Relasi lintas site ditolak database (composite FK) ---'
+SELECT pg_temp.expect_error('artikel site B memakai kategori site A', '23503', $q$
+  INSERT INTO articles (site_id, category_id, title, slug)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000000401', 'x', 'x-1') $q$);
+SELECT pg_temp.expect_error('artikel site A memakai author site B', '23503', $q$
+  INSERT INTO articles (site_id, category_id, author_id, title, slug)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000401',
+          '01930000-0000-7000-8000-000000000311', 'x', 'x-2') $q$);
+SELECT pg_temp.expect_error('artikel site A memakai featured media site B', '23503', $q$
+  INSERT INTO articles (site_id, category_id, featured_media_id, title, slug)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000401',
+          '01930000-0000-7000-8000-000000000212', 'x', 'x-3') $q$);
+SELECT pg_temp.expect_error('tag site B dipasang ke artikel site A', '23503', $q$
+  INSERT INTO article_tags (site_id, article_id, tag_id)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000601',
+          '01930000-0000-7000-8000-000000000511') $q$);
+SELECT pg_temp.expect_error('parent kategori dari site lain', '23503', $q$
+  INSERT INTO categories (site_id, parent_id, name, slug)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000000401', 'x', 'x') $q$);
+SELECT pg_temp.expect_error('menu item site A menunjuk halaman site B', '23503', $q$
+  INSERT INTO menu_items (site_id, menu_id, label, item_type, page_id)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000801', 'x', 'PAGE',
+          '01930000-0000-7000-8000-000000000712') $q$);
+SELECT pg_temp.expect_error('parent menu item dari menu lain', '23503', $q$
+  INSERT INTO menu_items (site_id, menu_id, parent_id, label, item_type, url)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000802',
+          '01930000-0000-7000-8000-000000000902', 'x', 'ROUTE', '/x') $q$);
+SELECT pg_temp.expect_error('menu item: site_id tidak cocok dengan menu', '23503', $q$
+  INSERT INTO menu_items (site_id, menu_id, label, item_type, url)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000811', 'x', 'ROUTE', '/x') $q$);
+SELECT pg_temp.expect_error('author ditautkan ke user yang bukan anggota site', '23503', $q$
+  INSERT INTO authors (site_id, user_id, name, slug)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000000002', 'x', 'x') $q$);
+SELECT pg_temp.expect_error('logo site memakai media site lain', '23503', $q$
+  UPDATE sites SET logo_media_id = '01930000-0000-7000-8000-000000000212'
+   WHERE id = '01930000-0000-7000-8000-000000000101' $q$);
+
+\echo '--- 2. Keunikan dan format ---'
+SELECT pg_temp.expect_error('domain duplikat', '23505', $q$
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'tekno.local.test') $q$);
+SELECT pg_temp.expect_error('domain huruf besar', '23514', $q$
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'Tekno.Local.Test') $q$);
+SELECT pg_temp.expect_error('domain dengan protokol', '23514', $q$
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'https://x.local.test') $q$);
+SELECT pg_temp.expect_error('domain dengan port', '23514', $q$
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'x.local.test:3000') $q$);
+SELECT pg_temp.expect_error('dua domain primary dalam satu site', '23505', $q$
+  INSERT INTO site_domains (site_id, domain, is_primary) VALUES ('01930000-0000-7000-8000-000000000101', 'tekno2.local.test', true) $q$);
+SELECT pg_temp.expect_error('dua theme aktif dalam satu site', '23505', $q$
+  UPDATE site_themes SET is_active = true WHERE id = '01930000-0000-7000-8000-000000000142' $q$);
+SELECT pg_temp.expect_error('config template duplikat untuk site yang sama', '23505', $q$
+  INSERT INTO site_themes (site_id, template_key, template_version) VALUES ('01930000-0000-7000-8000-000000000101', 'magazine', '1.0.0') $q$);
+SELECT pg_temp.expect_error('versi template bukan semver', '23514', $q$
+  INSERT INTO site_themes (site_id, template_key, template_version) VALUES ('01930000-0000-7000-8000-000000000101', 'blog', 'v1') $q$);
+SELECT pg_temp.expect_error('slug artikel duplikat dalam satu site', '23505', $q$
+  INSERT INTO articles (site_id, category_id, title, slug)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000401', 'x', 'ponsel-lipat-makin-murah') $q$);
+INSERT INTO articles (site_id, category_id, title, slug)
+VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000000411', 'Slug sama, site beda', 'ponsel-lipat-makin-murah');
+SELECT pg_temp.expect_true('slug sama di site berbeda diterima',
+  (SELECT count(*) FROM articles WHERE slug = 'ponsel-lipat-makin-murah') = 2);
+SELECT pg_temp.expect_error('slug dengan spasi/huruf besar', '23514', $q$
+  INSERT INTO tags (site_id, name, slug) VALUES ('01930000-0000-7000-8000-000000000101', 'x', 'Judul Besar') $q$);
+
+\echo '--- 3. Aturan status dan isi ---'
+SELECT pg_temp.expect_error('PUBLISHED tanpa published_at', '23514', $q$
+  INSERT INTO articles (site_id, category_id, title, slug, status)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000401', 'x', 'x-4', 'PUBLISHED') $q$);
+SELECT pg_temp.expect_error('status tidak dikenal', '23514', $q$
+  INSERT INTO articles (site_id, category_id, title, slug, status)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000401', 'x', 'x-5', 'SCHEDULED') $q$);
+SELECT pg_temp.expect_error('body tanpa array blocks', '23514', $q$
+  INSERT INTO articles (site_id, category_id, title, slug, body)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000401', 'x', 'x-6', '[{"type":"paragraph"}]') $q$);
+SELECT pg_temp.expect_error('menu CATEGORY tanpa category_id', '23514', $q$
+  INSERT INTO menu_items (site_id, menu_id, label, item_type)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000801', 'x', 'CATEGORY') $q$);
+SELECT pg_temp.expect_error('menu URL plus category_id sekaligus', '23514', $q$
+  INSERT INTO menu_items (site_id, menu_id, label, item_type, url, category_id)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000801', 'x', 'URL',
+          'https://a.b', '01930000-0000-7000-8000-000000000401') $q$);
+SELECT pg_temp.expect_error('menu URL javascript:', '23514', $q$
+  INSERT INTO menu_items (site_id, menu_id, label, item_type, url)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000801', 'x', 'URL', 'javascript:alert(1)') $q$);
+SELECT pg_temp.expect_error('menu ROUTE protocol-relative //host', '23514', $q$
+  INSERT INTO menu_items (site_id, menu_id, label, item_type, url)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000801', 'x', 'ROUTE', '//evil.example') $q$);
+
+\echo '--- 4. Perilaku ON DELETE dan trigger ---'
+DELETE FROM media WHERE id = '01930000-0000-7000-8000-000000000202';
+SELECT pg_temp.expect_true('hapus media: featured_media_id jadi NULL, site_id tetap',
+  (SELECT featured_media_id IS NULL AND site_id = '01930000-0000-7000-8000-000000000101'
+     FROM articles WHERE id = '01930000-0000-7000-8000-000000000601'));
+DELETE FROM site_members WHERE user_id = '01930000-0000-7000-8000-000000000002';
+SELECT pg_temp.expect_true('hapus anggota: author.user_id jadi NULL, author tetap ada',
+  (SELECT user_id IS NULL FROM authors WHERE id = '01930000-0000-7000-8000-000000000302'));
+SELECT pg_temp.expect_error('hapus kategori yang masih punya artikel', '23503', $q$
+  DELETE FROM categories WHERE id = '01930000-0000-7000-8000-000000000402' $q$);
+INSERT INTO categories (id, site_id, name, slug)
+VALUES ('01930000-0000-7000-8000-00000000c001', '01930000-0000-7000-8000-000000000101', 'Sementara', 'sementara');
+INSERT INTO menu_items (site_id, menu_id, label, item_type, category_id)
+VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000000801', 'Sementara', 'CATEGORY',
+        '01930000-0000-7000-8000-00000000c001');
+DELETE FROM categories WHERE id = '01930000-0000-7000-8000-00000000c001';
+SELECT pg_temp.expect_true('hapus kategori kosong: item menu yang menunjuknya ikut terhapus',
+  NOT EXISTS (SELECT 1 FROM menu_items WHERE label = 'Sementara'));
+UPDATE articles SET updated_at = '2000-01-01' WHERE id = '01930000-0000-7000-8000-000000000602';
+UPDATE articles SET title = title || ' (revisi)' WHERE id = '01930000-0000-7000-8000-000000000602';
+SELECT pg_temp.expect_true('trigger updated_at berjalan',
+  (SELECT updated_at > '2000-01-02' FROM articles WHERE id = '01930000-0000-7000-8000-000000000602'));
+SELECT pg_temp.expect_true('uuidv7(): versi UUID = 7',
+  (SELECT substr(uuidv7()::text, 15, 1) = '7'));
+
+\echo '--- 5. Query publik ---'
+SELECT pg_temp.expect_true('feed publik site A: hanya 2 artikel (tanpa draft & terjadwal)',
+  (SELECT count(*) = 2 FROM articles
+    WHERE site_id = '01930000-0000-7000-8000-000000000101'
+      AND status = 'PUBLISHED' AND published_at <= now()));
+SELECT pg_temp.expect_true('feed publik site B tidak memuat artikel site A',
+  (SELECT bool_and(site_id = '01930000-0000-7000-8000-000000000102') FROM articles
+    WHERE site_id = '01930000-0000-7000-8000-000000000102'
+      AND status = 'PUBLISHED' AND published_at <= now()));
+SELECT pg_temp.expect_true('pencarian "rendang" di site B menemukan 1 artikel',
+  (SELECT count(*) = 1 FROM articles
+    WHERE site_id = '01930000-0000-7000-8000-000000000102'
+      AND status = 'PUBLISHED' AND published_at <= now()
+      AND search_vector @@ plainto_tsquery('simple', 'rendang')));
+
+\echo '--- 6. Hard delete site membersihkan semua datanya ---'
+INSERT INTO sites (id, code, name) VALUES ('01930000-0000-7000-8000-00000000d001', 'site-sementara', 'Sementara');
+INSERT INTO site_domains (site_id, domain, is_primary) VALUES ('01930000-0000-7000-8000-00000000d001', 'tmp.local.test', true);
+INSERT INTO media (id, site_id, storage_key, mime_type, size_bytes)
+VALUES ('01930000-0000-7000-8000-00000000d002', '01930000-0000-7000-8000-00000000d001', 'tmp/logo.png', 'image/png', 10);
+UPDATE sites SET logo_media_id = '01930000-0000-7000-8000-00000000d002' WHERE id = '01930000-0000-7000-8000-00000000d001';
+INSERT INTO categories (id, site_id, name, slug) VALUES ('01930000-0000-7000-8000-00000000d003', '01930000-0000-7000-8000-00000000d001', 'Umum', 'umum');
+INSERT INTO tags (id, site_id, name, slug) VALUES ('01930000-0000-7000-8000-00000000d004', '01930000-0000-7000-8000-00000000d001', 'T', 't');
+INSERT INTO articles (id, site_id, category_id, featured_media_id, title, slug)
+VALUES ('01930000-0000-7000-8000-00000000d005', '01930000-0000-7000-8000-00000000d001', '01930000-0000-7000-8000-00000000d003',
+        '01930000-0000-7000-8000-00000000d002', 'A', 'a');
+INSERT INTO article_tags (site_id, article_id, tag_id)
+VALUES ('01930000-0000-7000-8000-00000000d001', '01930000-0000-7000-8000-00000000d005', '01930000-0000-7000-8000-00000000d004');
+INSERT INTO menus (id, site_id, location, name) VALUES ('01930000-0000-7000-8000-00000000d006', '01930000-0000-7000-8000-00000000d001', 'header', 'H');
+INSERT INTO menu_items (site_id, menu_id, label, item_type, article_id)
+VALUES ('01930000-0000-7000-8000-00000000d001', '01930000-0000-7000-8000-00000000d006', 'A', 'ARTICLE', '01930000-0000-7000-8000-00000000d005');
+DELETE FROM sites WHERE id = '01930000-0000-7000-8000-00000000d001';
+SELECT pg_temp.expect_true('tidak ada baris tersisa milik site yang dihapus',
+  (SELECT (SELECT count(*) FROM site_domains WHERE site_id = '01930000-0000-7000-8000-00000000d001')
+        + (SELECT count(*) FROM media        WHERE site_id = '01930000-0000-7000-8000-00000000d001')
+        + (SELECT count(*) FROM articles     WHERE site_id = '01930000-0000-7000-8000-00000000d001')
+        + (SELECT count(*) FROM article_tags WHERE site_id = '01930000-0000-7000-8000-00000000d001')
+        + (SELECT count(*) FROM menu_items   WHERE site_id = '01930000-0000-7000-8000-00000000d001') = 0));
+
+\echo '--- 7. Index dipakai pada 100.000 artikel ---'
+INSERT INTO articles (site_id, category_id, title, slug, body_text, status, published_at)
+SELECT '01930000-0000-7000-8000-000000000101',
+       CASE WHEN g % 2 = 0 THEN '01930000-0000-7000-8000-000000000401'::uuid
+            ELSE '01930000-0000-7000-8000-000000000402'::uuid END,
+       'Artikel uji ' || g,
+       'uji-' || g,
+       'isi artikel uji nomor ' || g || CASE WHEN g % 1000 = 0 THEN ' kata-langka' ELSE '' END,
+       CASE WHEN g % 10 = 0 THEN 'DRAFT' ELSE 'PUBLISHED' END,
+       CASE WHEN g % 10 = 0 THEN NULL ELSE now() - make_interval(mins => g) END
+  FROM generate_series(1, 100000) AS g;
+ANALYZE articles;
+ANALYZE article_tags;
+
+SELECT pg_temp.expect_index('feed publik memakai idx_articles_public_feed', 'idx_articles_public_feed', $q$
+  SELECT id, title FROM articles
+   WHERE site_id = '01930000-0000-7000-8000-000000000101'
+     AND status = 'PUBLISHED' AND published_at <= now()
+   ORDER BY published_at DESC LIMIT 20 $q$);
+SELECT pg_temp.expect_index('listing kategori memakai idx_articles_public_category', 'idx_articles_public_category', $q$
+  SELECT id, title FROM articles
+   WHERE site_id = '01930000-0000-7000-8000-000000000101'
+     AND category_id = '01930000-0000-7000-8000-000000000402'
+     AND status = 'PUBLISHED' AND published_at <= now()
+   ORDER BY published_at DESC LIMIT 20 $q$);
+SELECT pg_temp.expect_index('pencarian memakai idx_articles_search', 'idx_articles_search', $q$
+  SELECT id FROM articles
+   WHERE site_id = '01930000-0000-7000-8000-000000000101'
+     AND search_vector @@ plainto_tsquery('simple', 'kata-langka') $q$);
+SELECT pg_temp.expect_index('cek slug memakai uq_articles_site_slug', 'uq_articles_site_slug', $q$
+  SELECT id FROM articles
+   WHERE site_id = '01930000-0000-7000-8000-000000000101' AND slug = 'uji-500' $q$);
+
+\echo '--- SEMUA TEST LULUS ---'
+ROLLBACK;
+```
+
+5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan:
+   - migration dijalankan dua kali (run kedua harus melewati semua file),
+   - runner harus menolak migration yang diubah,
+   - role aplikasi dibuat,
+   - seed dijalankan dua kali (jumlah baris harus sama),
+   - 42 test integritas,
+   - role aplikasi bisa baca/tulis tetapi tidak bisa membuat tabel, menghapus tabel, atau membaca `schema_migrations`.
+6. `APP_DB_PASSWORD` wajib dan sengaja tidak punya default. Role PostgreSQL berlaku untuk seluruh server, jadi password yang dipasang skrip ini juga menjadi password `blog_app` milik database dev. Default yang berbeda dari `.env` akan diam-diam merusak koneksi aplikasi.
+
+`packages/db/run_all.sh`
+
+```bash
+#!/usr/bin/env bash
+# =====================================================================
+# run_all.sh  -  Uji lengkap packages/db pada database baru:
+#   1. migration (2x; run kedua harus melewati semua file)
+#   2. runner menolak migration yang sudah diubah
+#   3. role aplikasi
+#   4. seed (2x; jumlah baris harus sama)
+#   5. 42 test integritas
+#   6. hak akses role aplikasi
+#
+# Pemakaian:  APP_DB_PASSWORD=... ./run_all.sh [nama_db]
+# Koneksi lewat PGHOST, PGPORT, PGUSER, PGPASSWORD (pemilik schema).
+# Di Docker: docker compose --profile test run --rm db-test
+#
+# APP_DB_PASSWORD wajib dan tidak punya default: role PostgreSQL berlaku
+# untuk seluruh server, jadi password yang dipasang di sini juga menjadi
+# password blog_app milik database dev. Pakai nilai yang sama dengan .env.
+# =====================================================================
+set -euo pipefail
+
+DB="${1:-blog_framework_test}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_USER="${APP_DB_USER:-blog_app}"
+APP_PASS="${APP_DB_PASSWORD:?APP_DB_PASSWORD wajib diisi (samakan dengan .env); tidak ada default agar password blog_app di database dev tidak tertimpa}"
+export PGOPTIONS="-c client_min_messages=warning"
+
+pass() { echo "PASS  $*"; }
+fail() { echo "FAIL  $*"; exit 1; }
+
+dropdb --if-exists "$DB"
+createdb "$DB"
+export PGDATABASE="$DB"
+echo "== PostgreSQL $(psql -X -tA -c 'show server_version') / database $DB"
+
+echo "== 1. Migration"
+sh "$DIR/scripts/migrate.sh"
+OUT="$(sh "$DIR/scripts/migrate.sh")"
+echo "$OUT"
+if grep -q '^apply' <<<"$OUT"; then fail "runner menjalankan ulang migration"; fi
+pass "runner idempotent"
+
+echo "== 2. Migration yang diubah"
+TMP="$(mktemp -d)"
+cp "$DIR"/migrations/*.sql "$TMP"/
+echo "-- perubahan diam-diam" >> "$TMP/$(ls "$DIR/migrations" | head -n1)"
+if MIGRATIONS_DIR="$TMP" sh "$DIR/scripts/migrate.sh" >/dev/null 2>&1; then
+  rm -rf "$TMP"; fail "runner menerima migration yang sudah diubah"
+fi
+rm -rf "$TMP"
+pass "runner menolak migration yang sudah diubah"
+
+echo "== 3. Role aplikasi"
+APP_DB_USER="$APP_USER" APP_DB_PASSWORD="$APP_PASS" sh "$DIR/scripts/app_role.sh"
+
+count_rows() {
+  psql -X -tA -c "
+    SELECT string_agg(t || '=' || n, ' ' ORDER BY t) FROM (
+      SELECT 'sites' t, count(*) n FROM sites UNION ALL
+      SELECT 'site_domains', count(*) FROM site_domains UNION ALL
+      SELECT 'site_themes', count(*) FROM site_themes UNION ALL
+      SELECT 'site_members', count(*) FROM site_members UNION ALL
+      SELECT 'users', count(*) FROM users UNION ALL
+      SELECT 'media', count(*) FROM media UNION ALL
+      SELECT 'authors', count(*) FROM authors UNION ALL
+      SELECT 'categories', count(*) FROM categories UNION ALL
+      SELECT 'tags', count(*) FROM tags UNION ALL
+      SELECT 'articles', count(*) FROM articles UNION ALL
+      SELECT 'article_tags', count(*) FROM article_tags UNION ALL
+      SELECT 'article_revisions', count(*) FROM article_revisions UNION ALL
+      SELECT 'pages', count(*) FROM pages UNION ALL
+      SELECT 'menus', count(*) FROM menus UNION ALL
+      SELECT 'menu_items', count(*) FROM menu_items UNION ALL
+      SELECT 'redirects', count(*) FROM redirects) x"
+}
+
+echo "== 4. Seed"
+sh "$DIR/scripts/seed.sh"
+FIRST="$(count_rows)"
+sh "$DIR/scripts/seed.sh" >/dev/null
+SECOND="$(count_rows)"
+echo "   $FIRST"
+[[ "$FIRST" == "$SECOND" ]] || fail "seed tidak idempotent (run 2: $SECOND)"
+pass "seed idempotent"
+
+echo "== 5. Integrity tests"
+psql -X -f "$DIR/tests/integrity_test.sql" 2>&1 | sed -e 's/^psql:[^:]*:[0-9]*: NOTICE:  //'
+
+echo "== 6. Hak akses role aplikasi ($APP_USER)"
+app_psql() { PGUSER="$APP_USER" PGPASSWORD="$APP_PASS" psql -X -tA -v ON_ERROR_STOP=1 "$@"; }
+n="$(app_psql -c "SELECT count(*) FROM articles WHERE status = 'PUBLISHED'")"
+[[ "$n" -ge 1 ]] || fail "role aplikasi tidak bisa membaca articles"
+pass "role aplikasi bisa membaca data ($n artikel PUBLISHED)"
+app_psql -c "BEGIN; UPDATE articles SET title = title WHERE false; INSERT INTO tags (site_id, name, slug)
+             VALUES ('01930000-0000-7000-8000-000000000101', 'uji', 'uji-hak-akses'); ROLLBACK;" >/dev/null \
+  || fail "role aplikasi tidak bisa INSERT/UPDATE"
+pass "role aplikasi bisa INSERT/UPDATE"
+if app_psql -c "CREATE TABLE uji_ddl (id int)" >/dev/null 2>&1; then fail "role aplikasi bisa membuat tabel"; fi
+pass "role aplikasi tidak bisa membuat tabel"
+if app_psql -c "DROP TABLE redirects" >/dev/null 2>&1; then fail "role aplikasi bisa menghapus tabel"; fi
+pass "role aplikasi tidak bisa menghapus tabel"
+if app_psql -c "SELECT 1 FROM schema_migrations" >/dev/null 2>&1; then fail "role aplikasi bisa membaca schema_migrations"; fi
+pass "role aplikasi tidak bisa membaca schema_migrations"
+
+echo "== SELESAI: semua pemeriksaan lulus"
+```
+
+7. Jalankan:
+
+```bash
+docker compose --profile test run --rm db-test
+# harus berakhir dengan "SELESAI: semua pemeriksaan lulus"
+```
+
+# Menyiapkan TypeScript, ESLint, dan Vitest
+
+1. Pasang tooling di root:
+
+```bash
+pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^10.0.1 \
+  typescript-eslint@~8.72.2 globals@^17.14.0 vitest@^5.1.0
+```
+
+2. Buat `tsconfig.base.json` mode strict yang dipakai semua paket. Opsi `noUncheckedIndexedAccess` dan `noPropertyAccessFromIndexSignature` membuat akses ke array dan JSON lebih jujur:
+
+`tsconfig.base.json`
+
+```jsonc
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
+```
+
+3. Buat `tsconfig.json` root untuk typecheck config tooling, test lintas paket, dan seluruh kode paket. Aplikasi Nuxt nanti memakai tsconfig dari Nuxt:
+
+`tsconfig.json`
+
+```jsonc
+{
+  // Typecheck root: config tooling + test arsitektur. Setiap package
+  // membuat tsconfig.json sendiri yang extends tsconfig.base.json saat
+  // kodenya mulai ditulis; apps/web memakai tsconfig dari Nuxt (M2).
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["*.ts", "tests/**/*.ts", "packages/*/src/**/*.ts", "packages/*/*.ts"]
+}
+```
+
+4. Tulis `eslint.config.js` (flat config). Bagian terpenting adalah aturan `no-restricted-imports`:
+   - File di `templates/**` hanya boleh import `@framework/template-kit` dan `@framework/template-base`. Import core, db, driver database, atau path relatif ke `apps/`/`packages/` ditolak.
+   - `packages/template-kit` tidak boleh bergantung pada core atau database.
+   - File schema hasil generate (bab Drizzle) tidak di-lint.
+   - Blok untuk file `.vue` (`eslint-plugin-vue`) baru dipasang di bab "Memeriksa Komponen Vue dengan ESLint dan vue-tsc". Lewati dulu blok itu bila Anda mengikuti urutan bab.
+
+`eslint.config.js`
+
+```js
+import js from '@eslint/js'
+import { defineConfig, globalIgnores } from 'eslint/config'
+import globals from 'globals'
+import tseslint from 'typescript-eslint'
+import pluginVue from 'eslint-plugin-vue'
+
+// Paket yang mengakses data. Template dan template-kit tidak boleh
+// bergantung padanya (lihat docs/adr/005-kontrak-template.md).
+const DATA_LAYER = ['@framework/core', '@framework/db', 'drizzle-orm', 'drizzle-orm/*', 'pg', 'postgres']
+
+export default defineConfig(
+  globalIgnores([
+    '**/node_modules/',
+    '**/.nuxt/',
+    '**/.output/',
+    '**/dist/',
+    '**/coverage/',
+    '_archive/',
+  ]),
+  js.configs.recommended,
+  tseslint.configs.recommended,
+
+  // File .vue: aturan Vue yang disarankan. Blok <script lang="ts"> diparse
+  // dengan parser typescript-eslint, sehingga aturan import di bawah juga
+  // berlaku untuk komponen template.
+  pluginVue.configs['flat/recommended'],
+  {
+    files: ['**/*.vue'],
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+    // Nama yang tidak terdefinisi diperiksa vue-tsc (pnpm typecheck), seperti
+    // typescript-eslint mematikan aturan ini untuk .ts. Tanpa ini, auto-import
+    // Nuxt (useState, useRequestEvent, ...) dianggap error.
+    rules: { 'no-undef': 'off' },
+  },
+
+  // Script dan config yang jalan di Node.
+  {
+    files: ['**/*.{js,mjs}', '**/scripts/**', '*.config.ts', 'packages/*/*.config.ts'],
+    languageOptions: { globals: globals.node },
+  },
+
+  // File hasil generate drizzle-kit pull: tidak diedit tangan, jadi tidak di-lint.
+  globalIgnores(['packages/db/src/schema/schema.ts', 'packages/db/src/schema/relations.ts']),
+
+  // Template hanya boleh memakai kontrak template (template-kit) dan
+  // komponen dasar (template-base). Tidak boleh core, db, atau driver
+  // database, dan tidak boleh menembus ke folder apps/ atau packages/
+  // lewat path relatif.
+  {
+    files: ['templates/**/*.{js,ts,mts,vue}'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          {
+            group: ['@framework/*', '!@framework/template-kit', '!@framework/template-kit/*', '!@framework/template-base', '!@framework/template-base/*'],
+            message: 'Template hanya boleh import @framework/template-kit dan @framework/template-base (ADR-005).',
+          },
+          {
+            group: DATA_LAYER.filter((p) => !p.startsWith('@framework/')),
+            message: 'Template tidak boleh mengakses database; data datang dari view model core (ADR-005).',
+          },
+          {
+            regex: '^(\\.\\./)+(apps|packages)(/|$)',
+            message: 'Template tidak boleh import kode apps/ atau packages/ lewat path relatif (ADR-005).',
+          },
+        ],
+      }],
+    },
+  },
+
+  // Kode aplikasi Vue (apps/web/app) dirender di browser dan di bundle SSR
+  // Vue. Entry @framework/core membawa @framework/db dan driver pg, yang
+  // rusak bila ikut di-bundle di sana. Dari kedua paket itu hanya boleh
+  // import tipe; fungsi murni lewat subpath seperti @framework/core/media.
+  // Data dari database datang lewat server/ (event.context, server API).
+  {
+    files: ['apps/web/app/**/*.{js,ts,mts,vue}'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: ['@framework/core', '@framework/db'].map((name) => ({
+          name,
+          allowTypeImports: true,
+          message: 'Kode app/ hanya boleh import tipe dari paket ini; pakai subpath murni (mis. @framework/core/media) atau ambil data lewat server/.',
+        })),
+        patterns: [{
+          group: DATA_LAYER.filter((p) => !p.startsWith('@framework/')),
+          message: 'Driver database tidak boleh di kode app/ (ikut ke bundle browser).',
+        }],
+      }],
+    },
+  },
+
+  // Kontrak template tidak boleh bergantung pada database.
+  {
+    files: ['packages/template-kit/**/*.{js,ts,mts}'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          group: DATA_LAYER,
+          message: 'template-kit tidak boleh bergantung pada core atau database (ADR-005).',
+        }],
+      }],
+    },
+  },
+)
+```
+
+5. Buat `vitest.config.ts`. Config ini ikut membaca `.env` lokal, sehingga test yang butuh database menemukan `DATABASE_URL`. Di mesin tanpa `.env`, test database otomatis dilewati. Plugin Vue baru ditambahkan di bab "Membangun Sistem Template":
+
+`vitest.config.ts`
+
+```ts
+import { existsSync, readFileSync } from 'node:fs'
+import { parseEnv } from 'node:util'
+import vue from '@vitejs/plugin-vue'
+import { defineConfig } from 'vitest/config'
+
+// .env lokal (mis. DATABASE_URL) ikut terbaca; di CI tanpa .env, test yang
+// butuh database otomatis dilewati.
+const envFile = new URL('.env', import.meta.url)
+const env = existsSync(envFile) ? parseEnv(readFileSync(envFile, 'utf8')) : {}
+
+// plugin-vue: test template merender komponen .vue (SSR) tanpa Nuxt.
+export default defineConfig({
+  plugins: [vue()],
+  test: {
+    include: ['**/*.test.ts'],
+    exclude: ['**/node_modules/**', '_archive/**', '**/.nuxt/**', '**/.output/**'],
+    env,
+  },
+})
+```
+
+6. Tulis test pertama, yaitu test arsitektur. Test ini memastikan aturan import di ESLint benar-benar menolak template yang mengakses data dan tetap mengizinkan import yang sah. Tanpa test ini, aturan ESLint bisa rusak diam-diam. Kasus komponen `.vue` ditambahkan di bab Vue, dan aturan kode `app/` di bab "Membangun Sistem Template":
+
+`tests/architecture.test.ts`
+
+```ts
+// Test arsitektur: aturan import di eslint.config.js benar-benar menolak
+// template yang mengakses data, dan tetap mengizinkan import yang sah.
+// Bila test ini gagal, template bisa diam-diam bergantung pada core/db
+// dan tidak lagi bisa ditukar (ADR-005).
+import { ESLint } from 'eslint'
+import { describe, expect, it } from 'vitest'
+
+const eslint = new ESLint()
+
+async function restrictedImportErrors(code: string, filePath: string): Promise<string[]> {
+  const [result] = await eslint.lintText(code, { filePath })
+  return (result?.messages ?? [])
+    .filter((m) => m.ruleId === 'no-restricted-imports' || m.ruleId === '@typescript-eslint/no-restricted-imports')
+    .map((m) => m.message)
+}
+
+describe('aturan import template', () => {
+  const file = 'templates/magazine/src/views/Home.ts'
+
+  it.each([
+    ['core', "import { getFeed } from '@framework/core'"],
+    ['db', "import { db } from '@framework/db'"],
+    ['driver drizzle', "import { eq } from 'drizzle-orm'"],
+    ['driver pg', "import pg from 'pg'"],
+    ['path relatif ke packages/', "import x from '../../../packages/core/src/index'"],
+  ])('menolak import %s', async (_label, code) => {
+    expect(await restrictedImportErrors(`${code}\nexport { }`, file)).toHaveLength(1)
+  })
+
+  it.each([
+    ['template-kit', "import { defineTemplate } from '@framework/template-kit'"],
+    ['template-base', "import base from '@framework/template-base'"],
+    ['file di template sendiri', "import Card from './components/Card'"],
+  ])('mengizinkan import %s', async (_label, code) => {
+    expect(await restrictedImportErrors(`${code}\nexport { }`, file)).toEqual([])
+  })
+
+  // Komponen .vue: import di <script setup lang="ts"> kena aturan yang sama.
+  const vueFile = 'templates/magazine/src/components/ArticleCard.vue'
+  const vue = (code: string) => `<script setup lang="ts">\n${code}\n</script>\n\n<template>\n  <div />\n</template>\n`
+
+  it.each([
+    ['core', "import { getFeed } from '@framework/core'"],
+    ['db', "import { db } from '@framework/db'"],
+    ['driver pg', "import pg from 'pg'"],
+  ])('menolak import %s di komponen .vue', async (_label, code) => {
+    expect(await restrictedImportErrors(vue(code), vueFile)).toHaveLength(1)
+  })
+
+  it('mengizinkan import template-kit di komponen .vue', async () => {
+    const code = "import type { ArticleCardView } from '@framework/template-kit'"
+    expect(await restrictedImportErrors(vue(code), vueFile)).toEqual([])
+  })
+
+  it('komponen .vue diparse tanpa error sintaks', async () => {
+    const [result] = await eslint.lintText(vue("const title: string = 'Judul'\nconsole.log(title)"), { filePath: vueFile })
+    expect(result?.messages.filter((m) => m.fatal)).toEqual([])
+  })
+
+  it('template-kit tidak boleh import core', async () => {
+    const errors = await restrictedImportErrors(
+      "import { getFeed } from '@framework/core'\nexport { }",
+      'packages/template-kit/src/index.ts',
+    )
+    expect(errors).toHaveLength(1)
+  })
+
+  it('core boleh import db (aturan hanya berlaku untuk template)', async () => {
+    const errors = await restrictedImportErrors(
+      "import { db } from '@framework/db'\nexport { }",
+      'packages/core/src/index.ts',
+    )
+    expect(errors).toEqual([])
+  })
+})
+
+describe('aturan import kode app/ (Vue)', () => {
+  const file = 'apps/web/app/plugins/site.server.ts'
+
+  it.each([
+    ['nilai dari core', "import { createRepositories } from '@framework/core'"],
+    ['nilai dari db', "import { sql } from '@framework/db'"],
+    ['driver pg', "import pg from 'pg'"],
+  ])('menolak %s', async (_label, code) => {
+    expect(await restrictedImportErrors(`${code}\nexport { }`, file)).toHaveLength(1)
+  })
+
+  it.each([
+    ['tipe dari core', "import type { SiteInfo } from '@framework/core'"],
+    ['subpath murni core/media', "import { toImageView } from '@framework/core/media'"],
+    ['template-kit', "import { createTemplateRegistry } from '@framework/template-kit'"],
+  ])('mengizinkan %s', async (_label, code) => {
+    expect(await restrictedImportErrors(`${code}\nexport { }`, file)).toEqual([])
+  })
+
+  it('kode server/ boleh import core', async () => {
+    expect(await restrictedImportErrors("import { createRepositories } from '@framework/core'\nexport { }", 'apps/web/server/utils/database.ts')).toEqual([])
+  })
+})
+```
+
+7. Jalankan `pnpm check` (lint + typecheck + test). Semuanya harus hijau sebelum lanjut.
+
+# Mencatat Keputusan Arsitektur dengan ADR
+
+1. Karena dikerjakan sendirian tanpa reviewer, keputusan yang mahal diubah ditulis sebagai ADR (Architecture Decision Record) di `docs/adr/NNN-judul.md`. Cukup lima bagian: Konteks, Keputusan, Alternatif yang ditolak, Konsekuensi, Status.
+2. Buat indeks ADR. ADR-006 dan ADR-007 ditambahkan di bab "Membangun Halaman Publik dari View Model":
+
+`docs/adr/README.md`
+
+```markdown
+# Architecture Decision Records
+
+Satu file per keputusan yang mahal diubah: `NNN-judul.md`, dengan bagian Konteks, Keputusan,
+Alternatif yang ditolak, Konsekuensi, dan Status (Diusulkan, Diterima, Diganti oleh ADR-NNN).
+
+| ADR | Keputusan | Status |
+| --- | --- | --- |
+| [001](001-mode-deploy.md) | Satu schema, dua mode deploy (single-site / multi-site) | Diterima |
+| [002](002-nuxt-tanpa-nestjs.md) | Satu aplikasi Nuxt, tanpa NestJS | Diterima |
+| [003](003-migration-sql-tangan.md) | Migration ditulis SQL tangan | Diterima |
+| [004](004-versi-drizzle.md) | Drizzle 1.0.0-rc.5, dipasang persis | Diterima |
+| [005](005-kontrak-template.md) | Kontrak template: komponen sama, tampilan berbeda | Diterima |
+| [006](006-skema-url.md) | Skema URL publik: permalink artikel per site, prefix Inggris, `/p/{slug}`, `?page=N` | Diterima |
+| [007](007-render-halaman-server.md) | Halaman publik dirender penuh di server; view model dibangun di Nitro | Diterima |
+```
+
+3. ADR-001, mode deploy. Satu schema, dua mode, dan konsekuensinya: repository tetap wajib menerima `siteId` walau berjalan di mode single-site, dan tidak boleh ada global state di SSR:
+
+`docs/adr/001-mode-deploy.md`
+
+```markdown
+# ADR-001: Satu schema, dua mode deploy
+
+- Status: Diterima
+- Tanggal: 2026-11-17
+
+## Konteks
+
+Framework ini harus bisa menjadi beberapa produk blog dengan tampilan berbeda. Sebagian site
+dijalankan sendiri sebagai jaringan site milik pribadi; sebagian lain mungkin diserahkan atau
+dijual terpisah dan butuh isolasi penuh. Keputusan ini memengaruhi schema database, cara site
+dipilih pada setiap request, dan template mana yang di-bundle.
+
+## Keputusan
+
+Satu codebase dan satu schema dijalankan dalam dua mode. Mode dipilih lewat konfigurasi saat
+deploy, bukan lewat schema.
+
+| Mode | Cara site dipilih | Database | Template di-bundle |
+| --- | --- | --- | --- |
+| Single-site | env `SITE_CODE`; domain tetap dicek | Database sendiri per produk | Hanya yang dipakai (env `TEMPLATES`) |
+| Multi-site | Host request → `site_domains` | Satu database bersama | Semua template terdaftar |
+
+Setiap tabel milik site punya `site_id NOT NULL`, dan relasi antar tabel milik site memakai
+composite FK `(site_id, x_id) → (site_id, id)`, di kedua mode.
+
+## Alternatif yang ditolak
+
+- **Schema per site (PostgreSQL schema terpisah).** Migration harus dijalankan N kali dan
+  query lintas site untuk superadmin jadi rumit.
+- **Database per site saja.** Biaya server naik untuk jaringan site milik sendiri.
+- **Multi-site saja.** Tidak memberi isolasi penuh untuk produk yang diserahkan ke pihak lain.
+
+## Konsekuensi
+
+- Primary key memakai UUIDv7, jadi satu site bisa dipindah antar database dengan menyalin baris
+  ber-`site_id` yang sama tanpa bentrok ID.
+- Kode tidak boleh mengandalkan "hanya ada satu site" walau berjalan di mode single-site:
+  repository tetap wajib menerima `siteId`.
+- Tidak boleh ada global state di SSR; cache key selalu memuat site.
+```
+
+4. ADR-002, satu aplikasi Nuxt tanpa NestJS. Logika domain ada di `packages/core` yang tidak bergantung pada Nuxt, agar bisa dipindah ke server lain bila suatu saat perlu:
+
+`docs/adr/002-nuxt-tanpa-nestjs.md`
+
+```markdown
+# ADR-002: Satu aplikasi Nuxt, tanpa NestJS
+
+- Status: Diterima
+- Tanggal: 2026-11-17
+
+## Konteks
+
+Dokumen rancangan lama memakai Nuxt untuk tampilan dan NestJS terpisah untuk API, ditambah
+Redis/BullMQ, dengan asumsi 2 developer. Proyek ini dikerjakan solo, dan belum ada pihak
+ketiga yang butuh API.
+
+## Keputusan
+
+Satu aplikasi Nuxt 4 (`apps/web`) melayani public site, `/admin`, dan server routes. Logika
+domain ada di `packages/core` dan dipanggil dari server routes. Server routes ditulis memakai
+import `nuxt/server` (diperkenalkan di Nuxt 4.6) agar upgrade ke Nuxt 5 murah.
+
+## Alternatif yang ditolak
+
+- **NestJS terpisah sejak awal.** Dua aplikasi, dua deploy, dan kontrak HTTP internal yang
+  harus dirawat tanpa ada konsumen lain.
+- **Redis/BullMQ sejak awal.** Belum ada job berat; artikel terjadwal cukup memakai
+  `published_at` di masa depan.
+
+## Konsekuensi
+
+- `packages/core` tidak boleh bergantung pada Nuxt atau h3, agar bisa dipasang ke NestJS bila
+  nanti API dibuka untuk aplikasi mobile atau pihak ketiga.
+- Queue baru ditambah saat fitur AI atau scheduler berbasis event masuk (M6+).
+```
+
+5. ADR-003, migration ditulis SQL tangan:
+
+`docs/adr/003-migration-sql-tangan.md`
+
+```markdown
+# ADR-003: Migration ditulis SQL tangan
+
+- Status: Diterima
+- Tanggal: 2026-11-17
+
+## Konteks
+
+Integritas multi-site dijaga oleh database: composite FK, partial unique index, CHECK
+constraint, `ON DELETE SET NULL (kolom)`, generated column untuk pencarian, dan trigger.
+Generator migration ORM tidak selalu menghasilkan fitur ini dengan benar, dan hasilnya sulit
+diaudit.
+
+## Keputusan
+
+- Migration ditulis SQL di `packages/db/migrations/NNNN_deskripsi.sql`, tanpa `BEGIN`/`COMMIT`.
+- Runner `packages/db/scripts/migrate.sh` menjalankan file berurutan, satu transaksi per file,
+  dan menyimpan checksum di `schema_migrations`.
+- Migration append-only: file yang sudah dijalankan di luar laptop tidak diedit; perubahan
+  ditulis di file baru. Runner menolak file yang checksum-nya berubah.
+- Aplikasi terhubung sebagai `blog_app` (hanya DML), bukan pemilik schema.
+
+## Alternatif yang ditolak
+
+- **drizzle-kit generate/migrate.** Database menjadi turunan kode TypeScript, padahal di sini
+  database adalah kontrak produk.
+- **Tool migration terpisah (Flyway, dbmate, sqitch).** Runner shell sekitar 80 baris sudah
+  cukup dan tidak menambah dependency.
+
+## Konsekuensi
+
+- Schema Drizzle dibuat dari database (`drizzle-kit pull`), lalu dicek: composite FK dan
+  partial index harus terbaca benar.
+- Setiap aturan baru di database butuh test di `packages/db/tests/integrity_test.sql`.
+- `run_all.sh` (50 pemeriksaan) dijalankan di CI terhadap PostgreSQL 18.
+```
+
+6. ADR-004, versi Drizzle. Periksa kanal rilis di npm saat Anda membaca ini, karena versinya mungkin sudah berubah:
+
+`docs/adr/004-versi-drizzle.md`
+
+```markdown
+# ADR-004: Versi Drizzle
+
+- Status: Diterima
+- Tanggal: 2026-11-17
+
+## Konteks
+
+Drizzle hanya dipakai sebagai query builder bertipe dan untuk `drizzle-kit pull`; migration
+ditulis SQL (ADR-003). Per 17 Nov 2026 di npm:
+
+| Kanal | drizzle-orm | drizzle-kit | Rilis |
+| --- | --- | --- | --- |
+| `latest` (stabil) | 0.45.4 | 0.31.11 | 8 Okt 2026 |
+| `rc` | 1.0.0-rc.5 | 1.0.0-rc.5 | 21 Okt 2026 |
+
+Drizzle 1.0 mengubah struktur folder migration dan API relasi. Struktur folder migration tidak
+berdampak di sini; perubahan API relasi berdampak ke semua query yang memakai relasi.
+
+## Keputusan
+
+Mulai M1 dengan **drizzle-orm dan drizzle-kit 1.0.0-rc.5**, versi dipasang persis (tanpa `^`).
+Naik ke 1.0.0 stabil begitu dirilis. Bila RC menghalangi pekerjaan (bug pada introspeksi
+PostgreSQL atau composite FK), turun ke 0.45.x dan catat di ADR ini.
+
+## Alternatif yang ditolak
+
+- **0.45.x stabil sekarang, upgrade nanti.** Semua query relasi yang ditulis selama M1 sampai
+  M4 harus ditulis ulang saat pindah ke API relasi 1.0.
+- **Tanpa ORM (SQL mentah + tipe tulisan tangan).** Tipe hasil query mudah tidak sinkron
+  dengan schema; Drizzle memberi tipe dari `drizzle-kit pull`.
+
+## Konsekuensi
+
+- Versi RC dipasang persis agar perubahan antar-RC tidak masuk diam-diam.
+- Test repository di `packages/core` (M1) menjadi pengaman saat upgrade RC ke stabil.
+- Keputusan ini perlu ditinjau lagi sebelum produksi pertama (M5).
+```
+
+7. ADR-005, kontrak template: komponen sama, tampilan berbeda:
+
+`docs/adr/005-kontrak-template.md`
+
+```markdown
+# ADR-005: Kontrak template
+
+- Status: Diterima
+- Tanggal: 2026-11-17
+
+## Konteks
+
+Setiap site punya tampilan berbeda, tetapi alur bisnis, alur data konten, dan komponen UI-nya
+sama. Yang berbeda antar site adalah tampilan serta menu dan submenu yang mengikuti konten.
+Template harus bisa ditambah dan ditukar tanpa mengubah core.
+
+## Keputusan
+
+1. **Core memegang route dan data; template hanya tampilan.** Template menerima view model dari
+   `packages/core` dan tidak pernah query database.
+2. **Komponen sama, tampilan berbeda.** Semua template memakai komponen UI dari
+   `templates/base`. Perbedaan antar site datang dari design token (CSS variable), CSS
+   template, susunan section (`site_themes.layouts`), serta menu dan submenu dari `menus` dan
+   `menu_items`. Override komponen adalah pengecualian: hanya bila tampilan yang dibutuhkan
+   tidak bisa dicapai lewat token, CSS, atau opsi, dan setiap override dicatat dengan ADR.
+3. **Template adalah paket dengan manifest berversi** (`defineTemplate` dari
+   `@framework/template-kit`), memakai semver. Versi mayor wajib menyertakan `migrateConfig`.
+4. **Arah dependency** dijaga ESLint (`eslint.config.js`) dan diuji di
+   `tests/architecture.test.ts`:
+   - `templates/*` hanya boleh import `@framework/template-kit` dan `@framework/template-base`;
+     tidak boleh `@framework/core`, `@framework/db`, driver database, atau path relatif ke
+     `apps/` dan `packages/`.
+   - `packages/template-kit` tidak boleh bergantung pada core atau database.
+5. **View model adalah kontrak publik.** Menambah field aman; menghapus atau mengganti nama
+   field = versi mayor template-kit.
+
+## Alternatif yang ditolak
+
+- **Union TypeScript tertutup berisi daftar template** (dokumen lama). Menambah template berarti
+  mengedit core, tanpa versi atau pewarisan.
+- **Setiap template punya set komponen sendiri.** Bertentangan dengan kebutuhan bahwa komponen
+  UI semua site sama, dan menggandakan pekerjaan setiap ada perubahan komponen.
+
+## Konsekuensi
+
+- `templates/base` harus lengkap dan netral: semua view, header, footer, kartu artikel,
+  renderer setiap tipe block, pagination, 404.
+- Template kedua (`news`, M3) harus terlihat berbeda jelas tanpa override komponen. Bila itu
+  memaksa perubahan core, kontrak diperbaiki saat itu juga dan dicatat sebagai ADR.
+- Seluruh halaman dibungkus kelas root (mis. `.tpl-magazine`) agar CSS antar-template tidak
+  bocor di mode multi-site.
+```
+
+# Menghubungkan Aplikasi ke Database dengan Drizzle
+
+1. Drizzle hanya dipakai sebagai query builder bertipe. Arah alirannya: SQL migration → database → schema TypeScript (lewat `drizzle-kit pull`). Jangan pernah memakai `drizzle-kit generate`, `migrate`, atau `push`.
+2. Ubah `packages/db/package.json`: pasang `drizzle-orm` dan `drizzle-kit` dengan versi persis (tanpa `^`, sesuai ADR-004), driver `pg`, dan script `pull`:
+
+`packages/db/package.json`
+
+```json
+{
+  "name": "@framework/db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Migration SQL, seed, test integritas, schema Drizzle",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "pull": "node scripts/pull-schema.mjs"
+  },
+  "dependencies": {
+    "drizzle-orm": "1.0.0-rc.5",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "1.0.0-rc.5"
+  }
+}
+```
+
+3. Beri paket ini `tsconfig.json` sendiri:
+
+`packages/db/tsconfig.json`
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "*.ts"]
+}
+```
+
+4. Tulis `drizzle.config.ts`. Config ini dipakai hanya untuk `pull`, membaca `DATABASE_URL` dari `.env` root, mengabaikan `schema_migrations`, dan menghasilkan nama kolom camelCase:
+
+`packages/db/drizzle.config.ts`
+
+```ts
+// drizzle-kit dipakai HANYA untuk `pull` (schema TypeScript dari database).
+// Migration ditulis SQL tangan di migrations/ (ADR-003); jangan pakai
+// drizzle-kit generate/migrate/push.
+import { existsSync } from 'node:fs'
+import { defineConfig } from 'drizzle-kit'
+
+const rootEnv = new URL('../../.env', import.meta.url)
+if (!process.env['DATABASE_URL'] && existsSync(rootEnv)) process.loadEnvFile(rootEnv)
+
+const url = process.env['DATABASE_URL']
+if (!url) throw new Error('DATABASE_URL belum di-set (lihat .env.example)')
+
+export default defineConfig({
+  dialect: 'postgresql',
+  dbCredentials: { url },
+  out: './drizzle',
+  schemaFilter: ['public'],
+  // Catatan runner, bukan bagian schema aplikasi; blog_app juga tidak punya akses.
+  tablesFilter: ['!schema_migrations'],
+  introspect: { casing: 'camel' },
+})
+```
+
+5. `drizzle-kit pull` juga menulis `migration.sql` dan snapshot. Keduanya tidak dipakai, jadi bungkus perintahnya dengan skrip yang hanya menyalin `schema.ts` dan `relations.ts` ke `src/schema/`, menambah header "jangan diedit tangan", lalu membuang sisanya:
+
+`packages/db/scripts/pull-schema.mjs`
+
+```js
+// pull-schema.mjs  -  Membuat ulang src/schema/{schema,relations}.ts dari
+// database lewat `drizzle-kit pull`.
+//
+// drizzle-kit pull juga menulis migration.sql + snapshot.json; keduanya
+// dibuang karena migration ditulis tangan di migrations/ (ADR-003).
+// Jalankan setelah migration baru diterapkan:  pnpm db:migrate && pnpm db:pull
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const pkgDir = fileURLToPath(new URL('..', import.meta.url))
+const outDir = fileURLToPath(new URL('../drizzle', import.meta.url)) // sama dengan `out` di drizzle.config.ts
+const schemaDir = fileURLToPath(new URL('../src/schema', import.meta.url))
+
+const HEADER = `// =====================================================================
+// FILE HASIL GENERATE - jangan diedit tangan.
+// Sumber: database setelah migrations/*.sql dijalankan.
+// Buat ulang: pnpm db:pull   (packages/db/scripts/pull-schema.mjs)
+//
+// Schema ini hanya untuk query bertipe. Constraint ditegakkan database;
+// mis. ON DELETE SET NULL (kolom) tertulis di sini sebagai "set null" saja.
+// =====================================================================
+`
+
+rmSync(outDir, { recursive: true, force: true })
+const pull = spawnSync('drizzle-kit', ['pull'], { cwd: pkgDir, stdio: 'inherit', shell: process.platform === 'win32' })
+if (pull.status !== 0) process.exit(pull.status ?? 1)
+
+mkdirSync(schemaDir, { recursive: true })
+for (const file of ['schema.ts', 'relations.ts']) {
+  const generated = readFileSync(`${outDir}/${file}`, 'utf8')
+  writeFileSync(`${schemaDir}/${file}`, HEADER + generated)
+  console.log(`tulis  src/schema/${file}`)
+}
+rmSync(outDir, { recursive: true, force: true })
+```
+
+6. Jalankan `pnpm db:pull`. Hasilnya `packages/db/src/schema/schema.ts` dan `relations.ts`. Kedua file ini hasil generate; buat ulang setiap kali ada migration baru, jangan diedit tangan.
+7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar:
+
+`packages/db/src/schema/schema.test.ts`
+
+```ts
+// Memastikan schema hasil `drizzle-kit pull` membaca constraint penting
+// dengan benar: composite FK antar-site dan partial index publik.
+import { getColumnTable, getTableName, is } from 'drizzle-orm'
+import { getTableConfig, PgDialect, PgTable, type PgColumn } from 'drizzle-orm/pg-core'
+import { describe, expect, it } from 'vitest'
+import * as schema from './schema'
+
+const tables = Object.values(schema as Record<string, unknown>).filter((v): v is PgTable => is(v, PgTable))
+const dialect = new PgDialect()
+
+const colNames = (cols: PgColumn[]) => cols.map((c) => c.name)
+const hasSiteId = (t: PgTable) => getTableConfig(t).columns.some((c) => c.name === 'site_id')
+
+function foreignKeys() {
+  return tables.flatMap((table) =>
+    getTableConfig(table).foreignKeys.map((fk) => {
+      const ref = fk.reference()
+      return {
+        name: fk.getName(),
+        table: getTableName(table),
+        columns: colNames(ref.columns),
+        foreignTable: ref.foreignTable,
+        foreignColumns: colNames(ref.foreignColumns),
+        onDelete: fk.onDelete,
+      }
+    }),
+  )
+}
+
+function index(tableName: string, indexName: string) {
+  const table = tables.find((t) => getTableName(t) === tableName)
+  const idx = table && getTableConfig(table).indexes.find((i) => i.config.name === indexName)
+  if (!idx) throw new Error(`index ${indexName} tidak ditemukan di ${tableName}`)
+  return {
+    unique: idx.config.unique,
+    columns: idx.config.columns.map((c) => (c as PgColumn).name),
+    where: idx.config.where ? dialect.sqlToQuery(idx.config.where).sql : undefined,
+  }
+}
+
+describe('schema hasil drizzle-kit pull', () => {
+  it('berisi 16 tabel, tanpa schema_migrations', () => {
+    const names = tables.map(getTableName)
+    expect(names).toHaveLength(16)
+    expect(names).not.toContain('schema_migrations')
+  })
+
+  it('setiap FK ke tabel milik site menyertakan site_id di kedua sisi', () => {
+    // FK parent menu item memakai (menu_id, parent_id): satu menu sudah pasti satu site
+    // karena menu_items -> menus juga composite FK lewat site_id.
+    const exempt = new Set(['fk_menu_items_parent_same_menu'])
+    const violations = foreignKeys()
+      .filter((fk) => !exempt.has(fk.name))
+      .filter((fk) => getTableName(fk.foreignTable) !== 'sites' && hasSiteId(fk.foreignTable))
+      .filter((fk) => {
+        const i = fk.foreignColumns.indexOf('site_id')
+        const local = fk.columns[i]
+        // sites.id berperan sebagai site_id untuk logo/favicon.
+        return i === -1 || (local !== 'site_id' && !(fk.table === 'sites' && local === 'id'))
+      })
+      .map((fk) => fk.name)
+    expect(violations).toEqual([])
+  })
+
+  it.each([
+    ['fk_articles_category_same_site', ['site_id', 'category_id'], 'categories', ['site_id', 'id'], 'no action'],
+    ['fk_articles_media_same_site', ['site_id', 'featured_media_id'], 'media', ['site_id', 'id'], 'set null'],
+    ['fk_article_tags_tag_same_site', ['site_id', 'tag_id'], 'tags', ['site_id', 'id'], 'cascade'],
+    ['fk_categories_parent_same_site', ['site_id', 'parent_id'], 'categories', ['site_id', 'id'], 'no action'],
+    ['fk_authors_member', ['site_id', 'user_id'], 'site_members', ['site_id', 'user_id'], 'set null'],
+    ['fk_sites_logo_same_site', ['id', 'logo_media_id'], 'media', ['site_id', 'id'], 'set null'],
+  ])('%s terbaca sebagai composite FK', (name, columns, foreignTable, foreignColumns, onDelete) => {
+    const fk = foreignKeys().find((f) => f.name === name)
+    expect(fk).toMatchObject({ columns, foreignColumns, onDelete })
+    expect(fk && getTableName(fk.foreignTable)).toBe(foreignTable)
+  })
+
+  it.each([
+    ['articles', 'idx_articles_public_feed', ['site_id', 'published_at'], "(status = 'PUBLISHED'::text)"],
+    ['articles', 'idx_articles_public_category', ['site_id', 'category_id', 'published_at'], "(status = 'PUBLISHED'::text)"],
+    ['articles', 'idx_articles_public_featured', ['site_id', 'published_at'], "((status = 'PUBLISHED'::text) AND is_featured)"],
+    ['site_domains', 'uq_site_domains_one_primary', ['site_id'], 'is_primary'],
+    ['site_themes', 'uq_site_themes_one_active', ['site_id'], 'is_active'],
+    ['authors', 'uq_authors_site_user', ['site_id', 'user_id'], '(user_id IS NOT NULL)'],
+  ])('partial index %s.%s terbaca dengan WHERE', (table, name, columns, where) => {
+    expect(index(table, name)).toMatchObject({ columns, where })
+  })
+
+  it('kolom tabel milik site memakai tabel yang benar', () => {
+    expect(getTableName(getColumnTable(schema.articles.siteId))).toBe('articles')
+  })
+})
+```
+
+8. Tulis pembuat koneksi. Tidak ada singleton di sini: pemanggil (aplikasi) yang menyimpan satu instance per proses dan menutup pool saat shutdown:
+
+`packages/db/src/client.ts`
+
+```ts
+import { drizzle } from 'drizzle-orm/node-postgres'
+import pg from 'pg'
+import { relations } from './schema/relations'
+
+export interface DatabaseOptions {
+  /** postgres://user:password@host:port/db  — aplikasi memakai role blog_app. */
+  connectionString: string
+  /** Jumlah koneksi maksimum di pool. Default 10. */
+  max?: number
+  /** Nama aplikasi yang terlihat di pg_stat_activity. */
+  applicationName?: string
+}
+
+export type Database = ReturnType<typeof createDatabase>
+
+/**
+ * Membuat pool + instance Drizzle. Tidak ada singleton di sini: pemanggil
+ * (apps/web) yang menyimpan satu instance per proses dan memanggil
+ * `$client.end()` saat shutdown.
+ */
+export function createDatabase(options: DatabaseOptions) {
+  const pool = new pg.Pool({
+    connectionString: options.connectionString,
+    max: options.max ?? 10,
+    application_name: options.applicationName ?? 'blog-framework',
+  })
+  return drizzle({ client: pool, relations })
+}
+
+/** Membaca DATABASE_URL dari environment; gagal dengan pesan jelas bila kosong. */
+export function databaseUrlFromEnv(env: Record<string, string | undefined> = process.env): string {
+  const url = env['DATABASE_URL']
+  if (!url) throw new Error('DATABASE_URL belum di-set (lihat .env.example)')
+  return url
+}
+```
+
+9. Tulis entry point paket. Operator query (`eq`, `and`, ...) diekspor ulang dari sini, sehingga hanya paket `db` yang bergantung langsung pada `drizzle-orm` dan hanya ada satu salinan Drizzle saat runtime:
+
+`packages/db/src/index.ts`
+
+```ts
+export { createDatabase, databaseUrlFromEnv } from './client'
+export type { Database, DatabaseOptions } from './client'
+export { relations } from './schema/relations'
+export * from './schema/schema'
+
+// Operator query diekspor ulang agar HANYA paket ini yang bergantung pada
+// drizzle-orm. Paket lain (core) memakai operator dari sini; dengan begitu
+// hanya ada satu salinan drizzle-orm di runtime.
+export { and, asc, count, desc, eq, inArray, isNotNull, lte, or, sql } from 'drizzle-orm'
+export type { SQL } from 'drizzle-orm'
+export type { PgColumn } from 'drizzle-orm/pg-core'
+```
+
+10. Test koneksi memastikan aplikasi terhubung sebagai `blog_app` (bukan pemilik schema) dan query relasional lewat composite FK berjalan. Test yang butuh database dilewati bila `DATABASE_URL` tidak ada:
+
+`packages/db/src/client.test.ts`
+
+```ts
+// Smoke test koneksi sebagai role aplikasi (blog_app) ke database dev yang
+// sudah di-seed (pnpm db:up). Dilewati bila DATABASE_URL tidak ada.
+import { eq } from 'drizzle-orm'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createDatabase, databaseUrlFromEnv } from './client'
+import { siteDomains, sites } from './schema/schema'
+
+const url = process.env['DATABASE_URL']
+
+describe('databaseUrlFromEnv', () => {
+  it('gagal dengan pesan jelas bila DATABASE_URL kosong', () => {
+    expect(() => databaseUrlFromEnv({})).toThrow(/DATABASE_URL/)
+  })
+})
+
+describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
+  const db = createDatabase({ connectionString: url ?? '', max: 2, applicationName: 'vitest' })
+  afterAll(() => db.$client.end())
+
+  it('terhubung sebagai role aplikasi, bukan pemilik schema', async () => {
+    const { rows } = await db.$client.query<{ current_user: string }>('SELECT current_user')
+    expect(rows[0]?.current_user).toBe('blog_app')
+  })
+
+  it('query builder: domain tekno.local.test milik site kabar-tekno', async () => {
+    const rows = await db
+      .select({ code: sites.code })
+      .from(siteDomains)
+      .innerJoin(sites, eq(sites.id, siteDomains.siteId))
+      .where(eq(siteDomains.domain, 'tekno.local.test'))
+    expect(rows).toEqual([{ code: 'kabar-tekno' }])
+  })
+
+  it('relational query: artikel memuat kategori lewat relasi composite', async () => {
+    const article = await db.query.articles.findFirst({
+      where: { slug: 'rendang-padang-empuk' },
+      with: { category: true },
+    })
+    expect(article?.category?.slug).toBe('sumatera')
+    expect(article?.category?.siteId).toBe(article?.siteId)
+  })
+})
+```
+
+# Memvalidasi Konten dengan Zod
+
+1. Buat paket `packages/core` untuk logika domain. Paket ini bergantung pada `@framework/db` dan Zod 4. Dependency `@framework/template-kit` dan subpath `./media` ditambahkan di bab "Membangun Sistem Template":
+
+`packages/core/package.json`
+
+```json
+{
+  "name": "@framework/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Domain: service, repository, validasi Zod, block schema, view model",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./media": "./src/media/storage.ts"
+  },
+  "dependencies": {
+    "@framework/db": "workspace:*",
+    "@framework/template-kit": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}
+```
+
+`packages/core/tsconfig.json`
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+2. Definisikan body artikel sebagai daftar block bertipe, versi 1, dengan enam tipe: paragraph, heading, image, quote, list, embed. Aturan pentingnya:
+   - Heading dimulai dari level 2, karena level 1 dipakai judul artikel.
+   - Gambar merujuk `mediaId`, bukan URL.
+   - Embed dibatasi ke penyedia yang dikenal dengan URL https; template membangun iframe sendiri dan tidak pernah menerima HTML mentah.
+   - Ada dua cara membaca body. `parseBody` ketat dan dipakai saat menyimpan. `parseBodyLenient` dipakai saat render: block yang rusak atau tidak dikenal dilewati dan dilaporkan, sehingga halaman tidak crash.
+
+`packages/core/src/content/blocks.ts`
+
+```ts
+// Block body v1: isi artikel dan halaman disimpan sebagai
+//   { "version": 1, "blocks": [ ... ] }
+// di kolom JSONB articles.body / pages.body. Database hanya menjaga bentuk
+// luarnya (CHECK articles_body_shape); isi tiap block divalidasi di sini.
+//
+// Aturan:
+//  - Teks selalu polos (bukan HTML), jadi aman dari XSS dan bisa dirender
+//    berbeda oleh tiap template.
+//  - Block baru atau perubahan bentuk block = naikkan BODY_VERSION dan
+//    tulis migrasi data; jangan mengubah bentuk block v1 diam-diam.
+//  - Tipe block yang tidak dikenal TIDAK boleh disimpan (schema ketat),
+//    tetapi saat dirender dilewati dan dicatat (parseBodyLenient).
+import { z } from 'zod'
+
+export const BODY_VERSION = 1
+
+const text = z.string().trim().min(1).max(20_000)
+const shortText = z.string().trim().min(1).max(1_000)
+const httpsUrl = z.url({ protocol: /^https$/ }).max(2_048)
+
+export const paragraphBlock = z.strictObject({
+  type: z.literal('paragraph'),
+  text,
+})
+
+export const headingBlock = z.strictObject({
+  type: z.literal('heading'),
+  // Level 1 dipakai judul artikel oleh template, jadi isi mulai dari 2.
+  level: z.union([z.literal(2), z.literal(3), z.literal(4)]),
+  text: shortText,
+})
+
+export const imageBlock = z.strictObject({
+  type: z.literal('image'),
+  // Harus media milik site yang sama; dicek di service saat menyimpan.
+  mediaId: z.uuid(),
+  caption: shortText.optional(),
+})
+
+export const quoteBlock = z.strictObject({
+  type: z.literal('quote'),
+  text,
+  cite: shortText.optional(),
+})
+
+export const listBlock = z.strictObject({
+  type: z.literal('list'),
+  style: z.enum(['bullet', 'numbered']),
+  items: z.array(shortText).min(1).max(200),
+})
+
+// Embed dibatasi ke penyedia yang dikenal dan URL https; template
+// membangun iframe sendiri dari provider + url, tidak menerima HTML.
+export const embedBlock = z.strictObject({
+  type: z.literal('embed'),
+  provider: z.enum(['youtube', 'vimeo', 'x']),
+  url: httpsUrl,
+})
+
+export const blockSchema = z.discriminatedUnion('type', [
+  paragraphBlock,
+  headingBlock,
+  imageBlock,
+  quoteBlock,
+  listBlock,
+  embedBlock,
+])
+
+export const bodySchema = z.strictObject({
+  version: z.literal(BODY_VERSION),
+  blocks: z.array(blockSchema).max(2_000),
+})
+
+export type Block = z.infer<typeof blockSchema>
+export type BlockType = Block['type']
+export type Body = z.infer<typeof bodySchema>
+
+export const BLOCK_TYPES = blockSchema.options.map((o) => o.shape.type.value) satisfies BlockType[]
+
+/** Body kosong yang sama dengan default kolom di database. */
+export const emptyBody = (): Body => ({ version: BODY_VERSION, blocks: [] })
+
+/** Validasi ketat untuk menyimpan: melempar ZodError bila ada yang salah. */
+export function parseBody(raw: unknown): Body {
+  return bodySchema.parse(raw)
+}
+
+export interface LenientBody {
+  body: Body
+  /** Block yang dilewati: tipe tidak dikenal atau bentuk tidak valid. */
+  skipped: { index: number; type: string | null; reason: string }[]
+}
+
+/**
+ * Untuk MEMBACA saat render: block yang tidak dikenal atau rusak dilewati
+ * dan dilaporkan, tidak membuat halaman crash. Bentuk luar (object dengan
+ * array blocks) tetap wajib; bila rusak, body dianggap kosong.
+ */
+export function parseBodyLenient(raw: unknown): LenientBody {
+  const outer = z.looseObject({ version: z.number(), blocks: z.array(z.unknown()) }).safeParse(raw)
+  if (!outer.success) {
+    return { body: emptyBody(), skipped: [{ index: -1, type: null, reason: 'bentuk body tidak valid' }] }
+  }
+
+  const blocks: Block[] = []
+  const skipped: LenientBody['skipped'] = []
+  outer.data.blocks.forEach((candidate, index) => {
+    const parsed = blockSchema.safeParse(candidate)
+    if (parsed.success) {
+      blocks.push(parsed.data)
+      return
+    }
+    const type = z.object({ type: z.string() }).safeParse(candidate)
+    const known = type.success && (BLOCK_TYPES as string[]).includes(type.data.type)
+    skipped.push({
+      index,
+      type: type.success ? type.data.type : null,
+      reason: known ? 'isi block tidak valid' : 'tipe block tidak dikenal',
+    })
+  })
+  return { body: { version: BODY_VERSION, blocks }, skipped }
+}
+```
+
+`packages/core/src/content/blocks.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { BLOCK_TYPES, bodySchema, emptyBody, parseBody, parseBodyLenient } from './blocks'
+
+const mediaId = '01930000-0000-7000-8000-000000000202'
+
+describe('block body v1', () => {
+  it('mendukung 6 tipe block', () => {
+    expect([...BLOCK_TYPES].sort()).toEqual(['embed', 'heading', 'image', 'list', 'paragraph', 'quote'])
+  })
+
+  it('menerima body kosong yang sama dengan default database', () => {
+    expect(parseBody(emptyBody())).toEqual({ version: 1, blocks: [] })
+    expect(parseBody({ version: 1, blocks: [] })).toEqual({ version: 1, blocks: [] })
+  })
+
+  it('menerima satu contoh valid untuk setiap tipe block', () => {
+    const body = {
+      version: 1,
+      blocks: [
+        { type: 'paragraph', text: 'Halo dunia.' },
+        { type: 'heading', level: 2, text: 'Bagian' },
+        { type: 'image', mediaId, caption: 'Keterangan' },
+        { type: 'quote', text: 'Kutipan.', cite: 'Seseorang' },
+        { type: 'list', style: 'numbered', items: ['satu', 'dua'] },
+        { type: 'embed', provider: 'youtube', url: 'https://www.youtube.com/watch?v=abc' },
+      ],
+    }
+    expect(parseBody(body)).toEqual(body)
+  })
+
+  it.each([
+    ['array tanpa pembungkus versi (format lama)', [{ type: 'paragraph', text: 'x' }]],
+    ['versi tidak dikenal', { version: 2, blocks: [] }],
+    ['tanpa versi', { blocks: [] }],
+    ['key tambahan di body', { version: 1, blocks: [], extra: true }],
+    ['tipe block tidak dikenal', { version: 1, blocks: [{ type: 'html', html: '<b>x</b>' }] }],
+    ['key tambahan di block (mis. html mentah)', { version: 1, blocks: [{ type: 'paragraph', text: 'x', html: '<b>x</b>' }] }],
+    ['paragraph kosong / spasi saja', { version: 1, blocks: [{ type: 'paragraph', text: '   ' }] }],
+    ['heading level 1', { version: 1, blocks: [{ type: 'heading', level: 1, text: 'x' }] }],
+    ['heading level 5', { version: 1, blocks: [{ type: 'heading', level: 5, text: 'x' }] }],
+    ['image tanpa mediaId', { version: 1, blocks: [{ type: 'image' }] }],
+    ['image dengan mediaId bukan UUID', { version: 1, blocks: [{ type: 'image', mediaId: 'logo.png' }] }],
+    ['list kosong', { version: 1, blocks: [{ type: 'list', style: 'bullet', items: [] }] }],
+    ['list style tidak dikenal', { version: 1, blocks: [{ type: 'list', style: 'roman', items: ['x'] }] }],
+    ['embed provider tidak dikenal', { version: 1, blocks: [{ type: 'embed', provider: 'evil', url: 'https://evil.test/x' }] }],
+    ['embed dengan http (bukan https)', { version: 1, blocks: [{ type: 'embed', provider: 'youtube', url: 'http://youtube.com/x' }] }],
+    ['embed dengan javascript:', { version: 1, blocks: [{ type: 'embed', provider: 'youtube', url: 'javascript:alert(1)' }] }],
+  ])('menolak: %s', (_label, body) => {
+    expect(bodySchema.safeParse(body).success).toBe(false)
+  })
+
+  it('memangkas spasi di tepi teks', () => {
+    const body = parseBody({ version: 1, blocks: [{ type: 'paragraph', text: '  halo  ' }] })
+    expect(body.blocks[0]).toEqual({ type: 'paragraph', text: 'halo' })
+  })
+})
+
+describe('parseBodyLenient (untuk render)', () => {
+  it('mempertahankan block valid dan melewati sisanya sambil melaporkan', () => {
+    const { body, skipped } = parseBodyLenient({
+      version: 1,
+      blocks: [
+        { type: 'paragraph', text: 'ok' },
+        { type: 'hologram', data: 1 },
+        { type: 'heading', level: 9, text: 'rusak' },
+        'bukan object',
+        { type: 'quote', text: 'ok juga' },
+      ],
+    })
+    expect(body.blocks.map((b) => b.type)).toEqual(['paragraph', 'quote'])
+    expect(skipped).toEqual([
+      { index: 1, type: 'hologram', reason: 'tipe block tidak dikenal' },
+      { index: 2, type: 'heading', reason: 'isi block tidak valid' },
+      { index: 3, type: null, reason: 'tipe block tidak dikenal' },
+    ])
+  })
+
+  it('tidak crash bila bentuk luar rusak; hasilnya body kosong', () => {
+    for (const raw of [null, undefined, 'teks', 42, [], { version: 1 }, { blocks: [] }]) {
+      const { body, skipped } = parseBodyLenient(raw)
+      expect(body).toEqual(emptyBody())
+      expect(skipped).toHaveLength(1)
+    }
+  })
+
+  it('menerima versi lain asal bentuk luarnya benar, dan menyaring block-nya', () => {
+    const { body, skipped } = parseBodyLenient({ version: 2, blocks: [{ type: 'paragraph', text: 'x' }] })
+    expect(body.blocks).toHaveLength(1)
+    expect(skipped).toEqual([])
+  })
+})
+```
+
+3. Tulis `extractBodyText()` untuk mengisi kolom `articles.body_text`, yang dipakai indeks pencarian. Caption gambar, sumber kutipan, dan embed tidak ikut. Blok `default` dengan tipe `never` membuat typecheck gagal bila tipe block baru ditambah tanpa ditangani di sini:
+
+`packages/core/src/content/extract-body-text.ts`
+
+```ts
+import type { Block, Body } from './blocks'
+
+/**
+ * Teks polos dari body untuk kolom articles.body_text, yang dipakai
+ * search_vector (konfigurasi 'simple', bobot C). Aplikasi wajib mengisinya
+ * setiap kali body berubah; database tidak mengekstraknya sendiri.
+ *
+ * Yang masuk: paragraph, heading, isi list, dan kutipan. Caption gambar,
+ * sumber kutipan, dan embed tidak ikut, agar pencarian tidak dipenuhi
+ * keterangan yang bukan isi tulisan.
+ * Antar-block digabung satu spasi dan semua whitespace dipadatkan, sama
+ * dengan data seed.
+ */
+export function extractBodyText(body: Pick<Body, 'blocks'>): string {
+  return body.blocks
+    .flatMap(blockText)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function blockText(block: Block): string[] {
+  switch (block.type) {
+    case 'paragraph':
+    case 'heading':
+    case 'quote':
+      return [block.text]
+    case 'list':
+      return block.items
+    case 'image':
+    case 'embed':
+      return []
+    default: {
+      // Pemeriksaan kelengkapan: menambah tipe block baru tanpa menangani
+      // di sini membuat typecheck gagal.
+      const unreachable: never = block
+      return unreachable
+    }
+  }
+}
+```
+
+`packages/core/src/content/extract-body-text.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { emptyBody, parseBody } from './blocks'
+import { extractBodyText } from './extract-body-text'
+
+const mediaId = '01930000-0000-7000-8000-000000000202'
+
+describe('extractBodyText', () => {
+  it('body kosong menghasilkan string kosong (default kolom body_text)', () => {
+    expect(extractBodyText(emptyBody())).toBe('')
+  })
+
+  it('menggabung paragraph, heading, list, dan quote dengan satu spasi', () => {
+    const body = parseBody({
+      version: 1,
+      blocks: [
+        { type: 'paragraph', text: 'Harga turun.' },
+        { type: 'heading', level: 2, text: 'Yang perlu dicek' },
+        { type: 'list', style: 'bullet', items: ['Engsel', 'Garansi'] },
+        { type: 'quote', text: 'Layak dibeli.', cite: 'Penguji' },
+      ],
+    })
+    expect(extractBodyText(body)).toBe('Harga turun. Yang perlu dicek Engsel Garansi Layak dibeli.')
+  })
+
+  it('tidak memasukkan caption gambar, sumber kutipan, maupun embed', () => {
+    const body = parseBody({
+      version: 1,
+      blocks: [
+        { type: 'image', mediaId, caption: 'Foto ponsel lipat' },
+        { type: 'quote', text: 'Isi kutipan', cite: 'Nama Sumber' },
+        { type: 'embed', provider: 'youtube', url: 'https://www.youtube.com/watch?v=abc' },
+      ],
+    })
+    const text = extractBodyText(body)
+    expect(text).toBe('Isi kutipan')
+    expect(text).not.toMatch(/ponsel|Sumber|youtube/)
+  })
+
+  it('memadatkan whitespace, termasuk baris baru di dalam teks', () => {
+    const body = parseBody({
+      version: 1,
+      blocks: [
+        { type: 'paragraph', text: 'baris satu\n\nbaris   dua' },
+        { type: 'paragraph', text: 'tiga' },
+      ],
+    })
+    expect(extractBodyText(body)).toBe('baris satu baris dua tiga')
+  })
+
+  it('body hanya berisi gambar menghasilkan string kosong', () => {
+    expect(extractBodyText(parseBody({ version: 1, blocks: [{ type: 'image', mediaId }] }))).toBe('')
+  })
+})
+```
+
+4. Definisikan skema `sites.settings`: tagline, pola permalink (wajib memuat `:slug`; token lain `:category`, `:year`, `:month`), SEO default (`titleTemplate` wajib memuat `%s`), link sosial (hanya https), dan ID analytics. Key yang tidak dikenal dibuang, bukan membuat validasi gagal, agar data lama tetap terbaca:
+
+`packages/core/src/site/settings.ts`
+
+```ts
+// Bentuk sites.settings (JSONB): identitas dan default non-visual sebuah
+// site. Tampilan (token, layout) ada di site_themes, bukan di sini.
+// Database hanya memastikan settings berupa object; isinya divalidasi di sini.
+import { z } from 'zod'
+
+const httpsUrl = z.url({ protocol: /^https$/ }).max(2_048)
+
+// Pola permalink artikel. Wajib memuat :slug; token lain yang boleh dipakai:
+//   :category (slug kategori), :year, :month
+const PERMALINK_TOKENS = [':category', ':year', ':month', ':slug'] as const
+const permalink = z
+  .string()
+  .max(200)
+  .refine((p) => p.startsWith('/') && !p.startsWith('//'), 'harus diawali satu "/"')
+  .refine((p) => p.split('/').filter(Boolean).every(isValidSegment), 'hanya :category, :year, :month, :slug')
+  .refine((p) => p.split('/').includes(':slug'), 'wajib memuat :slug sebagai satu segmen')
+
+function isValidSegment(segment: string): boolean {
+  return (PERMALINK_TOKENS as readonly string[]).includes(segment)
+}
+
+export const DEFAULT_PERMALINK = '/:category/:slug'
+
+export const siteSettingsSchema = z.object({
+  tagline: z.string().trim().max(160).optional(),
+  permalink: permalink.default(DEFAULT_PERMALINK),
+  seo: z
+    .object({
+      // Harus memuat %s, tempat judul halaman: "%s | Kabar Tekno".
+      titleTemplate: z.string().max(120).refine((t) => t.includes('%s'), 'harus memuat %s').optional(),
+      defaultDescription: z.string().trim().max(320).optional(),
+      // Media milik site; keanggotaan site dicek di service.
+      defaultOgImageId: z.uuid().optional(),
+    })
+    .default({}),
+  social: z
+    .object({
+      x: httpsUrl.optional(),
+      facebook: httpsUrl.optional(),
+      instagram: httpsUrl.optional(),
+      youtube: httpsUrl.optional(),
+      tiktok: httpsUrl.optional(),
+    })
+    .default({}),
+  analytics: z
+    .object({
+      googleAnalyticsId: z.string().regex(/^G-[A-Z0-9]{4,}$/).optional(),
+    })
+    .default({}),
+})
+
+export type SiteSettings = z.infer<typeof siteSettingsSchema>
+
+/**
+ * Membaca settings dari database atau input admin. Key yang tidak dikenal
+ * dibuang, default diisi. Melempar ZodError bila nilai yang dikenal tidak valid.
+ */
+export function parseSiteSettings(raw: unknown): SiteSettings {
+  return siteSettingsSchema.parse(raw)
+}
+```
+
+`packages/core/src/site/settings.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { DEFAULT_PERMALINK, parseSiteSettings, siteSettingsSchema } from './settings'
+
+describe('sites.settings', () => {
+  it('object kosong valid dan diisi default', () => {
+    expect(parseSiteSettings({})).toEqual({
+      permalink: DEFAULT_PERMALINK,
+      seo: {},
+      social: {},
+      analytics: {},
+    })
+  })
+
+  it('menerima settings kedua site di data seed', () => {
+    const tekno = parseSiteSettings({
+      tagline: 'Teknologi tanpa jargon',
+      permalink: '/:category/:slug',
+      seo: { titleTemplate: '%s | Kabar Tekno', defaultDescription: 'Berita dan ulasan teknologi.' },
+    })
+    expect(tekno.seo.titleTemplate).toBe('%s | Kabar Tekno')
+
+    const dapur = parseSiteSettings({
+      tagline: 'Resep rumahan dari seluruh Indonesia',
+      permalink: '/:category/:slug',
+      seo: { titleTemplate: '%s - Dapur Nusantara', defaultDescription: 'Resep dan cerita kuliner Nusantara.' },
+    })
+    expect(dapur.tagline).toBe('Resep rumahan dari seluruh Indonesia')
+  })
+
+  it.each(['/:slug', '/:category/:slug', '/:year/:month/:slug'])(
+    'permalink %s valid',
+    (permalink) => {
+      expect(siteSettingsSchema.safeParse({ permalink }).success).toBe(true)
+    },
+  )
+
+  it.each([
+    ['tanpa :slug', '/:category'],
+    ['tidak diawali /', ':category/:slug'],
+    ['protocol-relative //host', '//evil.test/:slug'],
+    ['token tidak dikenal', '/:author/:slug'],
+    ['teks tetap dicampur token', '/berita-:slug'],
+    ['URL penuh', 'https://evil.test/:slug'],
+  ])('permalink ditolak: %s', (_label, permalink) => {
+    expect(siteSettingsSchema.safeParse({ permalink }).success).toBe(false)
+  })
+
+  it('titleTemplate wajib memuat %s', () => {
+    expect(siteSettingsSchema.safeParse({ seo: { titleTemplate: 'Kabar Tekno' } }).success).toBe(false)
+  })
+
+  it('link sosial hanya https; javascript: dan http ditolak', () => {
+    expect(siteSettingsSchema.safeParse({ social: { x: 'https://x.com/kabartekno' } }).success).toBe(true)
+    expect(siteSettingsSchema.safeParse({ social: { x: 'javascript:alert(1)' } }).success).toBe(false)
+    expect(siteSettingsSchema.safeParse({ social: { x: 'http://x.com/kabartekno' } }).success).toBe(false)
+  })
+
+  it('ID Google Analytics harus berformat G-XXXX', () => {
+    expect(siteSettingsSchema.safeParse({ analytics: { googleAnalyticsId: 'G-ABC123XYZ' } }).success).toBe(true)
+    expect(siteSettingsSchema.safeParse({ analytics: { googleAnalyticsId: 'UA-1234-1' } }).success).toBe(false)
+  })
+
+  it('membuang key yang tidak dikenal alih-alih gagal (data lama tetap terbaca)', () => {
+    const parsed = parseSiteSettings({ tagline: 'x', fieldLama: 'abc', seo: { warisan: 1 } })
+    expect(parsed).not.toHaveProperty('fieldLama')
+    expect(parsed.seo).toEqual({})
+  })
+})
+```
+
+5. Tulis test konsistensi yang membaca database: semua body di database lolos skema block, `body_text` sama dengan hasil `extractBodyText(body)`, dan settings setiap site lolos skema. Test ini menangkap data seed atau data lama yang tidak lagi cocok dengan aturan aplikasi:
+
+`packages/core/src/content/seed-consistency.test.ts`
+
+```ts
+// Memastikan skema Zod dan extractBodyText() cocok dengan data nyata di
+// database dev yang di-seed (pnpm db:up): setiap body valid, setiap body_text
+// sama dengan hasil ekstraksi, dan settings kedua site terbaca.
+// Dilewati bila DATABASE_URL tidak ada (mis. di CI).
+import { createDatabase, databaseUrlFromEnv } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { parseSiteSettings } from '../site/settings'
+import { parseBody } from './blocks'
+import { extractBodyText } from './extract-body-text'
+
+const hasDb = Boolean(process.env['DATABASE_URL'])
+
+describe.skipIf(!hasDb)('data seed di database dev', () => {
+  const db = createDatabase({ connectionString: hasDb ? databaseUrlFromEnv() : '', max: 2, applicationName: 'vitest-core' })
+  afterAll(() => db.$client.end())
+
+  it('semua body artikel dan halaman lolos skema block v1', async () => {
+    const articles = await db.query.articles.findMany({ columns: { slug: true, body: true } })
+    const pages = await db.query.pages.findMany({ columns: { slug: true, body: true } })
+    expect(articles.length).toBeGreaterThanOrEqual(7)
+    for (const row of [...articles, ...pages]) {
+      expect(() => parseBody(row.body), row.slug).not.toThrow()
+    }
+  })
+
+  it('body_text di database sama dengan extractBodyText(body)', async () => {
+    const articles = await db.query.articles.findMany({ columns: { slug: true, body: true, bodyText: true } })
+    for (const a of articles) {
+      expect(extractBodyText(parseBody(a.body)), a.slug).toBe(a.bodyText)
+    }
+  })
+
+  it('sites.settings kedua site lolos skema', async () => {
+    const rows = await db.query.sites.findMany({ columns: { code: true, settings: true } })
+    expect(rows.map((r) => r.code).sort()).toEqual(['dapur-nusantara', 'kabar-tekno'])
+    for (const r of rows) {
+      expect(() => parseSiteSettings(r.settings), r.code).not.toThrow()
+    }
+  })
+})
+```
+
+# Membangun Repository Data yang Terisolasi per Site
+
+1. Tetapkan aturan repository sebelum menulis query:
+   - Setiap fungsi menerima `siteId` sebagai argumen pertama. Satu-satunya pengecualian adalah resolver site (`findByDomain`, `findByCode`), karena tugasnya justru menemukan `siteId`.
+   - Setiap query menyaring `site_id` pada setiap tabel yang disentuh, walau composite FK sudah menjamin relasinya satu site.
+   - Hanya konten publik yang keluar: `PUBLISHED` dan `published_at <= now`. Jam bisa disuntik agar test deterministik.
+   - Kategori dan penulis `HIDDEN` tidak bisa dibuka dan filternya kosong, tetapi artikel di dalamnya tetap tampil.
+   - Menu tidak pernah memuat tautan mati. Repository mengembalikan tujuan (`target`), bukan URL; pola URL urusan lapisan view model.
+2. Tulis tipe bersama: `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
+
+`packages/core/src/repositories/types.ts`
+
+```ts
+import type { Database } from '@framework/db'
+
+/** UUID site (sites.id). Semua repository konten menerimanya sebagai argumen PERTAMA. */
+export type SiteId = string
+
+export interface RepositoryContext {
+  db: Database
+  /**
+   * Jam yang dipakai untuk aturan "sudah terbit" (published_at <= now).
+   * Disuntik agar test deterministik; default jam sistem.
+   */
+  now: () => Date
+}
+
+/**
+ * Bentuk yang wajib dipenuhi setiap fungsi repository konten: argumen
+ * pertama adalah siteId. Dicek compiler lewat `satisfies` di tiap factory,
+ * dan dicek saat runtime di repositories.test.ts.
+ */
+export type SiteScoped = (siteId: SiteId, ...args: never[]) => Promise<unknown>
+
+export interface Page<T> {
+  items: T[]
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+}
+
+export interface PageQuery {
+  /** Mulai dari 1. Nilai tidak valid dianggap 1. */
+  page?: number
+  /** Default 10, maksimum 50. */
+  pageSize?: number
+}
+
+export const DEFAULT_PAGE_SIZE = 10
+export const MAX_PAGE_SIZE = 50
+
+export function normalizePaging(query: PageQuery = {}): { page: number; pageSize: number; offset: number } {
+  const page = Number.isInteger(query.page) && (query.page as number) >= 1 ? (query.page as number) : 1
+  const rawSize = Number.isInteger(query.pageSize) ? (query.pageSize as number) : DEFAULT_PAGE_SIZE
+  const pageSize = Math.min(Math.max(rawSize, 1), MAX_PAGE_SIZE)
+  return { page, pageSize, offset: (page - 1) * pageSize }
+}
+
+export function toPage<T>(items: T[], total: number, page: number, pageSize: number): Page<T> {
+  return { items, page, pageSize, total, totalPages: Math.ceil(total / pageSize) }
+}
+
+export const emptyPage = <T>(paging: { page: number; pageSize: number }): Page<T> =>
+  toPage<T>([], 0, paging.page, paging.pageSize)
+
+/** Referensi media yang cukup untuk komponen SmartImage (titik fokus + rasio). */
+export interface MediaRef {
+  id: string
+  storageKey: string
+  mimeType: string
+  width: number | null
+  height: number | null
+  altText: string | null
+  caption: string | null
+  credit: string | null
+  focalX: number
+  focalY: number
+}
+```
+
+3. Tulis helper bersama: aturan "tampil publik" dan pemuat media yang hanya mengambil media milik site tersebut:
+
+`packages/core/src/repositories/shared.ts`
+
+```ts
+import { and, eq, inArray, isNotNull, lte, media, type PgColumn, type SQL } from '@framework/db'
+import type { MediaRef, RepositoryContext, SiteId } from './types'
+
+/**
+ * Aturan tampil publik: status PUBLISHED dan published_at sudah lewat.
+ * Artikel terjadwal = PUBLISHED dengan published_at di masa depan (tanpa queue).
+ */
+export function publiclyVisible(
+  table: { status: PgColumn; publishedAt: PgColumn },
+  now: Date,
+): SQL {
+  return and(eq(table.status, 'PUBLISHED'), isNotNull(table.publishedAt), lte(table.publishedAt, now)) as SQL
+}
+
+export const mediaColumns = {
+  id: media.id,
+  storageKey: media.storageKey,
+  mimeType: media.mimeType,
+  width: media.width,
+  height: media.height,
+  altText: media.altText,
+  caption: media.caption,
+  credit: media.credit,
+  focalX: media.focalX,
+  focalY: media.focalY,
+}
+
+/** Media milik site tertentu, per id. Media site lain tidak pernah ikut. */
+export async function loadMedia(
+  { db }: RepositoryContext,
+  siteId: SiteId,
+  ids: (string | null | undefined)[],
+): Promise<Map<string, MediaRef>> {
+  const wanted = [...new Set(ids.filter((id): id is string => Boolean(id)))]
+  if (wanted.length === 0) return new Map()
+  const rows = await db
+    .select(mediaColumns)
+    .from(media)
+    .where(and(eq(media.siteId, siteId), inArray(media.id, wanted)))
+  return new Map(rows.map((r) => [r.id, r]))
+}
+```
+
+4. Tulis repository site: normalisasi Host, resolver multi-site (Host → site, termasuk penanda alias seperti `www.`), resolver single-site (kode → site), dan theme aktif. Hanya site berstatus `ACTIVE` yang bisa ditemukan. `satisfies` membuat compiler memeriksa bentuk setiap fungsi:
+
+`packages/core/src/repositories/site-repository.ts`
+
+```ts
+import { and, eq, siteDomains, siteThemes, sites } from '@framework/db'
+import { parseSiteSettings, type SiteSettings } from '../site/settings'
+import { loadMedia } from './shared'
+import type { MediaRef, RepositoryContext, SiteId, SiteScoped } from './types'
+
+export interface SiteInfo {
+  id: SiteId
+  code: string
+  name: string
+  defaultLocale: string
+  timezone: string
+  settings: SiteSettings
+  logo: MediaRef | null
+  favicon: MediaRef | null
+}
+
+export interface ResolvedSite {
+  site: SiteInfo
+  /** Domain yang cocok dengan Host request. */
+  matchedDomain: string
+  /** Domain primary site; null bila site belum punya domain primary aktif. */
+  primaryDomain: string | null
+  /** false untuk alias seperti www.*; resolver boleh mengalihkan ke primaryDomain. */
+  isPrimary: boolean
+}
+
+export interface ActiveTheme {
+  templateKey: string
+  templateVersion: string
+  /** JSON mentah; divalidasi skema manifest template (bukan di sini). */
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  layouts: Record<string, unknown>
+}
+
+/**
+ * Host -> bentuk yang disimpan di site_domains: huruf kecil, tanpa port,
+ * tanpa titik di ujung. Mengembalikan null untuk nilai yang bukan hostname
+ * (kosong, memuat path, spasi, atau userinfo).
+ */
+export function normalizeHost(host: string): string | null {
+  const h = host.trim().toLowerCase().replace(/:\d{1,5}$/, '').replace(/\.$/, '')
+  if (h === '' || h.length > 253) return null
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(h) ? h : null
+}
+
+const siteColumns = {
+  id: sites.id,
+  code: sites.code,
+  name: sites.name,
+  defaultLocale: sites.defaultLocale,
+  timezone: sites.timezone,
+  settings: sites.settings,
+  logoMediaId: sites.logoMediaId,
+  faviconMediaId: sites.faviconMediaId,
+}
+
+type SiteRow = {
+  id: string
+  code: string
+  name: string
+  defaultLocale: string
+  timezone: string
+  settings: unknown
+  logoMediaId: string | null
+  faviconMediaId: string | null
+}
+
+/**
+ * Repository site.
+ *
+ * `findByDomain` dan `findByCode` adalah resolver: tugasnya MENEMUKAN siteId,
+ * jadi satu-satunya fungsi yang tidak menerima siteId. Setelah site
+ * ditemukan, semua query berikutnya memakai siteId itu. Hanya site berstatus
+ * ACTIVE yang bisa ditemukan; SUSPENDED dan ARCHIVED diperlakukan tidak ada.
+ */
+export function createSiteRepository(ctx: RepositoryContext) {
+  const { db } = ctx
+
+  async function toSiteInfo(row: SiteRow): Promise<SiteInfo> {
+    const refs = await loadMedia(ctx, row.id, [row.logoMediaId, row.faviconMediaId])
+    return {
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      defaultLocale: row.defaultLocale,
+      timezone: row.timezone,
+      settings: parseSiteSettings(row.settings),
+      logo: (row.logoMediaId && refs.get(row.logoMediaId)) || null,
+      favicon: (row.faviconMediaId && refs.get(row.faviconMediaId)) || null,
+    }
+  }
+
+  async function primaryDomainOf(siteId: SiteId): Promise<string | null> {
+    const [row] = await db
+      .select({ domain: siteDomains.domain })
+      .from(siteDomains)
+      .where(and(eq(siteDomains.siteId, siteId), eq(siteDomains.isPrimary, true), eq(siteDomains.status, 'ACTIVE')))
+      .limit(1)
+    return row?.domain ?? null
+  }
+
+  return {
+    /** Mode multi-site: Host request -> site. */
+    async findByDomain(host: string): Promise<ResolvedSite | null> {
+      const domain = normalizeHost(host)
+      if (!domain) return null
+      const [row] = await db
+        .select({ ...siteColumns, domain: siteDomains.domain, isPrimary: siteDomains.isPrimary })
+        .from(siteDomains)
+        .innerJoin(sites, eq(sites.id, siteDomains.siteId))
+        .where(and(eq(siteDomains.domain, domain), eq(siteDomains.status, 'ACTIVE'), eq(sites.status, 'ACTIVE')))
+        .limit(1)
+      if (!row) return null
+      return {
+        site: await toSiteInfo(row),
+        matchedDomain: row.domain,
+        primaryDomain: await primaryDomainOf(row.id),
+        isPrimary: row.isPrimary,
+      }
+    },
+
+    /** Mode single-site: env SITE_CODE -> site. */
+    async findByCode(code: string): Promise<SiteInfo | null> {
+      const [row] = await db
+        .select(siteColumns)
+        .from(sites)
+        .where(and(eq(sites.code, code), eq(sites.status, 'ACTIVE')))
+        .limit(1)
+      return row ? toSiteInfo(row) : null
+    },
+
+    /** Theme aktif site (maksimal satu, dijaga unique index). Null bila belum ada: core memakai base. */
+    async getActiveTheme(siteId: SiteId): Promise<ActiveTheme | null> {
+      const [row] = await db
+        .select({
+          templateKey: siteThemes.templateKey,
+          templateVersion: siteThemes.templateVersion,
+          tokens: siteThemes.tokens,
+          options: siteThemes.options,
+          layouts: siteThemes.layouts,
+        })
+        .from(siteThemes)
+        .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.isActive, true)))
+        .limit(1)
+      if (!row) return null
+      return {
+        ...row,
+        tokens: row.tokens as Record<string, unknown>,
+        options: row.options as Record<string, unknown>,
+        layouts: row.layouts as Record<string, unknown>,
+      }
+    },
+  } satisfies Record<string, SiteScoped | ((arg: string) => Promise<unknown>)>
+}
+
+export type SiteRepository = ReturnType<typeof createSiteRepository>
+```
+
+5. Tulis repository konten: feed dan listing per kategori (termasuk sub-kategori), tag, dan penulis dengan paginasi; pencarian full-text per site; detail artikel dan halaman berdasarkan slug; pohon kategori; detail kategori, tag, dan penulis; serta pencarian redirect. Ringkasan artikel dimuat dalam dua query paralel (artikel + tag) agar tidak terjadi N+1. Fungsi `getMediaByIds` ditambahkan di bab "Membangun Halaman Publik dari View Model", dan `listSitemapEntries` di bab "Menambahkan Embed, SEO, dan Feed":
+
+`packages/core/src/repositories/content-repository.ts`
+
+```ts
+import {
+  and,
+  articleTags,
+  articles,
+  asc,
+  authors,
+  categories,
+  count,
+  desc,
+  eq,
+  inArray,
+  pages,
+  redirects,
+  sql,
+  tags,
+  type SQL,
+} from '@framework/db'
+import { parseBodyLenient, type Body, type LenientBody } from '../content/blocks'
+import { loadMedia, publiclyVisible } from './shared'
+import {
+  emptyPage,
+  normalizePaging,
+  toPage,
+  type MediaRef,
+  type Page,
+  type PageQuery,
+  type RepositoryContext,
+  type SiteId,
+  type SiteScoped,
+} from './types'
+
+export interface CategoryRef {
+  id: string
+  name: string
+  slug: string
+}
+export interface AuthorRef {
+  id: string
+  name: string
+  slug: string
+}
+export interface TagRef {
+  id: string
+  name: string
+  slug: string
+}
+
+export interface ArticleSummary {
+  id: string
+  title: string
+  slug: string
+  excerpt: string | null
+  format: string
+  isFeatured: boolean
+  publishedAt: Date
+  category: CategoryRef
+  /** Null bila artikel tanpa penulis atau penulisnya berstatus HIDDEN. */
+  author: AuthorRef | null
+  featuredMedia: MediaRef | null
+  tags: TagRef[]
+  /** Titik ekstensi per topik (rating review, waktu masak, ...); skema Zod per jenis site. */
+  attributes: Record<string, unknown>
+}
+
+export interface ArticleDetail extends ArticleSummary {
+  body: Body
+  /** Block yang dilewati saat membaca body (tipe tidak dikenal / rusak). Untuk dicatat ke log. */
+  bodyIssues: LenientBody['skipped']
+  seo: Record<string, unknown>
+  updatedAt: Date
+  /** Induk kategori, untuk breadcrumb. */
+  categoryParent: CategoryRef | null
+}
+
+export interface ArticleListQuery extends PageQuery {
+  /** Termasuk artikel di sub-kategorinya. Slug tidak dikenal atau HIDDEN -> hasil kosong. */
+  categorySlug?: string
+  tagSlug?: string
+  /** Penulis HIDDEN dianggap tidak ada. */
+  authorSlug?: string
+  featuredOnly?: boolean
+}
+
+export interface PageDetail {
+  id: string
+  title: string
+  slug: string
+  /** Memilih varian view template, mis. 'contact'. */
+  viewKey: string
+  body: Body
+  bodyIssues: LenientBody['skipped']
+  seo: Record<string, unknown>
+  publishedAt: Date
+  updatedAt: Date
+}
+
+export interface CategoryNode extends CategoryRef {
+  children: CategoryNode[]
+}
+export interface CategoryDetail extends CategoryRef {
+  description: string | null
+  seo: Record<string, unknown>
+  parent: CategoryRef | null
+  children: CategoryRef[]
+}
+export interface AuthorDetail extends AuthorRef {
+  bio: string | null
+  avatar: MediaRef | null
+  links: Record<string, unknown>
+}
+
+/** Semua URL publik site untuk sitemap.xml; hanya konten yang tampil publik. */
+export interface SitemapEntries {
+  articles: { id: string; slug: string; categorySlug: string; publishedAt: Date; updatedAt: Date }[]
+  pages: { id: string; slug: string; updatedAt: Date }[]
+  /** Kategori ACTIVE. */
+  categories: { id: string; slug: string }[]
+  /** Hanya tag dan penulis yang punya artikel tampil (halaman kosong tidak diumumkan). */
+  tags: { id: string; slug: string }[]
+  authors: { id: string; slug: string }[]
+}
+
+/** Batas URL per file sitemap (protokol sitemaps.org). */
+export const SITEMAP_MAX_ARTICLES = 50_000
+
+export interface RedirectRule {
+  toPath: string
+  statusCode: 301 | 302 | 307 | 308
+}
+
+/**
+ * Path request -> bentuk di tabel redirects: tanpa query/hash, tanpa slash di
+ * ujung (kecuali "/"). Null bila bukan path internal yang valid.
+ */
+export function normalizePath(path: string): string | null {
+  const bare = path.split('#')[0]?.split('?')[0] ?? ''
+  if (!bare.startsWith('/') || bare.startsWith('//') || /\s/.test(bare)) return null
+  return bare.length > 1 ? bare.replace(/\/+$/, '') || '/' : bare
+}
+
+/**
+ * Repository konten publik. SEMUA fungsi menerima siteId sebagai argumen
+ * pertama dan setiap query menyaring siteId pada setiap tabel yang disentuh,
+ * sehingga data site lain tidak pernah terbaca walau slug sama (mis.
+ * "tentang-kami" ada di dua site). Hanya konten yang sudah tampil publik
+ * (PUBLISHED dan published_at <= now) yang dikembalikan.
+ */
+export function createContentRepository(ctx: RepositoryContext) {
+  const { db } = ctx
+
+  async function loadSummaries(siteId: SiteId, ids: string[]): Promise<ArticleSummary[]> {
+    if (ids.length === 0) return []
+    const [rows, tagRows] = await Promise.all([
+      db
+        .select({
+          id: articles.id,
+          title: articles.title,
+          slug: articles.slug,
+          excerpt: articles.excerpt,
+          format: articles.format,
+          isFeatured: articles.isFeatured,
+          publishedAt: articles.publishedAt,
+          attributes: articles.attributes,
+          featuredMediaId: articles.featuredMediaId,
+          categoryId: categories.id,
+          categoryName: categories.name,
+          categorySlug: categories.slug,
+          authorId: authors.id,
+          authorName: authors.name,
+          authorSlug: authors.slug,
+        })
+        .from(articles)
+        .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
+        .leftJoin(
+          authors,
+          and(eq(authors.siteId, articles.siteId), eq(authors.id, articles.authorId), eq(authors.status, 'ACTIVE')),
+        )
+        .where(and(eq(articles.siteId, siteId), inArray(articles.id, ids))),
+      db
+        .select({ articleId: articleTags.articleId, id: tags.id, name: tags.name, slug: tags.slug })
+        .from(articleTags)
+        .innerJoin(tags, and(eq(tags.siteId, articleTags.siteId), eq(tags.id, articleTags.tagId)))
+        .where(and(eq(articleTags.siteId, siteId), inArray(articleTags.articleId, ids)))
+        .orderBy(asc(articleTags.sortOrder), asc(tags.name)),
+    ])
+    const media = await loadMedia(ctx, siteId, rows.map((r) => r.featuredMediaId))
+
+    const byId = new Map(
+      rows.map((r): [string, ArticleSummary] => [
+        r.id,
+        {
+          id: r.id,
+          title: r.title,
+          slug: r.slug,
+          excerpt: r.excerpt,
+          format: r.format,
+          isFeatured: r.isFeatured,
+          publishedAt: r.publishedAt as Date,
+          category: { id: r.categoryId, name: r.categoryName, slug: r.categorySlug },
+          author: r.authorId && r.authorName && r.authorSlug ? { id: r.authorId, name: r.authorName, slug: r.authorSlug } : null,
+          featuredMedia: (r.featuredMediaId && media.get(r.featuredMediaId)) || null,
+          tags: tagRows.filter((t) => t.articleId === r.id).map(({ id, name, slug }) => ({ id, name, slug })),
+          attributes: r.attributes as Record<string, unknown>,
+        },
+      ]),
+    )
+    // Pertahankan urutan ids (urutan feed).
+    return ids.map((id) => byId.get(id)).filter((a): a is ArticleSummary => a !== undefined)
+  }
+
+  /** Kategori ACTIVE dengan slug ini, ditambah seluruh turunannya yang ACTIVE. */
+  async function categoryScopeIds(siteId: SiteId, slug: string): Promise<string[]> {
+    const all = await db
+      .select({ id: categories.id, parentId: categories.parentId, slug: categories.slug })
+      .from(categories)
+      .where(and(eq(categories.siteId, siteId), eq(categories.status, 'ACTIVE')))
+    const root = all.find((c) => c.slug === slug)
+    if (!root) return []
+    const ids = [root.id]
+    for (let i = 0; i < ids.length; i++) {
+      for (const child of all) if (child.parentId === ids[i] && !ids.includes(child.id)) ids.push(child.id)
+    }
+    return ids
+  }
+
+  async function pageOfArticleIds(
+    siteId: SiteId,
+    where: SQL | undefined,
+    order: SQL[],
+    paging: { page: number; pageSize: number; offset: number },
+  ): Promise<Page<ArticleSummary>> {
+    const [totalRow] = await db.select({ total: count() }).from(articles).where(where)
+    const total = totalRow?.total ?? 0
+    if (total === 0) return emptyPage(paging)
+    const idRows = await db
+      .select({ id: articles.id })
+      .from(articles)
+      .where(where)
+      .orderBy(...order)
+      .limit(paging.pageSize)
+      .offset(paging.offset)
+    const items = await loadSummaries(siteId, idRows.map((r) => r.id))
+    return toPage(items, total, paging.page, paging.pageSize)
+  }
+
+  return {
+    /** Feed publik, terbaru dulu. Filter kategori/tag/penulis/featured bersifat opsional. */
+    async listPublishedArticles(siteId: SiteId, query: ArticleListQuery = {}): Promise<Page<ArticleSummary>> {
+      const paging = normalizePaging(query)
+      const conditions = [eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now())]
+
+      if (query.featuredOnly) conditions.push(eq(articles.isFeatured, true))
+
+      if (query.categorySlug !== undefined) {
+        const ids = await categoryScopeIds(siteId, query.categorySlug)
+        if (ids.length === 0) return emptyPage(paging)
+        conditions.push(inArray(articles.categoryId, ids))
+      }
+      if (query.authorSlug !== undefined) {
+        const [author] = await db
+          .select({ id: authors.id })
+          .from(authors)
+          .where(and(eq(authors.siteId, siteId), eq(authors.slug, query.authorSlug), eq(authors.status, 'ACTIVE')))
+        if (!author) return emptyPage(paging)
+        conditions.push(eq(articles.authorId, author.id))
+      }
+      if (query.tagSlug !== undefined) {
+        const [tag] = await db
+          .select({ id: tags.id })
+          .from(tags)
+          .where(and(eq(tags.siteId, siteId), eq(tags.slug, query.tagSlug)))
+        if (!tag) return emptyPage(paging)
+        conditions.push(
+          inArray(
+            articles.id,
+            db
+              .select({ id: articleTags.articleId })
+              .from(articleTags)
+              .where(and(eq(articleTags.siteId, siteId), eq(articleTags.tagId, tag.id))),
+          ),
+        )
+      }
+
+      return pageOfArticleIds(siteId, and(...conditions), [desc(articles.publishedAt), desc(articles.id)], paging)
+    },
+
+    /** Pencarian teks (konfigurasi 'simple'), paling relevan dulu. Query kosong -> hasil kosong. */
+    async searchPublishedArticles(siteId: SiteId, queryText: string, query: PageQuery = {}): Promise<Page<ArticleSummary>> {
+      const paging = normalizePaging(query)
+      const q = queryText.trim().slice(0, 200)
+      if (q === '') return emptyPage(paging)
+      const tsquery = sql`websearch_to_tsquery('simple', ${q})`
+      const where = and(
+        eq(articles.siteId, siteId),
+        publiclyVisible(articles, ctx.now()),
+        sql`${articles.searchVector} @@ ${tsquery}`,
+      )
+      return pageOfArticleIds(
+        siteId,
+        where,
+        [desc(sql`ts_rank(${articles.searchVector}, ${tsquery})`), desc(articles.publishedAt), desc(articles.id)],
+        paging,
+      )
+    },
+
+    async getPublishedArticle(siteId: SiteId, slug: string): Promise<ArticleDetail | null> {
+      const [row] = await db
+        .select({
+          id: articles.id,
+          body: articles.body,
+          seo: articles.seo,
+          updatedAt: articles.updatedAt,
+          categoryParentId: categories.parentId,
+        })
+        .from(articles)
+        .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
+        .where(and(eq(articles.siteId, siteId), eq(articles.slug, slug), publiclyVisible(articles, ctx.now())))
+        .limit(1)
+      if (!row) return null
+
+      const [summary] = await loadSummaries(siteId, [row.id])
+      if (!summary) return null
+      let categoryParent: CategoryRef | null = null
+      if (row.categoryParentId) {
+        const [parent] = await db
+          .select({ id: categories.id, name: categories.name, slug: categories.slug })
+          .from(categories)
+          .where(and(eq(categories.siteId, siteId), eq(categories.id, row.categoryParentId)))
+        categoryParent = parent ?? null
+      }
+      const { body, skipped } = parseBodyLenient(row.body)
+      return {
+        ...summary,
+        body,
+        bodyIssues: skipped,
+        seo: row.seo as Record<string, unknown>,
+        updatedAt: row.updatedAt,
+        categoryParent,
+      }
+    },
+
+    async getPublishedPage(siteId: SiteId, slug: string): Promise<PageDetail | null> {
+      const [row] = await db
+        .select()
+        .from(pages)
+        .where(and(eq(pages.siteId, siteId), eq(pages.slug, slug), publiclyVisible(pages, ctx.now())))
+        .limit(1)
+      if (!row) return null
+      const { body, skipped } = parseBodyLenient(row.body)
+      return {
+        id: row.id,
+        title: row.title,
+        slug: row.slug,
+        viewKey: row.viewKey,
+        body,
+        bodyIssues: skipped,
+        seo: row.seo as Record<string, unknown>,
+        publishedAt: row.publishedAt as Date,
+        updatedAt: row.updatedAt,
+      }
+    },
+
+    /** Kategori ACTIVE sebagai pohon, urut sort_order lalu nama. */
+    async getCategoryTree(siteId: SiteId): Promise<CategoryNode[]> {
+      const rows = await db
+        .select({
+          id: categories.id,
+          name: categories.name,
+          slug: categories.slug,
+          parentId: categories.parentId,
+        })
+        .from(categories)
+        .where(and(eq(categories.siteId, siteId), eq(categories.status, 'ACTIVE')))
+        .orderBy(asc(categories.sortOrder), asc(categories.name))
+      const nodes = new Map<string, CategoryNode>(rows.map((r) => [r.id, { id: r.id, name: r.name, slug: r.slug, children: [] }]))
+      const roots: CategoryNode[] = []
+      for (const r of rows) {
+        const node = nodes.get(r.id) as CategoryNode
+        const parent = r.parentId ? nodes.get(r.parentId) : undefined
+        if (parent) parent.children.push(node)
+        else if (!r.parentId) roots.push(node)
+        // Anak dari kategori HIDDEN ikut tersembunyi.
+      }
+      return roots
+    },
+
+    async getCategory(siteId: SiteId, slug: string): Promise<CategoryDetail | null> {
+      const [row] = await db
+        .select()
+        .from(categories)
+        .where(and(eq(categories.siteId, siteId), eq(categories.slug, slug), eq(categories.status, 'ACTIVE')))
+        .limit(1)
+      if (!row) return null
+      const [parent, children] = await Promise.all([
+        row.parentId
+          ? db
+              .select({ id: categories.id, name: categories.name, slug: categories.slug })
+              .from(categories)
+              .where(and(eq(categories.siteId, siteId), eq(categories.id, row.parentId), eq(categories.status, 'ACTIVE')))
+          : Promise.resolve([]),
+        db
+          .select({ id: categories.id, name: categories.name, slug: categories.slug })
+          .from(categories)
+          .where(and(eq(categories.siteId, siteId), eq(categories.parentId, row.id), eq(categories.status, 'ACTIVE')))
+          .orderBy(asc(categories.sortOrder), asc(categories.name)),
+      ])
+      return {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        description: row.description,
+        seo: row.seo as Record<string, unknown>,
+        parent: parent[0] ?? null,
+        children,
+      }
+    },
+
+    async getTag(siteId: SiteId, slug: string): Promise<TagRef | null> {
+      const [row] = await db
+        .select({ id: tags.id, name: tags.name, slug: tags.slug })
+        .from(tags)
+        .where(and(eq(tags.siteId, siteId), eq(tags.slug, slug)))
+        .limit(1)
+      return row ?? null
+    },
+
+    async getAuthor(siteId: SiteId, slug: string): Promise<AuthorDetail | null> {
+      const [row] = await db
+        .select()
+        .from(authors)
+        .where(and(eq(authors.siteId, siteId), eq(authors.slug, slug), eq(authors.status, 'ACTIVE')))
+        .limit(1)
+      if (!row) return null
+      const avatar = await loadMedia(ctx, siteId, [row.avatarMediaId])
+      return {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        bio: row.bio,
+        avatar: (row.avatarMediaId && avatar.get(row.avatarMediaId)) || null,
+        links: row.links as Record<string, unknown>,
+      }
+    },
+
+    /**
+     * Media milik site ini per id, mis. untuk block gambar di body artikel.
+     * Id milik site lain atau yang tidak ada diam-diam tidak ikut.
+     */
+    async getMediaByIds(siteId: SiteId, ids: string[]): Promise<MediaRef[]> {
+      const found = await loadMedia(ctx, siteId, ids)
+      return [...found.values()]
+    },
+
+    async listSitemapEntries(siteId: SiteId): Promise<SitemapEntries> {
+      const visible = and(eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now()))
+      const [articleRows, pageRows, categoryRows, tagRows, authorRows] = await Promise.all([
+        db
+          .select({
+            id: articles.id,
+            slug: articles.slug,
+            categorySlug: categories.slug,
+            publishedAt: articles.publishedAt,
+            updatedAt: articles.updatedAt,
+          })
+          .from(articles)
+          .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
+          .where(visible)
+          .orderBy(desc(articles.publishedAt), desc(articles.id))
+          .limit(SITEMAP_MAX_ARTICLES),
+        db
+          .select({ id: pages.id, slug: pages.slug, updatedAt: pages.updatedAt })
+          .from(pages)
+          .where(and(eq(pages.siteId, siteId), publiclyVisible(pages, ctx.now())))
+          .orderBy(asc(pages.slug)),
+        db
+          .select({ id: categories.id, slug: categories.slug })
+          .from(categories)
+          .where(and(eq(categories.siteId, siteId), eq(categories.status, 'ACTIVE')))
+          .orderBy(asc(categories.slug)),
+        db
+          .selectDistinct({ id: tags.id, slug: tags.slug })
+          .from(tags)
+          .innerJoin(articleTags, and(eq(articleTags.siteId, tags.siteId), eq(articleTags.tagId, tags.id)))
+          .innerJoin(articles, and(eq(articles.siteId, articleTags.siteId), eq(articles.id, articleTags.articleId)))
+          .where(and(eq(tags.siteId, siteId), visible))
+          .orderBy(asc(tags.slug)),
+        db
+          .selectDistinct({ id: authors.id, slug: authors.slug })
+          .from(authors)
+          .innerJoin(articles, and(eq(articles.siteId, authors.siteId), eq(articles.authorId, authors.id)))
+          .where(and(eq(authors.siteId, siteId), eq(authors.status, 'ACTIVE'), visible))
+          .orderBy(asc(authors.slug)),
+      ])
+      return {
+        articles: articleRows.map((r) => ({ ...r, publishedAt: r.publishedAt as Date })),
+        pages: pageRows,
+        categories: categoryRows,
+        tags: tagRows,
+        authors: authorRows,
+      }
+    },
+
+    /** Aturan redirect untuk path lama; null bila tidak ada atau path tidak valid. */
+    async findRedirect(siteId: SiteId, fromPath: string): Promise<RedirectRule | null> {
+      const path = normalizePath(fromPath)
+      if (!path) return null
+      const [row] = await db
+        .select({ toPath: redirects.toPath, statusCode: redirects.statusCode })
+        .from(redirects)
+        .where(and(eq(redirects.siteId, siteId), eq(redirects.fromPath, path)))
+        .limit(1)
+      return row ? { toPath: row.toPath, statusCode: row.statusCode as RedirectRule['statusCode'] } : null
+    },
+  } satisfies Record<string, SiteScoped>
+}
+
+export type ContentRepository = ReturnType<typeof createContentRepository>
+```
+
+6. Tulis repository menu. Item disusun menjadi pohon; item nonaktif atau yang tujuannya tidak tampil dibuang beserta seluruh turunannya. Field `publishedAt` pada target artikel ditambahkan di bab "Membangun Halaman Publik dari View Model":
+
+`packages/core/src/repositories/menu-repository.ts`
+
+```ts
+import { and, articles, asc, categories, eq, inArray, menuItems, menus, pages, tags } from '@framework/db'
+import { publiclyVisible } from './shared'
+import type { RepositoryContext, SiteId, SiteScoped } from './types'
+
+/**
+ * Tujuan item menu yang sudah di-resolve. Repository sengaja tidak membuat
+ * URL: pola route (mis. /p/{slug}, permalink artikel) milik lapisan view
+ * model, supaya hanya ada satu tempat yang mengetahuinya.
+ */
+export type MenuTarget =
+  | { type: 'CATEGORY'; slug: string; name: string }
+  | { type: 'ARTICLE'; slug: string; title: string; categorySlug: string; publishedAt: Date }
+  | { type: 'PAGE'; slug: string; title: string }
+  | { type: 'TAG'; slug: string; name: string }
+  | { type: 'URL'; url: string }
+  | { type: 'ROUTE'; path: string }
+
+export interface MenuNode {
+  id: string
+  label: string
+  openInNewTab: boolean
+  target: MenuTarget
+  children: MenuNode[]
+}
+
+export interface Menu {
+  id: string
+  location: string
+  name: string
+  items: MenuNode[]
+}
+
+/**
+ * Repository menu. Item yang tidak aktif, atau yang tujuannya tidak tampil
+ * publik (halaman/artikel belum terbit, kategori HIDDEN, tujuan sudah
+ * terhapus), dibuang bersama seluruh turunannya, jadi template tidak pernah
+ * menerima tautan mati.
+ */
+export function createMenuRepository(ctx: RepositoryContext) {
+  const { db } = ctx
+
+  return {
+    /** Menu di lokasi tertentu ('header', 'footer', ...) sebagai pohon; null bila lokasi belum punya menu. */
+    async getMenuTree(siteId: SiteId, location: string): Promise<Menu | null> {
+      const [menu] = await db
+        .select({ id: menus.id, location: menus.location, name: menus.name })
+        .from(menus)
+        .where(and(eq(menus.siteId, siteId), eq(menus.location, location)))
+        .limit(1)
+      if (!menu) return null
+
+      const items = await db
+        .select()
+        .from(menuItems)
+        .where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menu.id), eq(menuItems.isActive, true)))
+        .orderBy(asc(menuItems.sortOrder), asc(menuItems.id))
+
+      const idsOf = (pick: (i: (typeof items)[number]) => string | null) =>
+        items.map(pick).filter((id): id is string => id !== null)
+      const categoryIds = idsOf((i) => i.categoryId)
+      const pageIds = idsOf((i) => i.pageId)
+      const tagIds = idsOf((i) => i.tagId)
+      const articleIds = idsOf((i) => i.articleId)
+
+      const [categoryRows, pageRows, tagRows, articleRows] = await Promise.all([
+        categoryIds.length
+          ? db
+              .select({ id: categories.id, slug: categories.slug, name: categories.name })
+              .from(categories)
+              .where(and(eq(categories.siteId, siteId), eq(categories.status, 'ACTIVE'), inArray(categories.id, categoryIds)))
+          : [],
+        pageIds.length
+          ? db
+              .select({ id: pages.id, slug: pages.slug, title: pages.title })
+              .from(pages)
+              .where(and(eq(pages.siteId, siteId), publiclyVisible(pages, ctx.now()), inArray(pages.id, pageIds)))
+          : [],
+        tagIds.length
+          ? db
+              .select({ id: tags.id, slug: tags.slug, name: tags.name })
+              .from(tags)
+              .where(and(eq(tags.siteId, siteId), inArray(tags.id, tagIds)))
+          : [],
+        articleIds.length
+          ? db
+              .select({ id: articles.id, slug: articles.slug, title: articles.title, categorySlug: categories.slug, publishedAt: articles.publishedAt })
+              .from(articles)
+              .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
+              .where(and(eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now()), inArray(articles.id, articleIds)))
+          : [],
+      ])
+      const byId = <T extends { id: string }>(rows: T[]) => new Map(rows.map((r) => [r.id, r]))
+      const cat = byId(categoryRows)
+      const pg = byId(pageRows)
+      const tg = byId(tagRows)
+      const art = byId(articleRows)
+
+      const resolve = (item: (typeof items)[number]): MenuTarget | null => {
+        switch (item.itemType) {
+          case 'CATEGORY': {
+            const c = item.categoryId ? cat.get(item.categoryId) : undefined
+            return c ? { type: 'CATEGORY', slug: c.slug, name: c.name } : null
+          }
+          case 'PAGE': {
+            const p = item.pageId ? pg.get(item.pageId) : undefined
+            return p ? { type: 'PAGE', slug: p.slug, title: p.title } : null
+          }
+          case 'TAG': {
+            const t = item.tagId ? tg.get(item.tagId) : undefined
+            return t ? { type: 'TAG', slug: t.slug, name: t.name } : null
+          }
+          case 'ARTICLE': {
+            const a = item.articleId ? art.get(item.articleId) : undefined
+            return a ? { type: 'ARTICLE', slug: a.slug, title: a.title, categorySlug: a.categorySlug, publishedAt: a.publishedAt as Date } : null
+          }
+          case 'URL':
+            return item.url ? { type: 'URL', url: item.url } : null
+          case 'ROUTE':
+            return item.url ? { type: 'ROUTE', path: item.url } : null
+          default:
+            return null
+        }
+      }
+
+      // Telusuri dari akar: induk yang dibuang menyembunyikan seluruh turunannya.
+      const childrenOf = new Map<string | null, typeof items>()
+      for (const item of items) {
+        const list = childrenOf.get(item.parentId) ?? []
+        list.push(item)
+        childrenOf.set(item.parentId, list)
+      }
+      const build = (parentId: string | null): MenuNode[] =>
+        (childrenOf.get(parentId) ?? []).flatMap((item) => {
+          const target = resolve(item)
+          if (!target) return []
+          return [{ id: item.id, label: item.label, openInNewTab: item.openInNewTab, target, children: build(item.id) }]
+        })
+
+      return { id: menu.id, location: menu.location, name: menu.name, items: build(null) }
+    },
+  } satisfies Record<string, SiteScoped>
+}
+
+export type MenuRepository = ReturnType<typeof createMenuRepository>
+```
+
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses:
+
+`packages/core/src/repositories/index.ts`
+
+```ts
+import type { Database } from '@framework/db'
+import { createContentRepository } from './content-repository'
+import { createMenuRepository } from './menu-repository'
+import { createSiteRepository } from './site-repository'
+import type { RepositoryContext } from './types'
+
+export * from './content-repository'
+export * from './menu-repository'
+export * from './site-repository'
+export * from './types'
+
+export interface RepositoryOptions {
+  /** Jam untuk aturan "sudah terbit"; default jam sistem. Disuntik di test. */
+  now?: () => Date
+}
+
+/**
+ * Semua repository untuk satu koneksi database. Buat satu per proses.
+ *
+ *   sites    resolver Host/kode -> site, theme aktif
+ *   content  artikel, halaman, kategori, tag, penulis, pencarian, redirect
+ *   menus    menu sebagai pohon
+ *
+ * Kecuali resolver di `sites`, setiap fungsi menerima siteId sebagai argumen
+ * pertama dan hanya mengembalikan data site itu.
+ */
+export function createRepositories(db: Database, options: RepositoryOptions = {}) {
+  const ctx: RepositoryContext = { db, now: options.now ?? (() => new Date()) }
+  return {
+    sites: createSiteRepository(ctx),
+    content: createContentRepository(ctx),
+    menus: createMenuRepository(ctx),
+  }
+}
+
+export type Repositories = ReturnType<typeof createRepositories>
+```
+
+8. Ekspor semua dari entry point paket core. Baris `site/mode` dan `site/resolve` ditambahkan di bab "Memilih Site dari Domain Request", `media/storage` di bab "Membangun Sistem Template", dan modul `views/*` di bab "Membangun Halaman Publik dari View Model":
+
+`packages/core/src/index.ts`
+
+```ts
+export * from './content/blocks'
+export { extractBodyText } from './content/extract-body-text'
+export * from './repositories'
+export * from './site/settings'
+export * from './site/mode'
+export * from './site/resolve'
+export * from './media/storage'
+export * from './views/build-page'
+export * from './views/format'
+export * from './views/routes'
+export * from './views/urls'
+export * from './content/embed'
+export * from './content/seo'
+export * from './views/seo'
+export * from './feeds/feeds'
+```
+
+9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
+
+`packages/core/src/repositories/helpers.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { normalizePath } from './content-repository'
+import { normalizeHost } from './site-repository'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, normalizePaging, toPage } from './types'
+
+describe('normalizeHost', () => {
+  it.each([
+    ['tekno.local.test', 'tekno.local.test'],
+    ['TEKNO.Local.Test', 'tekno.local.test'],
+    ['tekno.local.test:3000', 'tekno.local.test'],
+    ['tekno.local.test.', 'tekno.local.test'],
+    ['  www.tekno.local.test  ', 'www.tekno.local.test'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizeHost(input)).toBe(expected)
+  })
+
+  it.each([
+    '',
+    '   ',
+    'localhost', // harus punya titik, sama dengan CHECK site_domains_domain_format
+    'tekno.local.test/path',
+    'user@tekno.local.test',
+    'tekno local.test',
+    'http://tekno.local.test',
+    '-bad.local.test',
+    `${'a'.repeat(64)}.test`,
+  ])('menolak %j', (input) => {
+    expect(normalizeHost(input)).toBeNull()
+  })
+})
+
+describe('normalizePath', () => {
+  it.each([
+    ['/gadget/ponsel', '/gadget/ponsel'],
+    ['/gadget/ponsel/', '/gadget/ponsel'],
+    ['/gadget/ponsel?utm=x#bagian', '/gadget/ponsel'],
+    ['/', '/'],
+    ['/?page=2', '/'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizePath(input)).toBe(expected)
+  })
+
+  it.each(['', 'gadget', '//evil.test/x', 'https://evil.test/x', '/dengan spasi'])('menolak %j', (input) => {
+    expect(normalizePath(input)).toBeNull()
+  })
+})
+
+describe('normalizePaging', () => {
+  it('default: halaman 1, 10 per halaman', () => {
+    expect(normalizePaging()).toEqual({ page: 1, pageSize: DEFAULT_PAGE_SIZE, offset: 0 })
+  })
+
+  it('menghitung offset', () => {
+    expect(normalizePaging({ page: 3, pageSize: 20 })).toEqual({ page: 3, pageSize: 20, offset: 40 })
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('halaman %s dianggap 1', (page) => {
+    expect(normalizePaging({ page }).page).toBe(1)
+  })
+
+  it('membatasi pageSize antara 1 dan maksimum', () => {
+    expect(normalizePaging({ pageSize: 0 }).pageSize).toBe(1)
+    expect(normalizePaging({ pageSize: 10_000 }).pageSize).toBe(MAX_PAGE_SIZE)
+    expect(normalizePaging({ pageSize: 2.5 }).pageSize).toBe(DEFAULT_PAGE_SIZE)
+  })
+
+  it('toPage menghitung totalPages', () => {
+    expect(toPage([], 21, 1, 10).totalPages).toBe(3)
+    expect(toPage([], 0, 1, 10).totalPages).toBe(0)
+  })
+})
+```
+
+10. Tulis test repository terhadap database. Bagian terpenting adalah isolasi antar-site: setiap fungsi wajib terdaftar di test ini, site yang tidak ada tidak pernah menghasilkan data, dan slug yang sama di dua site tidak pernah tertukar. Bagian "site sementara" membuat data uji di dalam transaksi lalu membatalkannya, untuk menguji status SUSPENDED, HIDDEN, PENDING, dan artikel terjadwal. Test ini memakai dua site contoh dari data seed Anda:
+
+`packages/core/src/repositories/repositories.test.ts`
+
+```ts
+// Test repository terhadap database dev yang di-seed (pnpm db:up), sebagai
+// role aplikasi blog_app. Dilewati bila DATABASE_URL tidak ada.
+//
+// Dua jenis test:
+//  1. Perilaku terhadap data seed (read-only).
+//  2. Isolasi antar-site: setiap fungsi wajib menerima siteId, dan data
+//     site lain tidak pernah terbaca.
+// Aturan yang tidak tercakup seed (HIDDEN, nonaktif, SUSPENDED, body rusak)
+// diuji dengan site sementara yang dihapus setelah test; test lain tidak terpengaruh.
+import { randomBytes, randomUUID } from 'node:crypto'
+import {
+  articleTags,
+  articles,
+  authors,
+  categories,
+  createDatabase,
+  eq,
+  menuItems,
+  menus,
+  pages,
+  siteDomains,
+  sites,
+  tags,
+} from '@framework/db'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createRepositories, type MenuNode } from './index'
+
+const hasDb = Boolean(process.env['DATABASE_URL'])
+const A = '01930000-0000-7000-8000-000000000101' // kabar-tekno
+const B = '01930000-0000-7000-8000-000000000102' // dapur-nusantara
+const NOW = new Date('2026-11-17T00:00:00Z')
+const FUTURE = new Date('2031-01-01T00:00:00Z')
+
+const slugs = <T extends { slug: string }>(rows: T[]) => rows.map((r) => r.slug)
+const labels = (nodes: { label: string }[]) => nodes.map((n) => n.label)
+
+describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 3, applicationName: 'vitest-repo' })
+  const repos = createRepositories(db, { now: () => NOW })
+  const { sites: siteRepo, content, menus: menuRepo } = repos
+  afterAll(() => db.$client.end())
+
+  describe('site: resolver dan theme', () => {
+    it('Host -> site, termasuk logo dan settings tervalidasi', async () => {
+      const r = await siteRepo.findByDomain('tekno.local.test')
+      expect(r).toMatchObject({ matchedDomain: 'tekno.local.test', primaryDomain: 'tekno.local.test', isPrimary: true })
+      expect(r?.site).toMatchObject({ id: A, code: 'kabar-tekno', name: 'Kabar Tekno', timezone: 'Asia/Jakarta' })
+      expect(r?.site.settings.seo.titleTemplate).toBe('%s | Kabar Tekno')
+      expect(r?.site.logo?.storageKey).toBe('kabar-tekno/logo.svg')
+    })
+
+    it('alias www ditemukan, ditandai bukan primary, dan menyebut domain primary', async () => {
+      const r = await siteRepo.findByDomain('WWW.Tekno.Local.Test:8080')
+      expect(r).toMatchObject({ matchedDomain: 'www.tekno.local.test', primaryDomain: 'tekno.local.test', isPrimary: false })
+      expect(r?.site.id).toBe(A)
+    })
+
+    it('domain site lain tidak tertukar (logo juga milik site sendiri)', async () => {
+      const r = await siteRepo.findByDomain('kuliner.local.test')
+      expect(r?.site).toMatchObject({ id: B, code: 'dapur-nusantara' })
+      expect(r?.site.logo?.storageKey).toBe('dapur-nusantara/logo.svg')
+    })
+
+    it.each(['tidak-ada.local.test', '', 'localhost', 'tekno.local.test/x'])('host %j tidak ditemukan', async (host) => {
+      expect(await siteRepo.findByDomain(host)).toBeNull()
+    })
+
+    it('kode site (mode single-site)', async () => {
+      expect((await siteRepo.findByCode('dapur-nusantara'))?.id).toBe(B)
+      expect(await siteRepo.findByCode('tidak-ada')).toBeNull()
+    })
+
+    it('theme aktif per site; config template nonaktif tidak ikut', async () => {
+      const a = await siteRepo.getActiveTheme(A)
+      expect(a).toMatchObject({ templateKey: 'magazine', templateVersion: '1.0.0' })
+      expect(a?.tokens).toMatchObject({ color: { primary: '#0f62fe' } })
+
+      // Site B menyimpan baris magazine (nonaktif) selain news (aktif).
+      const b = await siteRepo.getActiveTheme(B)
+      expect(b).toMatchObject({ templateKey: 'news', templateVersion: '1.0.0' })
+      expect(b?.layouts).toHaveProperty('home')
+
+      expect(await siteRepo.getActiveTheme(randomUUID())).toBeNull()
+    })
+  })
+
+  describe('artikel publik', () => {
+    it('feed: terbaru dulu, tanpa draft dan artikel terjadwal', async () => {
+      const a = await content.listPublishedArticles(A)
+      expect(slugs(a.items)).toEqual(['cara-kerja-model-bahasa', 'ponsel-lipat-makin-murah'])
+      expect(a).toMatchObject({ total: 2, page: 1, totalPages: 1 })
+
+      const b = await content.listPublishedArticles(B)
+      expect(slugs(b.items)).toEqual(['sambal-matah-10-menit', 'rendang-padang-empuk'])
+    })
+
+    it('artikel terjadwal muncul begitu waktunya lewat (tanpa queue)', async () => {
+      const later = createRepositories(db, { now: () => FUTURE })
+      const feed = await later.content.listPublishedArticles(A)
+      expect(slugs(feed.items)).toEqual(['laptop-terbaik-mahasiswa-2030', 'cara-kerja-model-bahasa', 'ponsel-lipat-makin-murah'])
+      // Draft tetap tidak pernah muncul.
+      expect(slugs(feed.items)).not.toContain('draf-ulasan-earbuds')
+    })
+
+    it('ringkasan memuat kategori, penulis, media (titik fokus), tag, dan attributes', async () => {
+      const { items } = await content.listPublishedArticles(A, { categorySlug: 'review' })
+      expect(items).toHaveLength(1)
+      expect(items[0]).toMatchObject({
+        title: 'Ponsel lipat makin murah, layak dibeli?',
+        isFeatured: true,
+        category: { slug: 'review', name: 'Review' },
+        author: { slug: 'budi-santoso', name: 'Budi Santoso' },
+        featuredMedia: { storageKey: 'kabar-tekno/2026/11/hp.webp', width: 1600, height: 900, focalX: 0.62, focalY: 0.4 },
+        tags: [{ slug: 'android', name: 'Android' }],
+      })
+      expect(items[0]?.attributes).toMatchObject({ review: { rating: 4.2 } })
+      expect(items[0]?.publishedAt).toBeInstanceOf(Date)
+    })
+
+    it('paginasi', async () => {
+      const p1 = await content.listPublishedArticles(A, { pageSize: 1 })
+      expect(slugs(p1.items)).toEqual(['cara-kerja-model-bahasa'])
+      expect(p1).toMatchObject({ total: 2, totalPages: 2 })
+
+      const p2 = await content.listPublishedArticles(A, { page: 2, pageSize: 1 })
+      expect(slugs(p2.items)).toEqual(['ponsel-lipat-makin-murah'])
+
+      const p3 = await content.listPublishedArticles(A, { page: 3, pageSize: 1 })
+      expect(p3.items).toEqual([])
+      expect(p3).toMatchObject({ total: 2, totalPages: 2 })
+    })
+
+    it('filter kategori mencakup sub-kategori', async () => {
+      expect(slugs((await content.listPublishedArticles(A, { categorySlug: 'gadget' })).items)).toEqual(['ponsel-lipat-makin-murah'])
+      expect(slugs((await content.listPublishedArticles(B, { categorySlug: 'kuliner-daerah' })).items)).toEqual(['rendang-padang-empuk'])
+      expect(slugs((await content.listPublishedArticles(B, { categorySlug: 'sumatera' })).items)).toEqual(['rendang-padang-empuk'])
+    })
+
+    it('filter tag, penulis, dan featured', async () => {
+      expect(slugs((await content.listPublishedArticles(A, { tagSlug: 'android' })).items)).toEqual(['ponsel-lipat-makin-murah'])
+      expect(slugs((await content.listPublishedArticles(B, { tagSlug: 'pedas' })).items)).toEqual(['rendang-padang-empuk'])
+      expect(slugs((await content.listPublishedArticles(A, { authorSlug: 'budi-santoso' })).items)).toEqual(['ponsel-lipat-makin-murah'])
+      expect(slugs((await content.listPublishedArticles(A, { featuredOnly: true })).items)).toEqual(['ponsel-lipat-makin-murah'])
+      expect(slugs((await content.listPublishedArticles(B, { featuredOnly: true })).items)).toEqual(['rendang-padang-empuk'])
+    })
+
+    it('filter dengan slug tidak dikenal menghasilkan halaman kosong, bukan error', async () => {
+      for (const q of [{ categorySlug: 'x' }, { tagSlug: 'x' }, { authorSlug: 'x' }]) {
+        expect(await content.listPublishedArticles(A, q)).toMatchObject({ items: [], total: 0, totalPages: 0 })
+      }
+    })
+
+    it('detail artikel: body, seo, breadcrumb kategori', async () => {
+      const a = await content.getPublishedArticle(A, 'ponsel-lipat-makin-murah')
+      expect(a?.body.blocks.map((b) => b.type)).toEqual(['paragraph', 'heading', 'list', 'image'])
+      expect(a?.bodyIssues).toEqual([])
+      expect(a?.seo).toMatchObject({ title: 'Ponsel lipat makin murah: layak dibeli?' })
+      expect(a?.category.slug).toBe('review')
+      expect(a?.categoryParent).toMatchObject({ slug: 'gadget' })
+      expect(a?.updatedAt).toBeInstanceOf(Date)
+
+      const root = await content.getPublishedArticle(A, 'cara-kerja-model-bahasa')
+      expect(root?.categoryParent).toBeNull()
+    })
+
+    it('detail: draft dan terjadwal tidak bisa dibuka; terjadwal bisa setelah waktunya', async () => {
+      expect(await content.getPublishedArticle(A, 'draf-ulasan-earbuds')).toBeNull()
+      expect(await content.getPublishedArticle(A, 'laptop-terbaik-mahasiswa-2030')).toBeNull()
+      const later = createRepositories(db, { now: () => FUTURE })
+      expect((await later.content.getPublishedArticle(A, 'laptop-terbaik-mahasiswa-2030'))?.title).toBe('Laptop terbaik untuk mahasiswa 2030')
+      expect(await later.content.getPublishedArticle(A, 'draf-ulasan-earbuds')).toBeNull()
+    })
+
+    it('pencarian per site', async () => {
+      expect(slugs((await content.searchPublishedArticles(B, 'rendang')).items)).toEqual(['rendang-padang-empuk'])
+      expect(slugs((await content.searchPublishedArticles(A, 'ponsel lipat')).items)).toEqual(['ponsel-lipat-makin-murah'])
+      expect((await content.searchPublishedArticles(A, 'rendang')).total).toBe(0)
+      expect((await content.searchPublishedArticles(B, 'ponsel')).total).toBe(0)
+    })
+
+    it.each(['', '   ', '"', '& | ! (', "'; DROP TABLE articles; --", 'a'.repeat(1000)])(
+      'pencarian dengan input aneh %j tidak melempar error',
+      async (q) => {
+        await expect(content.searchPublishedArticles(A, q)).resolves.toMatchObject({ page: 1 })
+      },
+    )
+  })
+
+  describe('halaman, kategori, tag, penulis, redirect', () => {
+    it('halaman dengan slug sama di dua site tidak tertukar', async () => {
+      const a = await content.getPublishedPage(A, 'tentang-kami')
+      const b = await content.getPublishedPage(B, 'tentang-kami')
+      expect(JSON.stringify(a?.body)).toContain('Kabar Tekno')
+      expect(JSON.stringify(b?.body)).toContain('Dapur Nusantara')
+      expect(a?.id).not.toBe(b?.id)
+    })
+
+    it('halaman hanya ada di satu site', async () => {
+      expect(await content.getPublishedPage(A, 'kontak')).toBeNull()
+      expect(await content.getPublishedPage(B, 'kontak')).toMatchObject({ title: 'Kontak', viewKey: 'contact' })
+    })
+
+    it('pohon kategori per site', async () => {
+      const tree = (nodes: Awaited<ReturnType<typeof content.getCategoryTree>>): unknown =>
+        nodes.map((n) => [n.slug, tree(n.children)])
+      expect(tree(await content.getCategoryTree(A))).toEqual([['gadget', [['review', []]]], ['kecerdasan-buatan', []]])
+      expect(tree(await content.getCategoryTree(B))).toEqual([['resep', []], ['kuliner-daerah', [['sumatera', []]]]])
+    })
+
+    it('detail kategori memuat induk dan anak; kategori site lain tidak ada', async () => {
+      expect(await content.getCategory(A, 'review')).toMatchObject({ parent: { slug: 'gadget' }, children: [] })
+      expect(slugs((await content.getCategory(A, 'gadget'))?.children ?? [])).toEqual(['review'])
+      expect(await content.getCategory(A, 'sumatera')).toBeNull()
+    })
+
+    it('tag dan penulis; slug yang sama ("redaksi") di dua site tidak tertukar', async () => {
+      expect(await content.getTag(A, 'android')).toMatchObject({ name: 'Android' })
+      expect(await content.getTag(A, 'pedas')).toBeNull()
+      const a = await content.getAuthor(A, 'redaksi')
+      const b = await content.getAuthor(B, 'redaksi')
+      expect(a?.name).toBe('Redaksi Kabar Tekno')
+      expect(b?.name).toBe('Redaksi Dapur')
+      expect(a?.id).not.toBe(b?.id)
+      expect(slugs((await content.listPublishedArticles(A, { authorSlug: 'redaksi' })).items)).toEqual(['cara-kerja-model-bahasa'])
+      expect(slugs((await content.listPublishedArticles(B, { authorSlug: 'redaksi' })).items)).toEqual(['sambal-matah-10-menit', 'rendang-padang-empuk'])
+    })
+
+    it('redirect: cocok walau ada slash di ujung atau query; hanya untuk site pemiliknya', async () => {
+      const expected = { toPath: '/review/ponsel-lipat-makin-murah', statusCode: 301 }
+      expect(await content.findRedirect(A, '/gadget/ponsel-lipat-murah')).toEqual(expected)
+      expect(await content.findRedirect(A, '/gadget/ponsel-lipat-murah/?utm_source=x')).toEqual(expected)
+      expect(await content.findRedirect(B, '/gadget/ponsel-lipat-murah')).toBeNull()
+      expect(await content.findRedirect(A, '//evil.test/x')).toBeNull()
+      expect(await content.findRedirect(A, '/tidak-ada')).toBeNull()
+    })
+  })
+
+  describe('menu', () => {
+    const shape = (nodes: MenuNode[]): unknown =>
+      nodes.map((n) => [n.label, n.target.type, shape(n.children)])
+
+    it('menu header sebagai pohon dengan tujuan ter-resolve', async () => {
+      const a = await menuRepo.getMenuTree(A, 'header')
+      expect(a?.name).toBe('Menu utama')
+      expect(shape(a?.items ?? [])).toEqual([
+        ['Beranda', 'ROUTE', []],
+        ['Gadget', 'CATEGORY', [['Review', 'CATEGORY', []]]],
+        ['AI', 'CATEGORY', []],
+      ])
+      expect(a?.items[1]?.target).toEqual({ type: 'CATEGORY', slug: 'gadget', name: 'Gadget' })
+      expect(a?.items[0]?.target).toEqual({ type: 'ROUTE', path: '/' })
+
+      const b = await menuRepo.getMenuTree(B, 'header')
+      expect(shape(b?.items ?? [])).toEqual([
+        ['Beranda', 'ROUTE', []],
+        ['Resep', 'CATEGORY', []],
+        ['Kuliner Daerah', 'CATEGORY', [['Sumatera', 'CATEGORY', []]]],
+      ])
+    })
+
+    it('menu footer: halaman dan URL eksternal', async () => {
+      const a = await menuRepo.getMenuTree(A, 'footer')
+      expect(a?.items.map((i) => i.target)).toEqual([
+        { type: 'PAGE', slug: 'tentang-kami', title: 'Tentang Kami' },
+        { type: 'URL', url: 'https://x.com/kabartekno' },
+      ])
+      expect(labels((await menuRepo.getMenuTree(B, 'footer'))?.items ?? [])).toEqual(['Kontak'])
+    })
+
+    it('lokasi tanpa menu -> null', async () => {
+      expect(await menuRepo.getMenuTree(A, 'sidebar')).toBeNull()
+    })
+  })
+
+  describe('isolasi antar-site', () => {
+    // Setiap fungsi repository konten dan menu WAJIB muncul di sini. Menambah
+    // fungsi baru tanpa mendaftarkannya membuat test pertama gagal.
+    const args: Record<string, unknown[]> = {
+      listPublishedArticles: [{}],
+      searchPublishedArticles: ['ponsel rendang'],
+      getPublishedArticle: ['ponsel-lipat-makin-murah'],
+      getPublishedPage: ['tentang-kami'],
+      getCategoryTree: [],
+      getCategory: ['review'],
+      getTag: ['android'],
+      getAuthor: ['redaksi'],
+      findRedirect: ['/gadget/ponsel-lipat-murah'],
+      getMediaByIds: [['01930000-0000-7000-8000-000000000202', '01930000-0000-7000-8000-000000000212']],
+      listSitemapEntries: [],
+      getMenuTree: ['header'],
+    }
+    const fns = { ...content, ...menuRepo } as unknown as Record<string, (siteId: string, ...a: unknown[]) => Promise<unknown>>
+
+    it('setiap fungsi terdaftar dan menerima siteId sebagai argumen pertama', () => {
+      expect(Object.keys(fns).sort()).toEqual(Object.keys(args).sort())
+      for (const fn of Object.values(fns)) expect(fn.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('site yang tidak ada tidak pernah menghasilkan data apa pun', async () => {
+      const ghost = randomUUID()
+      for (const [name, fn] of Object.entries(fns)) {
+        const result = await fn(ghost, ...(args[name] ?? []))
+        const empty =
+          result === null ||
+          (Array.isArray(result) && result.length === 0) ||
+          // Object berisi daftar (listSitemapEntries): semua daftar kosong.
+          (typeof result === 'object' && !('items' in (result as object)) && !Array.isArray(result)
+            && Object.values(result as object).every((v) => Array.isArray(v) && v.length === 0)) ||
+          (typeof result === 'object' && 'items' in (result as object) && (result as { items: unknown[] }).items.length === 0)
+        expect(empty, `${name}(siteId tidak ada) mengembalikan data`).toBe(true)
+      }
+    })
+
+    // Kumpulkan semua id milik satu site langsung dari tabel, lalu pastikan
+    // hasil repository site lain tidak memuat satu pun.
+    async function idsOf(siteId: string): Promise<Set<string>> {
+      const [a, c, au, t, p, m, mi] = await Promise.all([
+        db.select({ id: articles.id }).from(articles).where(eq(articles.siteId, siteId)),
+        db.select({ id: categories.id }).from(categories).where(eq(categories.siteId, siteId)),
+        db.select({ id: authors.id }).from(authors).where(eq(authors.siteId, siteId)),
+        db.select({ id: tags.id }).from(tags).where(eq(tags.siteId, siteId)),
+        db.select({ id: pages.id }).from(pages).where(eq(pages.siteId, siteId)),
+        db.select({ id: menus.id }).from(menus).where(eq(menus.siteId, siteId)),
+        db.select({ id: menuItems.id }).from(menuItems).where(eq(menuItems.siteId, siteId)),
+      ])
+      return new Set([...a, ...c, ...au, ...t, ...p, ...m, ...mi].map((r) => r.id))
+    }
+
+    function collectIds(value: unknown, out: Set<string> = new Set()): Set<string> {
+      if (Array.isArray(value)) value.forEach((v) => collectIds(v, out))
+      else if (value && typeof value === 'object' && !(value instanceof Date)) {
+        for (const [k, v] of Object.entries(value)) {
+          if (k === 'id' && typeof v === 'string') out.add(v)
+          else collectIds(v, out)
+        }
+      }
+      return out
+    }
+
+    async function everythingFor(siteId: string) {
+      const results: unknown[] = []
+      const feed = await content.listPublishedArticles(siteId, { pageSize: 50 })
+      results.push(feed)
+      for (const q of [{ featuredOnly: true }, { categorySlug: 'gadget' }, { categorySlug: 'resep' }, { tagSlug: 'android' }, { tagSlug: 'pedas' }, { authorSlug: 'redaksi' }]) {
+        results.push(await content.listPublishedArticles(siteId, { ...q, pageSize: 50 }))
+      }
+      for (const q of ['ponsel', 'rendang', 'sambal', 'laptop']) results.push(await content.searchPublishedArticles(siteId, q))
+      for (const slug of ['ponsel-lipat-makin-murah', 'cara-kerja-model-bahasa', 'rendang-padang-empuk', 'sambal-matah-10-menit']) {
+        results.push(await content.getPublishedArticle(siteId, slug))
+      }
+      for (const slug of ['tentang-kami', 'kontak']) results.push(await content.getPublishedPage(siteId, slug))
+      results.push(await content.getCategoryTree(siteId))
+      for (const slug of ['gadget', 'review', 'kecerdasan-buatan', 'resep', 'kuliner-daerah', 'sumatera']) results.push(await content.getCategory(siteId, slug))
+      for (const slug of ['android', 'laptop', 'pedas', 'tradisional']) results.push(await content.getTag(siteId, slug))
+      for (const slug of ['redaksi', 'budi-santoso']) results.push(await content.getAuthor(siteId, slug))
+      for (const loc of ['header', 'footer']) results.push(await menuRepo.getMenuTree(siteId, loc))
+      results.push(await content.listSitemapEntries(siteId))
+      // Id media kedua site sekaligus: hanya milik pembaca yang kembali.
+      results.push(await content.getMediaByIds(siteId, ['01930000-0000-7000-8000-000000000202', '01930000-0000-7000-8000-000000000212']))
+      return results
+    }
+
+    it.each([
+      ['A membaca', A, B],
+      ['B membaca', B, A],
+    ])('%s: tidak ada id milik site lain di hasil mana pun', async (_label, self, other) => {
+      const foreign = await idsOf(other)
+      expect(foreign.size).toBeGreaterThan(10)
+
+      const seen = collectIds(await everythingFor(self))
+      expect(seen.size).toBeGreaterThan(10) // memastikan test benar-benar membaca data
+      for (const id of seen) {
+        expect(foreign.has(id), `id ${id} milik site lain muncul`).toBe(false)
+      }
+    })
+
+    it('listSitemapEntries: hanya konten tampil; tag/penulis tanpa artikel tampil tidak ikut', async () => {
+      const a = await content.listSitemapEntries(A)
+      // laptop-terbaik-mahasiswa-2030 terjadwal, draf-ulasan-earbuds DRAFT: tidak ikut.
+      expect(a.articles.map((x) => [x.categorySlug, x.slug])).toEqual([
+        ['kecerdasan-buatan', 'cara-kerja-model-bahasa'],
+        ['review', 'ponsel-lipat-makin-murah'],
+      ])
+      expect(a.pages.map((x) => x.slug)).toEqual(['tentang-kami'])
+      expect(a.categories.map((x) => x.slug)).toEqual(['gadget', 'kecerdasan-buatan', 'review'])
+      // tag laptop hanya dipakai artikel terjadwal.
+      expect(a.tags.map((x) => x.slug)).toEqual(['android'])
+      expect(a.authors.map((x) => x.slug)).toEqual(['budi-santoso', 'redaksi'])
+    })
+
+    it('getMediaByIds hanya mengembalikan media site pembaca', async () => {
+      const ids = ['01930000-0000-7000-8000-000000000202', '01930000-0000-7000-8000-000000000212', randomUUID()]
+      expect((await content.getMediaByIds(A, ids)).map((m) => m.storageKey)).toEqual(['kabar-tekno/2026/11/hp.webp'])
+      expect((await content.getMediaByIds(B, ids)).map((m) => m.storageKey)).toEqual(['dapur-nusantara/2026/11/rendang.webp'])
+      expect(await content.getMediaByIds(A, [])).toEqual([])
+    })
+
+    it('media (gambar unggulan dan logo) selalu milik site pembacanya', async () => {
+      const a = await content.listPublishedArticles(A)
+      const b = await content.listPublishedArticles(B)
+      for (const m of a.items.map((i) => i.featuredMedia).filter(Boolean)) expect(m?.storageKey.startsWith('kabar-tekno/')).toBe(true)
+      for (const m of b.items.map((i) => i.featuredMedia).filter(Boolean)) expect(m?.storageKey.startsWith('dapur-nusantara/')).toBe(true)
+    })
+  })
+
+  // -------------------------------------------------------------------
+  // Aturan yang tidak ada di seed: site sementara.
+  // -------------------------------------------------------------------
+  describe('aturan tampil dan status (site sementara)', () => {
+    const code = `fx-${randomBytes(4).toString('hex')}`
+    const fx = { siteId: '', suspendedId: '' }
+    const past = new Date('2026-01-01T00:00:00Z')
+
+    beforeAll(async () => {
+      const [site] = await db.insert(sites).values({ code, name: 'Fixture' }).returning({ id: sites.id })
+      const siteId = (fx.siteId = site?.id ?? '')
+      const [suspended] = await db
+        .insert(sites)
+        .values({ code: `${code}-s`, name: 'Suspended', status: 'SUSPENDED' })
+        .returning({ id: sites.id })
+      fx.suspendedId = suspended?.id ?? ''
+
+      await db.insert(siteDomains).values([
+        { siteId, domain: `${code}.local.test`, isPrimary: true },
+        { siteId, domain: `pending-${code}.local.test`, status: 'PENDING' },
+        { siteId: fx.suspendedId, domain: `${code}-s.local.test`, isPrimary: true },
+      ])
+
+      const cats = await db
+        .insert(categories)
+        .values([
+          { siteId, name: 'Terbuka', slug: 'terbuka' },
+          { siteId, name: 'Rahasia', slug: 'rahasia', status: 'HIDDEN' },
+        ])
+        .returning({ id: categories.id, slug: categories.slug })
+      const cat = (slug: string) => cats.find((c) => c.slug === slug)?.id ?? ''
+
+      const auth = await db
+        .insert(authors)
+        .values([
+          { siteId, name: 'Terlihat', slug: 'terlihat' },
+          { siteId, name: 'Disembunyikan', slug: 'disembunyikan', status: 'HIDDEN' },
+        ])
+        .returning({ id: authors.id, slug: authors.slug })
+      const author = (slug: string) => auth.find((a) => a.slug === slug)?.id ?? ''
+
+      const arts = await db
+        .insert(articles)
+        .values([
+          { siteId, categoryId: cat('terbuka'), authorId: author('disembunyikan'), title: 'Penulis tersembunyi', slug: 'penulis-tersembunyi', status: 'PUBLISHED', publishedAt: past },
+          { siteId, categoryId: cat('rahasia'), title: 'Di kategori tersembunyi', slug: 'di-kategori-tersembunyi', status: 'PUBLISHED', publishedAt: past },
+          { siteId, categoryId: cat('terbuka'), title: 'Review', slug: 'dalam-review', status: 'REVIEW' },
+          { siteId, categoryId: cat('terbuka'), title: 'Arsip', slug: 'diarsipkan', status: 'ARCHIVED' },
+          {
+            siteId,
+            categoryId: cat('terbuka'),
+            title: 'Body rusak',
+            slug: 'body-rusak',
+            status: 'PUBLISHED',
+            publishedAt: past,
+            body: { version: 1, blocks: [{ type: 'paragraph', text: 'masih terbaca' }, { type: 'hologram', data: 1 }] },
+          },
+        ])
+        .returning({ id: articles.id, slug: articles.slug })
+      void arts
+
+      const [tagRow] = await db.insert(tags).values({ siteId, name: 'Uji', slug: 'uji' }).returning({ id: tags.id })
+      const bodyRusak = arts.find((a) => a.slug === 'body-rusak')
+      if (tagRow && bodyRusak) await db.insert(articleTags).values({ siteId, articleId: bodyRusak.id, tagId: tagRow.id })
+
+      const pageRows = await db
+        .insert(pages)
+        .values([
+          { siteId, title: 'Terbit', slug: 'terbit', status: 'PUBLISHED', publishedAt: past },
+          { siteId, title: 'Draft', slug: 'draft', status: 'DRAFT' },
+          { siteId, title: 'Terjadwal', slug: 'terjadwal', status: 'PUBLISHED', publishedAt: FUTURE },
+        ])
+        .returning({ id: pages.id, slug: pages.slug })
+      const page = (slug: string) => pageRows.find((p) => p.slug === slug)?.id ?? ''
+
+      const [menu] = await db.insert(menus).values({ siteId, location: 'header', name: 'Header' }).returning({ id: menus.id })
+      const menuId = menu?.id ?? ''
+      const top = await db
+        .insert(menuItems)
+        .values([
+          { siteId, menuId, label: 'Aktif', itemType: 'CATEGORY', categoryId: cat('terbuka'), sortOrder: 1 },
+          { siteId, menuId, label: 'Nonaktif', itemType: 'CATEGORY', categoryId: cat('terbuka'), sortOrder: 2, isActive: false },
+          { siteId, menuId, label: 'Kategori tersembunyi', itemType: 'CATEGORY', categoryId: cat('rahasia'), sortOrder: 3 },
+          { siteId, menuId, label: 'Halaman draft', itemType: 'PAGE', pageId: page('draft'), sortOrder: 4 },
+          { siteId, menuId, label: 'Halaman terjadwal', itemType: 'PAGE', pageId: page('terjadwal'), sortOrder: 5 },
+          { siteId, menuId, label: 'Halaman terbit', itemType: 'PAGE', pageId: page('terbit'), sortOrder: 6 },
+        ])
+        .returning({ id: menuItems.id, label: menuItems.label })
+      const hidden = top.find((t) => t.label === 'Kategori tersembunyi')
+      const inactive = top.find((t) => t.label === 'Nonaktif')
+      if (hidden && inactive) {
+        await db.insert(menuItems).values([
+          { siteId, menuId, parentId: hidden.id, label: 'Anak dari tersembunyi', itemType: 'ROUTE', url: '/x', sortOrder: 1 },
+          { siteId, menuId, parentId: inactive.id, label: 'Anak dari nonaktif', itemType: 'ROUTE', url: '/y', sortOrder: 1 },
+        ])
+      }
+    })
+
+    afterAll(async () => {
+      // Hapus site sementara; semua datanya ikut terhapus (ON DELETE CASCADE).
+      for (const id of [fx.siteId, fx.suspendedId]) if (id) await db.delete(sites).where(eq(sites.id, id))
+    })
+
+    it('site SUSPENDED atau domain PENDING tidak bisa di-resolve', async () => {
+      expect((await siteRepo.findByDomain(`${code}.local.test`))?.site.id).toBe(fx.siteId)
+      expect(await siteRepo.findByDomain(`pending-${code}.local.test`)).toBeNull()
+      expect(await siteRepo.findByDomain(`${code}-s.local.test`)).toBeNull()
+      expect(await siteRepo.findByCode(`${code}-s`)).toBeNull()
+    })
+
+    it('hanya artikel PUBLISHED yang sudah terbit masuk feed (REVIEW dan ARCHIVED tidak)', async () => {
+      const feed = await content.listPublishedArticles(fx.siteId)
+      expect(slugs(feed.items).sort()).toEqual(['body-rusak', 'di-kategori-tersembunyi', 'penulis-tersembunyi'])
+      expect(await content.getPublishedArticle(fx.siteId, 'dalam-review')).toBeNull()
+      expect(await content.getPublishedArticle(fx.siteId, 'diarsipkan')).toBeNull()
+    })
+
+    it('penulis HIDDEN: byline kosong, tidak bisa dibuka, filternya kosong; artikel tetap tampil', async () => {
+      const a = await content.getPublishedArticle(fx.siteId, 'penulis-tersembunyi')
+      expect(a?.author).toBeNull()
+      expect(await content.getAuthor(fx.siteId, 'disembunyikan')).toBeNull()
+      expect((await content.getAuthor(fx.siteId, 'terlihat'))?.name).toBe('Terlihat')
+      expect((await content.listPublishedArticles(fx.siteId, { authorSlug: 'disembunyikan' })).total).toBe(0)
+    })
+
+    it('kategori HIDDEN: tidak ada di pohon/detail/filter; artikelnya tetap bisa dibuka lewat slug', async () => {
+      expect((await content.getCategoryTree(fx.siteId)).map((c) => c.slug)).toEqual(['terbuka'])
+      expect(await content.getCategory(fx.siteId, 'rahasia')).toBeNull()
+      expect((await content.listPublishedArticles(fx.siteId, { categorySlug: 'rahasia' })).total).toBe(0)
+      expect((await content.getPublishedArticle(fx.siteId, 'di-kategori-tersembunyi'))?.category.slug).toBe('rahasia')
+    })
+
+    it('body dengan block tidak dikenal: artikel tetap tampil, block dilewati dan dilaporkan', async () => {
+      const a = await content.getPublishedArticle(fx.siteId, 'body-rusak')
+      expect(a?.body.blocks).toEqual([{ type: 'paragraph', text: 'masih terbaca' }])
+      expect(a?.bodyIssues).toEqual([{ index: 1, type: 'hologram', reason: 'tipe block tidak dikenal' }])
+      expect(a?.tags.map((t) => t.slug)).toEqual(['uji'])
+    })
+
+    it('halaman: hanya yang PUBLISHED dan sudah terbit', async () => {
+      expect((await content.getPublishedPage(fx.siteId, 'terbit'))?.title).toBe('Terbit')
+      expect(await content.getPublishedPage(fx.siteId, 'draft')).toBeNull()
+      expect(await content.getPublishedPage(fx.siteId, 'terjadwal')).toBeNull()
+      const later = createRepositories(db, { now: () => FUTURE })
+      expect((await later.content.getPublishedPage(fx.siteId, 'terjadwal'))?.title).toBe('Terjadwal')
+    })
+
+    it('menu: item nonaktif, tujuan tidak tampil, dan seluruh turunannya dibuang', async () => {
+      const menu = await menuRepo.getMenuTree(fx.siteId, 'header')
+      expect(labels(menu?.items ?? [])).toEqual(['Aktif', 'Halaman terbit'])
+    })
+
+    it('menu: halaman terjadwal muncul setelah waktunya', async () => {
+      const later = createRepositories(db, { now: () => FUTURE })
+      const menu = await later.menus.getMenuTree(fx.siteId, 'header')
+      expect(labels(menu?.items ?? [])).toEqual(['Aktif', 'Halaman terjadwal', 'Halaman terbit'])
+    })
+  })
+})
+```
+
+11. Tambahkan pengaman CI. Test database yang dilewati karena `DATABASE_URL` kosong bisa membuat CI hijau padahal test isolasi tidak pernah berjalan. Test ini memaksa `DATABASE_URL` ada setiap kali berjalan di CI:
+
+`tests/ci-guard.test.ts`
+
+```ts
+// Test yang membaca database dilewati bila DATABASE_URL tidak ada (nyaman
+// untuk development). Di CI itu berarti test isolasi site bisa "hijau"
+// tanpa pernah berjalan, jadi di CI DATABASE_URL wajib ada.
+import { expect, it } from 'vitest'
+
+it.skipIf(!process.env['CI'])('di CI, DATABASE_URL wajib ada agar test database tidak dilewati diam-diam', () => {
+  expect(process.env['DATABASE_URL'], 'job CI harus menyalakan PostgreSQL dan mengisi DATABASE_URL').toBeTruthy()
+})
+```
+
+# Menjalankan Semua Pemeriksaan di CI
+
+1. Buat `.gitlab-ci.yml` dengan dua job yang berjalan paralel:
+   - `check`: Node 24 + pnpm dari corepack. Menyalakan PostgreSQL 18.7 sebagai service, menjalankan migration dan seed, lalu `pnpm lint`, `pnpm typecheck`, `pnpm test`. Test berjalan sebagai role aplikasi `blog_app`, bukan pemilik schema.
+   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan) di container PostgreSQL 18.7.
+   - Job ketiga, `build`, ditambahkan di bab "Mem-build Aplikasi Web di CI" setelah aplikasi Nuxt ada.
+2. Aturan `workflow` mencegah pipeline ganda saat branch punya merge request terbuka. Store pnpm di-cache berdasarkan `pnpm-lock.yaml`.
+
+`.gitlab-ci.yml`
+
+```yaml
+# =====================================================================
+# CI - framework web artikel multi-site / multi-template
+#   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack),
+#           termasuk test repository yang membaca PostgreSQL 18 yang sudah
+#           di-migrate dan di-seed, sebagai role aplikasi blog_app
+#   db    : uji lengkap packages/db (run_all.sh, 50 pemeriksaan) di
+#           PostgreSQL 18 sebagai service
+#   build : nuxt build apps/web + smoke test hasil build: tanpa database
+#           (/api/health 503, bukan crash), lalu dengan database ber-seed
+#           (health 200 + halaman tekno/kuliner dirender)
+# =====================================================================
+
+stages:
+  - check
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+check:
+  stage: check
+  image: node:24
+  services:
+    - name: postgres:18.7
+      alias: db
+      command: ["postgres", "-c", "timezone=UTC"]
+  variables:
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+    # Container service
+    POSTGRES_USER: blog
+    POSTGRES_PASSWORD: ci_owner_password
+    POSTGRES_DB: blog_dev
+    # psql di job (libpq) = pemilik schema, untuk migration dan seed
+    PGHOST: db
+    PGPORT: "5432"
+    PGUSER: blog
+    PGPASSWORD: ci_owner_password
+    PGDATABASE: blog_dev
+    APP_DB_USER: blog_app
+    APP_DB_PASSWORD: ci_app_password
+    SEED_DEV_DATA: "true"
+    # Dipakai test (Vitest): koneksi sebagai role aplikasi, bukan pemilik schema
+    DATABASE_URL: "postgres://blog_app:ci_app_password@db:5432/blog_dev"
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+  before_script:
+    # psql untuk scripts/migrate.sh (image node:24 membawa klien 15; cukup untuk server 18)
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client
+    - corepack enable pnpm
+    - pnpm config set store-dir "$PNPM_STORE_DIR"
+    - pnpm install --frozen-lockfile
+  script:
+    - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
+    - sh packages/db/scripts/setup.sh
+    - pnpm lint
+    - pnpm typecheck
+    - pnpm test
+
+build:
+  stage: check
+  image: node:24
+  services:
+    - name: postgres:18.7
+      alias: db
+      command: ["postgres", "-c", "timezone=UTC"]
+  variables:
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+    POSTGRES_USER: blog
+    POSTGRES_PASSWORD: ci_owner_password
+    POSTGRES_DB: blog_dev
+    PGHOST: db
+    PGPORT: "5432"
+    PGUSER: blog
+    PGPASSWORD: ci_owner_password
+    PGDATABASE: blog_dev
+    APP_DB_USER: blog_app
+    APP_DB_PASSWORD: ci_app_password
+    SEED_DEV_DATA: "true"
+    SITE_MODE: multi
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+    policy: pull
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client
+    - corepack enable pnpm
+    - pnpm config set store-dir "$PNPM_STORE_DIR"
+    - pnpm install --frozen-lockfile
+  script:
+    - pnpm build
+    # 1. Tanpa database: server tetap start, /api/health menjawab 503 (bukan crash).
+    - DATABASE_URL="postgres://smoke:smoke@127.0.0.1:1/smoke" EXPECT_STATUS=503 pnpm --filter @framework/web smoke
+    # 2. Database ber-seed: health 200 dan halaman kedua domain seed dirender
+    #    (menangkap bug yang hanya muncul di bundle produksi).
+    - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
+    - sh packages/db/scripts/setup.sh
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.local.test,kuliner.local.test pnpm --filter @framework/web smoke
+  artifacts:
+    paths:
+      - apps/web/.output/
+    expire_in: 1 week
+
+db:
+  stage: check
+  image: postgres:18.7
+  services:
+    - name: postgres:18.7
+      alias: db
+      command: ["postgres", "-c", "timezone=UTC"]
+  variables:
+    # Untuk container service
+    POSTGRES_USER: blog
+    POSTGRES_PASSWORD: ci_owner_password
+    POSTGRES_DB: postgres
+    # Untuk psql di job (libpq)
+    PGHOST: db
+    PGPORT: "5432"
+    PGUSER: blog
+    PGPASSWORD: ci_owner_password
+    PGDATABASE: postgres
+    APP_DB_USER: blog_app
+    APP_DB_PASSWORD: ci_app_password
+  script:
+    - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
+    - bash packages/db/run_all.sh blog_framework_test
+```
+
+3. Push ke GitLab, lalu buka menu Build → Pipelines. Kedua job harus hijau. Pipeline hijau pertama menandai fondasi selesai: repository, database, dan tooling sudah terbukti berjalan di mesin selain laptop Anda.
+4. Jadikan ini kebiasaan untuk setiap task berikutnya:
+   - aturan baru selalu punya test, dan CI harus hijau;
+   - perubahan schema selalu berupa file migration baru;
+   - tidak ada secret di Git;
+   - keputusan yang mahal diubah ditulis sebagai ADR.
+
+# Membangun Kerangka Aplikasi Web dengan Nuxt
+
+1. Periksa versi Nuxt terbaru sebelum memasang. Buku ini memakai Nuxt 4.6.4, yang butuh Node `^22.22.3`, `^24.15.0`, atau `>=26`:
+
+```bash
+pnpm view nuxt dist-tags
+pnpm view nuxt@latest engines
+```
+
+2. Pasang Nuxt, Vue, dan Vue Router ke `apps/web`:
+
+```bash
+pnpm --filter @framework/web add nuxt@4.6.4 vue@^3.5.45 vue-router@^5.5.1
+```
+
+3. pnpm 12 menolak menjalankan build script dependency yang belum diizinkan, dan install berhenti dengan `ERR_PNPM_IGNORED_BUILDS` untuk esbuild. Izinkan esbuild saja, jangan semua paket sekaligus. Postinstall esbuild hanya memverifikasi binary sesuai platform. Perintah ini menulis `allowBuilds` ke `pnpm-workspace.yaml`:
+
+```bash
+pnpm approve-builds esbuild
+pnpm install
+```
+
+4. Lengkapi `apps/web/package.json`:
+   - `dev` membaca `.env` di root repo lewat `--dotenv ../../.env`, jadi `DATABASE_URL` cukup ditulis sekali.
+   - `preview` menjalankan hasil build dengan `.env` root bila ada.
+   - `postinstall` menjalankan `nuxt prepare`, yang membuat folder `.nuxt/` berisi tipe dan tsconfig setiap kali `pnpm install`.
+   - Paket workspace `@framework/core` dan `@framework/db` dipasang sebagai dependency.
+   - Script `typecheck` dan devDependency `vue-tsc` ditambahkan di bab berikutnya, script `smoke` di bab build CI. Dependency paket template dan opsi `--host localhost` pada `dev` ditambahkan di bab "Membangun Sistem Template".
+
+`apps/web/package.json`
+
+```json
+{
+  "name": "@framework/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Nuxt: public site + /admin + server/api",
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --dotenv ../../.env --host localhost",
+    "build": "nuxt build",
+    "preview": "node --env-file-if-exists=../../.env .output/server/index.mjs",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs"
+  },
+  "dependencies": {
+    "@framework/core": "workspace:*",
+    "@framework/db": "workspace:*",
+    "@framework/template-base": "workspace:*",
+    "@framework/template-kit": "workspace:*",
+    "@framework/template-magazine": "workspace:*",
+    "nuxt": "4.6.4",
+    "vue": "^3.5.45",
+    "vue-router": "^5.5.1"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vue-tsc": "^3.3.14"
+  }
+}
+```
+
+5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Opsi `vite.server.allowedHosts` dijelaskan di bab "Memilih Site dari Domain Request":
+
+`apps/web/nuxt.config.ts`
+
+```ts
+// Satu aplikasi Nuxt untuk public site, /admin, dan server API (ADR-002).
+// Logika domain ada di @framework/core; aplikasi ini hanya merangkai
+// request -> core -> template.
+export default defineNuxtConfig({
+  compatibilityDate: '2026-11-19',
+  devtools: { enabled: false },
+  typescript: { strict: true },
+  // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
+  // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.
+  nitro: {
+    externals: { inline: ['@framework/core', '@framework/db'] },
+  },
+  // Dev server Vite menolak Host selain localhost (403). Domain site dev
+  // (seed) berakhiran .local.test. Tidak berlaku untuk server produksi.
+  vite: { server: { allowedHosts: ['.local.test'] } },
+})
+```
+
+6. Buat `apps/web/tsconfig.json` yang merujuk ke empat tsconfig buatan Nuxt di `.nuxt/`, satu per lingkungan:
+
+`apps/web/tsconfig.json`
+
+```jsonc
+{
+  // Tsconfig dibuat Nuxt di .nuxt/ (nuxt prepare, otomatis saat pnpm install).
+  // Satu file per lingkungan: app (browser + SSR), server (Nitro), shared, node (config).
+  "files": [],
+  "references": [
+    { "path": "./.nuxt/tsconfig.app.json" },
+    { "path": "./.nuxt/tsconfig.server.json" },
+    { "path": "./.nuxt/tsconfig.shared.json" },
+    { "path": "./.nuxt/tsconfig.node.json" }
+  ]
+}
+```
+
+7. Siapkan koneksi database untuk server. Buat satu pool dan satu set repository per proses, bukan per request. Pool dibuat saat pertama kali dipakai, sehingga `nuxt build` tidak butuh `DATABASE_URL`. Semua yang khusus untuk satu request (site, theme) nantinya disimpan di `event.context`, bukan di modul ini:
+
+`apps/web/server/utils/database.ts`
+
+```ts
+// Satu koneksi database (pool) dan satu set repository per PROSES server.
+// Ini bukan state per request: semua yang khusus request (site, theme) wajib
+// disimpan di event.context, tidak di modul (ADR-001).
+import { createRepositories, type Repositories } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv, type Database } from '@framework/db'
+
+let database: Database | undefined
+let repositories: Repositories | undefined
+
+/** Pool dibuat saat pertama dipakai, agar `nuxt build` tidak butuh DATABASE_URL. */
+export function useDatabase(): Database {
+  database ??= createDatabase({
+    connectionString: databaseUrlFromEnv(),
+    applicationName: 'blog-framework-web',
+  })
+  return database
+}
+
+export function useRepositories(): Repositories {
+  repositories ??= createRepositories(useDatabase())
+  return repositories
+}
+
+/** Dipanggil saat server berhenti (server/plugins/database.ts). */
+export async function closeDatabase(): Promise<void> {
+  const current = database
+  database = undefined
+  repositories = undefined
+  await current?.$client.end()
+}
+```
+
+8. Tutup pool saat server berhenti. Import `nuxt/server` di Nuxt 4.6 belum menyediakan hook shutdown, jadi file ini memakai API Nitro (`defineNitroPlugin` dan hook `close`). Hanya folder `server/plugins/` yang boleh memakai API Nitro, sehingga saat upgrade ke Nuxt 5 cukup folder ini yang perlu diperiksa:
+
+`apps/web/server/plugins/database.ts`
+
+```ts
+// Menutup pool database saat server berhenti.
+//
+// Memakai API Nitro (defineNitroPlugin, hook 'close') karena nuxt/server
+// di Nuxt 4.6 belum menyediakan hook shutdown. Hanya file di server/plugins/
+// yang boleh begitu; saat upgrade ke Nuxt 5, cukup folder ini yang diperiksa.
+import { closeDatabase } from '../utils/database'
+
+export default defineNitroPlugin((nitroApp) => {
+  nitroApp.hooks.hook('close', closeDatabase)
+})
+```
+
+9. Tulis server route pertama dengan import `nuxt/server` (ADR-002), bukan `h3`. `GET /api/health` menjalankan `select 1`. Bila database tidak bisa dihubungi, route ini mengembalikan HTTP 503. Detail error hanya ditulis ke log server dan tidak dikirim ke klien:
+
+`apps/web/server/api/health.get.ts`
+
+```ts
+// GET /api/health  -  apakah server dan database bisa melayani request.
+// Dipakai untuk cek manual sekarang dan health check container di produksi.
+// Detail error hanya masuk log server, tidak dikirim ke klien.
+import { sql } from '@framework/db'
+import { defineEventHandler, setResponseStatus } from 'nuxt/server'
+import { useDatabase } from '../utils/database'
+
+export default defineEventHandler(async (event) => {
+  try {
+    await useDatabase().execute(sql`select 1`)
+    return { status: 'ok' as const, database: 'ok' as const }
+  } catch (error) {
+    console.error('[health] database tidak bisa dihubungi', error)
+    setResponseStatus(event, 503)
+    return { status: 'error' as const, database: 'unreachable' as const }
+  }
+})
+```
+
+10. Buat halaman sementara di `apps/web/app/app.vue`. Isinya nanti diganti oleh template (versi lengkapnya ada di bab "Membangun Sistem Template"). Untuk sekarang cukup:
+
+```vue
+<template>
+  <main>
+    <h1>Framework web artikel</h1>
+    <p>Aplikasi berjalan. Status server: <code>/api/health</code></p>
+  </main>
+</template>
+```
+
+11. Tambahkan script `dev` dan `build` di `package.json` root (lihat bab monorepo), lalu jalankan aplikasi. `/api/health` bisa dibuka dari `localhost`, sedangkan halaman lain butuh domain site (bab "Memilih Site dari Domain Request"):
+
+```bash
+pnpm dev
+# buka http://localhost:3000/api/health
+# {"status":"ok","database":"ok"}
+```
+
+12. Uji build produksi, termasuk tiga hal berikut:
+   - Health check memakai role aplikasi.
+   - Jalur gagal mengembalikan 503.
+   - Pool tertutup saat server dihentikan.
+
+```bash
+pnpm build
+pnpm --filter @framework/web preview          # http://localhost:3000/api/health
+
+# Di terminal lain: koneksi harus memakai role blog_app
+docker compose exec db psql -U blog -d blog_dev -c \
+  "select usename, application_name from pg_stat_activity where application_name = 'blog-framework-web'"
+
+# Hentikan server (Ctrl+C), lalu ulangi query di atas: hasilnya harus kosong.
+
+# Jalur gagal: database salah -> HTTP 503
+DATABASE_URL=postgres://x:y@127.0.0.1:59999/x node apps/web/.output/server/index.mjs
+```
+
+13. Jalankan `pnpm check`. Lint, typecheck root, dan semua test harus tetap hijau. Typecheck untuk file `.vue` dibahas di bab berikutnya.
+
+# Memeriksa Komponen Vue dengan ESLint dan vue-tsc
+
+1. Pahami celahnya dulu. Aturan import template di `eslint.config.js` sudah menyebut file `.vue`, tetapi ESLint belum bisa membacanya. Coba lint komponen apa saja dan hasilnya `Parsing error`. Artinya, komponen template bisa import `@framework/db` tanpa ketahuan. Typecheck root (`tsc`) juga tidak membaca `.vue` sama sekali.
+
+2. Pasang parser dan plugin Vue untuk ESLint di root. `eslint-plugin-vue` 10 butuh `vue-eslint-parser` ^10.3 sebagai peer dependency:
+
+```bash
+pnpm add -Dw eslint-plugin-vue@^10.12.1 vue-eslint-parser@^10.4.2
+```
+
+3. Tambahkan dua blok ke `eslint.config.js`, tepat setelah `tseslint.configs.recommended`:
+   - `pluginVue.configs['flat/recommended']` memasang parser `.vue` dan aturan Vue yang disarankan.
+   - Blok `files: ['**/*.vue']` meminta parser Vue memakai parser typescript-eslint untuk `<script lang="ts">`. Tanpa ini, script TypeScript di komponen gagal diparse.
+
+```js
+import pluginVue from 'eslint-plugin-vue'
+
+  // ...
+  tseslint.configs.recommended,
+
+  pluginVue.configs['flat/recommended'],
+  {
+    files: ['**/*.vue'],
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+  },
+```
+
+   Karena aturan `no-restricted-imports` untuk `templates/**/*.vue` ditulis setelahnya, aturan itu kini benar-benar berlaku untuk komponen.
+
+4. Tambahkan kasus `.vue` ke `tests/architecture.test.ts`. Kode yang diuji dibungkus dalam `<script setup lang="ts">` dan `<template>`, lalu diperiksa tiga hal:
+   - Import core, db, dan driver pg di komponen template ditolak.
+   - Import tipe dari `@framework/template-kit` diizinkan.
+   - Komponen diparse tanpa error fatal. Ini menjaga agar konfigurasi parser tidak rusak diam-diam: bila parser hilang, kasus penolakan juga ikut gagal karena tidak ada pesan `no-restricted-imports`.
+
+   Isi lengkap file ada di bab "Menyiapkan TypeScript, ESLint, dan Vitest".
+
+5. Pasang `vue-tsc` di `apps/web`. `nuxt typecheck` memakai `vue-tsc` dari dependency proyek. Pasang juga `typescript` dengan versi yang sama dengan root, agar app dan root memakai compiler yang sama:
+
+```bash
+pnpm --filter @framework/web add -D vue-tsc@^3.3.14 typescript@~6.0.3
+```
+
+6. Tambahkan script `"typecheck": "nuxt typecheck"` di `apps/web/package.json` (lihat bab aplikasi web). `nuxt typecheck` menjalankan `vue-tsc` dengan empat tsconfig buatan Nuxt, sehingga kode app (`.vue`) dan kode server sama-sama diperiksa.
+
+7. Gabungkan ke `typecheck` root, agar `pnpm check` juga memeriksa Nuxt:
+
+```json
+"typecheck": "tsc -p tsconfig.json && pnpm --filter @framework/web typecheck"
+```
+
+   Template belum punya kode. Begitu komponen template di-import oleh app, `vue-tsc` ikut memeriksanya lewat import itu.
+
+8. Pastikan pemeriksaan benar-benar menangkap kesalahan. Sisipkan error sementara, jalankan, lalu kembalikan file:
+
+```bash
+# di apps/web/app/app.vue tambahkan:
+#   <script setup lang="ts">
+#   const n: number = 'teks'
+#   </script>
+pnpm typecheck     # app/app.vue: error TS2322
+pnpm lint          # 'n' is assigned a value but never used
+
+# di apps/web/server/api/health.get.ts tambahkan:
+#   const x: string = 1; export { x }
+pnpm typecheck     # server/api/health.get.ts: error TS2322
+```
+
+9. CI tidak perlu diubah. Job `check` sudah menjalankan `pnpm install`, yang memicu `nuxt prepare` dan membuat `.nuxt/`, lalu `pnpm typecheck` yang kini ikut menjalankan `nuxt typecheck`.
+
+10. Jalankan `pnpm check`. Lint (termasuk `.vue`), typecheck root dan Nuxt, serta semua test harus hijau.
+
+# Mem-build Aplikasi Web di CI
+
+1. Pahami celahnya. Job `check` menjalankan lint, typecheck, dan test, tetapi tidak pernah menjalankan `nuxt build`. Kesalahan yang hanya muncul saat build tidak akan ketahuan sampai deploy. Contohnya: paket workspace yang lupa dimasukkan ke `externals.inline`, atau dependency yang tidak ikut ter-bundle.
+
+2. Build yang sukses belum cukup, karena server bisa saja crash saat start. Tulis smoke test `apps/web/scripts/smoke-build.mjs` yang:
+   - menjalankan `.output/server/index.mjs` di port 3999;
+   - menunggu sampai `/api/health` menjawab (paling lama 30 detik);
+   - mencocokkan status HTTP dengan `EXPECT_STATUS` (default 200) dan memastikan body adalah respons health check;
+   - menghentikan server dan keluar dengan kode 1 bila ada yang tidak cocok.
+
+   Pemeriksaan halaman (`SMOKE_HOSTS`) ditambahkan di bab "Membangun Sistem Template", setelah ada halaman yang bisa dirender.
+
+`apps/web/scripts/smoke-build.mjs`
+
+```js
+// Smoke test hasil build: jalankan .output/server/index.mjs, panggil
+// /api/health, lalu cocokkan status HTTP dengan yang diharapkan.
+//
+//   node scripts/smoke-build.mjs          -> harus 200 (database hidup)
+//   EXPECT_STATUS=503 node scripts/...    -> database sengaja tidak ada (CI)
+//   SMOKE_HOSTS=a.test,b.test node ...    -> juga render halaman / tiap domain
+//
+// 503 tetap membuktikan bundle bisa start, route ikut ter-build, dan
+// driver pg ikut terbawa: tanpa pg, server crash dan status tidak pernah 503.
+//
+// SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
+// 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
+// muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+const port = process.env.SMOKE_PORT ?? '3999'
+const expected = Number(process.env.EXPECT_STATUS ?? '200')
+const timeoutMs = 30_000
+const entry = fileURLToPath(new URL('../.output/server/index.mjs', import.meta.url))
+const url = `http://127.0.0.1:${port}/api/health`
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+
+const server = spawn(process.execPath, [entry], {
+  env: { ...process.env, PORT: port, HOST: '127.0.0.1' },
+  stdio: ['ignore', 'inherit', 'inherit'],
+})
+
+let exited = false
+let stopping = false
+server.on('exit', (code) => {
+  exited = true
+  if (!stopping) console.error(`[smoke] server berhenti sendiri (exit ${code})`)
+})
+
+async function waitForResponse() {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline && !exited) {
+    try {
+      return await fetch(url)
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  return undefined
+}
+
+let failed = true
+try {
+  const response = await waitForResponse()
+  if (!response) {
+    console.error(`[smoke] GAGAL: ${url} tidak menjawab dalam ${timeoutMs / 1000} detik`)
+  } else {
+    const body = await response.text()
+    console.log(`[smoke] ${url} -> ${response.status} ${body}`)
+    if (response.status !== expected) {
+      console.error(`[smoke] GAGAL: status ${response.status}, seharusnya ${expected}`)
+    } else if (!body.includes('"status"')) {
+      console.error('[smoke] GAGAL: body bukan respons health check')
+    } else {
+      failed = !(await checkPages())
+      if (!failed) console.log('[smoke] OK')
+    }
+  }
+} finally {
+  stopping = true
+  if (!exited) server.kill('SIGTERM')
+}
+process.exitCode = failed ? 1 : 0
+
+/** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
+async function checkPages() {
+  let ok = true
+  for (const host of pageHosts) {
+    const target = `http://127.0.0.1:${port}/`
+    // fetch() tidak mengizinkan header Host; pakai node:http.
+    const { status, body } = await getWithHost(target, host)
+    const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
+    console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
+    if (status !== 200 || !wrapper) {
+      console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    }
+  }
+  return ok
+}
+
+async function getWithHost(target, host) {
+  const { request } = await import('node:http')
+  return new Promise((resolve, reject) => {
+    const req = request(target, { headers: { host } }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+```
+
+3. Tambahkan script `"smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs"` di `apps/web/package.json`. Variabel yang sudah ada di lingkungan tidak ditimpa oleh `.env`, jadi CI tetap bisa mengatur `DATABASE_URL` sendiri.
+
+4. Coba di lokal dengan database hidup, lalu dengan database yang sengaja tidak ada:
+
+```bash
+pnpm build
+pnpm --filter @framework/web smoke
+# [smoke] http://127.0.0.1:3999/api/health -> 200 {"status":"ok","database":"ok"}
+
+DATABASE_URL=postgres://smoke:smoke@127.0.0.1:1/smoke EXPECT_STATUS=503 \
+  pnpm --filter @framework/web smoke
+# [smoke] ... -> 503 {"status":"error","database":"unreachable"}
+
+# Status tidak sesuai harus gagal (exit 1):
+DATABASE_URL=postgres://smoke:smoke@127.0.0.1:1/smoke pnpm --filter @framework/web smoke
+```
+
+5. Tambahkan job `build` di `.gitlab-ci.yml` (file lengkap ada di bab CI; versi akhirnya memakai PostgreSQL, lihat bab "Membangun Sistem Template"):
+   - Versi pertama ini tidak memakai service PostgreSQL. `DATABASE_URL` sengaja menunjuk port yang tidak ada dan `EXPECT_STATUS` diisi 503. Server harus start dan menjawab 503, bukan crash. Itu sudah membuktikan bundle bisa start, route ikut ter-build, dan driver `pg` ikut terbawa.
+   - Cache store pnpm memakai kunci yang sama dengan `check`, tetapi dengan `policy: pull` agar dua job paralel tidak saling menimpa cache.
+   - Hasil build `apps/web/.output/` disimpan sebagai artifact selama satu minggu. Artifact ini berguna untuk memeriksa isi bundle, dan nanti untuk deploy.
+
+```yaml
+build:
+  stage: check
+  image: node:24
+  variables:
+    DATABASE_URL: "postgres://smoke:smoke@127.0.0.1:1/smoke"
+    EXPECT_STATUS: "503"
+  script:
+    - pnpm build
+    - pnpm --filter @framework/web smoke
+  artifacts:
+    paths:
+      - apps/web/.output/
+    expire_in: 1 week
+```
+
+6. Push, lalu pastikan ketiga job (`check`, `build`, `db`) hijau di Build → Pipelines.
+
+# Memilih Site dari Domain Request
+
+1. Pahami alurnya. Setiap request harus tahu site mana yang dilayani sebelum halaman apa pun dirender:
+   - Mode multi: header `Host` dicari di `site_domains`.
+   - Mode single: hanya site `SITE_CODE` yang dilayani, tetapi `Host` tetap dicek. Domain milik site lain di database yang sama ditolak.
+   - Domain alias (`is_primary = false`, misalnya `www.*`) dialihkan 301 ke domain primary.
+   - Host yang tidak dikenal dijawab 404 netral: teks biasa, tanpa template, dan tanpa membocorkan nama site lain.
+   - Hasilnya disimpan di `event.context`, bukan di variabel modul, karena satu proses melayani banyak site sekaligus (ADR-001).
+
+2. Pisahkan logika dari HTTP. Keputusan "site mana, redirect, atau 404" ditulis di `@framework/core` sebagai fungsi murni yang bisa diuji tanpa Nuxt. Aplikasi web hanya menerjemahkan hasilnya ke respons HTTP.
+
+3. Tulis validasi mode deploy dengan Zod di `packages/core/src/site/mode.ts`:
+   - `SITE_MODE` wajib diisi, `single` atau `multi`.
+   - `SITE_CODE` wajib di mode single, dengan format yang sama dengan constraint `sites_code_format`.
+   - `SITE_CODE` yang diisi di mode multi ditolak karena ambigu: siapa pun yang membaca config bisa mengira site sudah dikunci.
+   - Nilai kosong dianggap tidak diisi, dan pesan error menyebut setiap variabel yang bermasalah.
+
+`packages/core/src/site/mode.ts`
+
+```ts
+// Mode deploy (ADR-001), dibaca dari environment saat server start.
+//
+//   SITE_MODE=multi                         Host request -> site_domains
+//   SITE_MODE=single  SITE_CODE=<kode>      satu site; domain tetap dicek
+//
+// Config yang salah atau ambigu ditolak, supaya proses gagal start alih-alih
+// diam-diam melayani site yang salah.
+import { z } from 'zod'
+
+export type SiteMode =
+  | { mode: 'multi' }
+  | { mode: 'single'; siteCode: string }
+
+/** Format sama dengan sites.code (lihat constraint sites_code_format). */
+const siteCode = z
+  .string()
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'harus huruf kecil, angka, dan tanda hubung, misalnya kabar-tekno')
+  .max(50)
+
+const siteModeEnv = z.discriminatedUnion('SITE_MODE', [
+  z.object({
+    SITE_MODE: z.literal('multi'),
+    SITE_CODE: z.undefined({ error: 'tidak boleh diisi saat SITE_MODE=multi (site dipilih dari Host)' }),
+  }),
+  z.object({
+    SITE_MODE: z.literal('single'),
+    SITE_CODE: siteCode,
+  }),
+], { error: 'SITE_MODE wajib diisi: single atau multi' })
+
+export class SiteModeConfigError extends Error {
+  override name = 'SiteModeConfigError'
+}
+
+/**
+ * Membaca SITE_MODE dan SITE_CODE. Nilai kosong ('') dianggap tidak diisi.
+ * Melempar SiteModeConfigError yang menyebut setiap variabel bermasalah.
+ */
+export function parseSiteMode(env: Record<string, string | undefined>): SiteMode {
+  const pick = (key: string) => {
+    const value = env[key]?.trim()
+    return value === '' ? undefined : value
+  }
+  const result = siteModeEnv.safeParse({ SITE_MODE: pick('SITE_MODE'), SITE_CODE: pick('SITE_CODE') })
+  if (!result.success) {
+    const problems = result.error.issues.map((issue) => {
+      const key = issue.path.join('.') || 'SITE_MODE'
+      return `${key}: ${issue.message}`
+    })
+    throw new SiteModeConfigError(`Konfigurasi mode site tidak valid -> ${problems.join('; ')}`)
+  }
+  const data = result.data
+  return data.SITE_MODE === 'multi' ? { mode: 'multi' } : { mode: 'single', siteCode: data.SITE_CODE }
+}
+```
+
+4. Tulis resolver di `packages/core/src/site/resolve.ts`. Hasilnya union tiga kemungkinan: `site`, `redirect`, atau `not-found`. Mode single cukup satu panggilan `findByDomain(host)` lalu mencocokkan `site.code`, jadi pengecekan domain tidak menambah query. Normalisasi Host (huruf kecil, tanpa port, tanpa titik di ujung) sudah dilakukan `normalizeHost` di repository site. Alias hanya dialihkan bila site punya domain primary aktif; tanpa primary, alias tetap dilayani agar site tidak hilang:
+
+`packages/core/src/site/resolve.ts`
+
+```ts
+// Host request -> site, sesuai mode deploy (ADR-001).
+//
+// Fungsi murni di atas repository: tidak tahu soal HTTP. Middleware di
+// apps/web menerjemahkan hasilnya menjadi event.context, 301, atau 404.
+import type { ResolvedSite, SiteRepository } from '../repositories/site-repository'
+import type { SiteMode } from './mode'
+
+export type SiteResolution =
+  /** Site ditemukan dan Host adalah domain yang benar untuk dilayani. */
+  | { kind: 'site'; resolved: ResolvedSite }
+  /** Host adalah alias (mis. www.*): alihkan permanen ke domain primary. */
+  | { kind: 'redirect'; resolved: ResolvedSite; toHost: string }
+  /** Tidak ada site untuk Host ini. Dijawab 404 netral, tanpa template. */
+  | { kind: 'not-found'; reason: 'unknown-host' | 'other-site' }
+
+/**
+ * Mode multi: site mana pun yang memiliki domain itu.
+ * Mode single: hanya site SITE_CODE; domain milik site lain di database yang
+ * sama tetap ditolak ('other-site'), jadi Host tetap dicek.
+ *
+ * Alias dialihkan hanya bila site punya domain primary aktif yang berbeda;
+ * tanpa primary, alias dilayani apa adanya agar site tidak hilang.
+ */
+export async function resolveSiteRequest(
+  mode: SiteMode,
+  sites: Pick<SiteRepository, 'findByDomain'>,
+  host: string,
+): Promise<SiteResolution> {
+  const resolved = await sites.findByDomain(host)
+  if (!resolved) return { kind: 'not-found', reason: 'unknown-host' }
+  if (mode.mode === 'single' && resolved.site.code !== mode.siteCode) {
+    return { kind: 'not-found', reason: 'other-site' }
+  }
+  const { isPrimary, primaryDomain, matchedDomain } = resolved
+  if (!isPrimary && primaryDomain && primaryDomain !== matchedDomain) {
+    return { kind: 'redirect', resolved, toHost: primaryDomain }
+  }
+  return { kind: 'site', resolved }
+}
+```
+
+5. Ekspor keduanya dari `packages/core/src/index.ts` (lihat bab repository):
+
+```ts
+export * from './site/mode'
+export * from './site/resolve'
+```
+
+6. Uji validasi env, termasuk semua kombinasi yang harus ditolak:
+
+`packages/core/src/site/mode.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { parseSiteMode, SiteModeConfigError } from './mode'
+
+describe('parseSiteMode', () => {
+  it('multi tanpa SITE_CODE', () => {
+    expect(parseSiteMode({ SITE_MODE: 'multi' })).toEqual({ mode: 'multi' })
+  })
+
+  it('single dengan SITE_CODE; spasi di ujung diabaikan', () => {
+    expect(parseSiteMode({ SITE_MODE: 'single', SITE_CODE: ' kabar-tekno ' })).toEqual({ mode: 'single', siteCode: 'kabar-tekno' })
+  })
+
+  it('SITE_CODE kosong di mode multi dianggap tidak diisi', () => {
+    expect(parseSiteMode({ SITE_MODE: 'multi', SITE_CODE: '' })).toEqual({ mode: 'multi' })
+  })
+
+  it.each([
+    ['SITE_MODE tidak diisi', {}, /SITE_MODE wajib diisi/],
+    ['SITE_MODE kosong', { SITE_MODE: '' }, /SITE_MODE wajib diisi/],
+    ['SITE_MODE tidak dikenal', { SITE_MODE: 'both' }, /SITE_MODE wajib diisi/],
+    ['SITE_MODE huruf besar', { SITE_MODE: 'MULTI' }, /SITE_MODE wajib diisi/],
+    ['single tanpa SITE_CODE', { SITE_MODE: 'single' }, /SITE_CODE/],
+    ['single dengan SITE_CODE berformat salah', { SITE_MODE: 'single', SITE_CODE: 'Kabar Tekno' }, /SITE_CODE: harus huruf kecil/],
+    ['single dengan SITE_CODE terlalu panjang', { SITE_MODE: 'single', SITE_CODE: 'a'.repeat(51) }, /SITE_CODE/],
+    ['multi dengan SITE_CODE (ambigu)', { SITE_MODE: 'multi', SITE_CODE: 'kabar-tekno' }, /SITE_CODE: tidak boleh diisi/],
+  ])('menolak: %s', (_label, env, message) => {
+    expect(() => parseSiteMode(env)).toThrow(SiteModeConfigError)
+    expect(() => parseSiteMode(env)).toThrow(message)
+  })
+})
+```
+
+7. Uji resolver dalam dua lapis:
+   - Unit test dengan repository palsu, untuk semua cabang keputusan: kedua mode, Host huruf besar dan ber-port, alias, alias tanpa primary, Host tak dikenal atau tidak valid, dan domain site lain di mode single.
+   - Test terhadap database seed (dilewati tanpa `DATABASE_URL`), untuk memastikan normalisasi Host dan alias `www.tekno.local.test` bekerja dengan data sungguhan.
+
+`packages/core/src/site/resolve.test.ts`
+
+```ts
+// Resolver Host -> site untuk kedua mode deploy.
+//  1. Unit: repository palsu, semua cabang keputusan.
+//  2. Database dev yang di-seed (dilewati tanpa DATABASE_URL): normalisasi
+//     Host sungguhan (huruf besar, port, titik di ujung) dan alias www.
+import { createDatabase } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createRepositories, type ResolvedSite, type SiteInfo } from '../repositories'
+import { normalizeHost } from '../repositories/site-repository'
+import { resolveSiteRequest } from './resolve'
+
+function site(code: string): SiteInfo {
+  return {
+    id: `id-${code}`,
+    code,
+    name: code,
+    defaultLocale: 'id',
+    timezone: 'Asia/Jakarta',
+    settings: {} as SiteInfo['settings'],
+    logo: null,
+    favicon: null,
+  }
+}
+
+const tekno = site('kabar-tekno')
+const kuliner = site('dapur-nusantara')
+const legacy = site('arsip-lama')
+
+/** domain -> [site, isPrimary]; primary dihitung dari isi tabel ini. */
+const domains: Record<string, [SiteInfo, boolean]> = {
+  'tekno.test': [tekno, true],
+  'www.tekno.test': [tekno, false],
+  'kuliner.test': [kuliner, true],
+  'lama.test': [legacy, false], // site tanpa domain primary
+}
+
+const fakeSites = {
+  async findByDomain(host: string): Promise<ResolvedSite | null> {
+    const domain = normalizeHost(host)
+    const entry = domain ? domains[domain] : undefined
+    if (!domain || !entry) return null
+    const [s, isPrimary] = entry
+    const primary = Object.entries(domains).find(([, [other, p]]) => other === s && p)?.[0] ?? null
+    return { site: s, matchedDomain: domain, primaryDomain: primary, isPrimary }
+  },
+}
+
+describe('resolveSiteRequest (unit)', () => {
+  const multi = { mode: 'multi' } as const
+  const singleTekno = { mode: 'single', siteCode: 'kabar-tekno' } as const
+
+  it('multi: setiap site dilayani di domain primary-nya', async () => {
+    expect(await resolveSiteRequest(multi, fakeSites, 'tekno.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'kabar-tekno' } } })
+    expect(await resolveSiteRequest(multi, fakeSites, 'kuliner.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'dapur-nusantara' } } })
+  })
+
+  it('multi: Host huruf besar dan ber-port tetap cocok', async () => {
+    expect(await resolveSiteRequest(multi, fakeSites, 'Tekno.TEST:3000')).toMatchObject({ kind: 'site', resolved: { matchedDomain: 'tekno.test' } })
+  })
+
+  it('alias -> redirect ke domain primary', async () => {
+    expect(await resolveSiteRequest(multi, fakeSites, 'WWW.tekno.test:3000')).toMatchObject({ kind: 'redirect', toHost: 'tekno.test' })
+  })
+
+  it('alias tanpa domain primary tetap dilayani, tidak di-redirect', async () => {
+    expect(await resolveSiteRequest(multi, fakeSites, 'lama.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'arsip-lama' } } })
+  })
+
+  it.each(['tidak-ada.test', 'localhost', '', '127.0.0.1', 'tekno.test/admin'])('Host tak dikenal atau tidak valid (%j) -> not-found', async (host) => {
+    expect(await resolveSiteRequest(multi, fakeSites, host)).toEqual({ kind: 'not-found', reason: 'unknown-host' })
+  })
+
+  it('single: hanya domain milik SITE_CODE yang dilayani', async () => {
+    expect(await resolveSiteRequest(singleTekno, fakeSites, 'tekno.test')).toMatchObject({ kind: 'site' })
+    expect(await resolveSiteRequest(singleTekno, fakeSites, 'www.tekno.test')).toMatchObject({ kind: 'redirect', toHost: 'tekno.test' })
+  })
+
+  it('single: domain site lain di database yang sama ditolak', async () => {
+    expect(await resolveSiteRequest(singleTekno, fakeSites, 'kuliner.test')).toEqual({ kind: 'not-found', reason: 'other-site' })
+  })
+
+  it('single: Host tak dikenal -> not-found', async () => {
+    expect(await resolveSiteRequest(singleTekno, fakeSites, 'tidak-ada.test')).toEqual({ kind: 'not-found', reason: 'unknown-host' })
+  })
+})
+
+describe.skipIf(!process.env['DATABASE_URL'])('resolveSiteRequest (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 2, applicationName: 'vitest-resolve' })
+  const { sites } = createRepositories(db)
+  afterAll(() => db.$client.end())
+
+  it('multi: dua site dari seed', async () => {
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'tekno.local.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'kabar-tekno' } } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'kuliner.local.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'dapur-nusantara' } } })
+  })
+
+  it('huruf besar, port, dan titik di ujung', async () => {
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'TEKNO.Local.Test.:3000')).toMatchObject({ kind: 'site', resolved: { matchedDomain: 'tekno.local.test' } })
+  })
+
+  it('alias www -> redirect 301 ke primary', async () => {
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'www.tekno.local.test')).toMatchObject({ kind: 'redirect', toHost: 'tekno.local.test' })
+  })
+
+  it('single dapur-nusantara: domain kabar-tekno ditolak', async () => {
+    const mode = { mode: 'single', siteCode: 'dapur-nusantara' } as const
+    expect(await resolveSiteRequest(mode, sites, 'kuliner.local.test')).toMatchObject({ kind: 'site' })
+    expect(await resolveSiteRequest(mode, sites, 'tekno.local.test')).toEqual({ kind: 'not-found', reason: 'other-site' })
+  })
+
+  it('Host tak dikenal', async () => {
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'evil.example.com')).toEqual({ kind: 'not-found', reason: 'unknown-host' })
+  })
+})
+```
+
+8. Di `apps/web`, simpan mode deploy sekali per proses. Ini config proses, bukan state per request:
+
+`apps/web/server/utils/site-mode.ts`
+
+```ts
+// Mode deploy (SITE_MODE / SITE_CODE) dibaca sekali per proses. Ini config
+// proses, bukan state per request. Validasinya di @framework/core.
+import { parseSiteMode, type SiteMode } from '@framework/core'
+
+let siteMode: SiteMode | undefined
+
+/** Melempar SiteModeConfigError bila env salah; plugin site-mode memanggilnya saat start. */
+export function useSiteMode(): SiteMode {
+  siteMode ??= parseSiteMode(process.env)
+  return siteMode
+}
+```
+
+9. Validasi config saat server start lewat plugin Nitro. Bila env salah, plugin melempar `SiteModeConfigError` dan proses berhenti dengan exit 1, alih-alih baru gagal saat request pertama:
+
+`apps/web/server/plugins/site-mode.ts`
+
+```ts
+// Validasi SITE_MODE / SITE_CODE saat server start, bukan saat request
+// pertama: config salah harus membuat proses gagal start.
+//
+// Folder server/plugins/ adalah satu-satunya tempat yang sengaja memakai
+// API Nitro (defineNitroPlugin); nuxt/server di Nuxt 4.6 belum punya
+// padanannya. Saat upgrade ke Nuxt 5, cukup folder ini yang diperiksa.
+import { useSiteMode } from '../utils/site-mode'
+
+export default defineNitroPlugin(() => {
+  const mode = useSiteMode()
+  console.info(mode.mode === 'single' ? `[site] mode single, SITE_CODE=${mode.siteCode}` : '[site] mode multi')
+})
+```
+
+10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
+
+`apps/web/shared/types/site-context.d.ts`
+
+```ts
+// Data per request yang diisi middleware server/middleware/site.ts.
+// Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
+import type { SeoMeta, SiteInfo } from '@framework/core'
+import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+
+declare module 'nuxt/schema' {
+  interface RequestEventContext {
+    /** Site yang melayani request ini. Tidak ada untuk route yang dilewati resolver (/api/health). */
+    site?: SiteInfo
+    /** Domain (sudah dinormalisasi) yang cocok dengan Host request. */
+    siteDomain?: string
+    /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
+    siteOrigin?: string
+    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
+    theme?: StoredTheme | null
+    /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
+    page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+  }
+}
+
+export {}
+```
+
+11. Tulis middleware `apps/web/server/middleware/site.ts`. Middleware di folder ini berjalan untuk setiap request sebelum route. Beberapa hal penting:
+    - `/api/health` dan aset build Nuxt (`/_nuxt/`) dilewati, karena health check container memanggil server lewat `localhost`.
+    - `Host` dibaca dari header `Host`, bukan `X-Forwarded-Host`, karena header itu bisa dipalsukan klien. Reverse proxy di produksi wajib meneruskan `Host` asli.
+    - `X-Forwarded-Proto` boleh dipercaya karena hanya menentukan `http` atau `https` pada URL redirect ke domain primary site yang sama.
+    - Redirect mempertahankan path, query, dan port.
+    - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template".
+
+`apps/web/server/middleware/site.ts`
+
+```ts
+// Host request -> site, untuk setiap request (ADR-001).
+//
+//   site ditemukan  -> event.context.site / siteDomain; untuk request
+//                      halaman juga theme + view model (event.context.page),
+//                      atau redirect (permalink kanonik, tabel redirects)
+//   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
+//   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
+//
+// Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
+// dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
+import { resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
+import { useRepositories } from '../utils/database'
+import { usePageBuilder } from '../utils/pages'
+import { useSiteMode } from '../utils/site-mode'
+
+/** Route yang tidak butuh site: health check container dan aset build Nuxt. */
+const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
+const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
+
+export default defineEventHandler(async (event) => {
+  // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
+  const url = getRequestURL(event, { xForwardedProto: true })
+  if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+  const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
+
+  if (result.kind === 'site') {
+    const { site, matchedDomain, primaryDomain } = result.resolved
+    event.context.site = site
+    event.context.siteDomain = matchedDomain
+    // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
+    // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
+    event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
+    const [theme, built] = await Promise.all([
+      useRepositories().sites.getActiveTheme(site.id),
+      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
+    ])
+    if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
+    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    event.context.theme = theme
+    event.context.page = { status: built.status, ...built.page }
+    return
+  }
+
+  if (result.kind === 'redirect') {
+    url.hostname = result.toHost
+    return sendRedirect(event, url.toString(), 301)
+  }
+
+  setResponseStatus(event, 404)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  event.res.headers.set('cache-control', 'no-store')
+  return 'Situs tidak ditemukan.\n'
+})
+```
+
+12. Tampilkan nama site di halaman sementara `app.vue` untuk membuktikan context sampai ke render, misalnya `const siteName = useState('site-name', () => useRequestEvent()?.context.site?.name ?? null)`. `useState` membawa nilainya dari server ke browser. Fungsi `useState` dan `useRequestEvent` di-auto-import oleh Nuxt, jadi aturan ESLint `no-undef` dimatikan untuk `.vue` (lihat `eslint.config.js`). Nama yang benar-benar tidak ada tetap ditangkap oleh `vue-tsc`:
+
+```js
+  {
+    files: ['**/*.vue'],
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+    rules: { 'no-undef': 'off' },
+  },
+```
+
+13. Izinkan domain dev di dev server Vite. Vite menolak Host selain `localhost` dengan 403 `Blocked request`. Domain seed berakhiran `.local.test`, jadi tambahkan ke `nuxt.config.ts`:
+
+```ts
+  vite: { server: { allowedHosts: ['.local.test'] } },
+```
+
+14. Tambahkan `SITE_MODE=multi` ke `.env` (dan `.env.example`), lalu tambahkan juga `SITE_MODE: multi` ke variabel job CI `build`. Tanpa itu, smoke test gagal karena server tidak mau start.
+
+15. Pastikan config yang salah membuat server gagal start:
+
+```bash
+pnpm build
+SITE_MODE=multi SITE_CODE=kabar-tekno node --env-file=.env apps/web/.output/server/index.mjs
+# SiteModeConfigError: Konfigurasi mode site tidak valid -> SITE_CODE: tidak boleh diisi saat SITE_MODE=multi ...
+# exit 1
+```
+
+16. Uji semua jalur lewat HTTP dengan header Host. Variabel dari lingkungan menang atas isi `.env`, jadi mode bisa diganti per perintah:
+
+```bash
+PORT=3998 node --env-file=.env apps/web/.output/server/index.mjs
+
+curl -i -H 'Host: tekno.local.test' http://127.0.0.1:3998/            # 200, <h1>Kabar Tekno</h1>
+curl -i -H 'Host: TEKNO.Local.Test:3998' http://127.0.0.1:3998/       # 200, Host dinormalisasi
+curl -i -H 'Host: www.tekno.local.test:3998' http://127.0.0.1:3998/a  # 301 -> http://tekno.local.test:3998/a
+curl -i -H 'Host: evil.example.com' http://127.0.0.1:3998/            # 404 "Situs tidak ditemukan."
+curl -i -H 'Host: evil.example.com' http://127.0.0.1:3998/api/health  # 200, health tidak butuh site
+
+# Mode single: domain site lain ditolak
+SITE_MODE=single SITE_CODE=dapur-nusantara PORT=3998 node --env-file=.env apps/web/.output/server/index.mjs
+curl -i -H 'Host: kuliner.local.test' http://127.0.0.1:3998/          # 200, <h1>Dapur Nusantara</h1>
+curl -i -H 'Host: tekno.local.test' http://127.0.0.1:3998/            # 404
+```
+
+17. Untuk membuka site di browser, daftarkan domain seed ke file hosts (`/etc/hosts`, atau `C:\Windows\System32\drivers\etc\hosts` bila memakai browser Windows dengan WSL), lalu buka http://tekno.local.test:3000 setelah `pnpm dev`:
+
+```
+127.0.0.1 tekno.local.test www.tekno.local.test kuliner.local.test
+```
+
+18. Jalankan `pnpm check` dan smoke test build. Semuanya harus hijau.
+
+# Membangun Sistem Template
+
+1. Pahami pembagiannya sebelum menulis kode (ADR-005):
+   - `packages/template-kit`: kontrak. Berisi `defineTemplate`, tipe view model, util token → CSS variable, dan registry. Tidak boleh bergantung pada core atau database.
+   - `templates/base`: semua komponen UI dan view untuk setiap jenis halaman, dengan gaya netral.
+   - `templates/<nama>`: manifest, token, opsi, dan CSS. Komponen diwarisi dari base; override komponen adalah pengecualian dan belum didukung.
+   - `apps/web`: mendaftarkan template di registry, memuat theme aktif per request, memasang CSS variable dan kelas root.
+   - Core yang membangun view model (bab berikutnya). Template hanya menerima data siap tampil.
+
+2. Tulis tipe view model di `packages/template-kit/src/view-models.ts`. Ini kontrak publik antara core dan template: menambah field aman, menghapus atau mengganti nama field berarti versi mayor. Field `embedSrc` pada block embed ditambahkan di bab "Menambahkan Embed, SEO, dan Feed". Aturannya:
+   - Semua URL sudah jadi (`href`, termasuk `action` form pencarian), jadi template tidak pernah menyusun URL dan pola permalink cukup diketahui core.
+   - Tanggal sudah diformat (`DateView` berisi `iso` dan `label`).
+   - Teks selalu polos, dan hanya tipe JSON agar bisa dikirim dari server ke browser.
+
+`packages/template-kit/src/view-models.ts`
+
+```ts
+// View model: data siap tampil yang dibangun core dan diterima template.
+//
+// Ini KONTRAK PUBLIK (ADR-005). Menambah field aman; menghapus atau mengganti
+// nama field = versi mayor template-kit.
+//
+// Aturan bentuk:
+//  - Semua URL sudah jadi (href). Template tidak pernah menyusun URL sendiri,
+//    jadi pola permalink cukup diketahui core.
+//  - Tanggal sudah diformat sesuai locale dan timezone site (DateView).
+//  - Teks selalu polos, bukan HTML.
+//  - Hanya tipe data JSON (string, number, boolean, null, array, object),
+//    supaya bisa dikirim dari server ke browser apa adanya.
+
+/** Gambar siap pakai untuk SmartImage. */
+export interface ImageView {
+  src: string
+  alt: string
+  /** Ukuran asli; null bila tidak diketahui (mis. SVG tanpa dimensi). */
+  width: number | null
+  height: number | null
+  /** Titik fokus 0..1 dari kiri dan dari atas; dipakai saat gambar dipotong. */
+  focalX: number
+  focalY: number
+  caption: string | null
+  credit: string | null
+}
+
+export interface DateView {
+  /** ISO 8601, untuk atribut datetime. */
+  iso: string
+  /** Sudah diformat sesuai locale dan timezone site, mis. "17 November 2026". */
+  label: string
+}
+
+export interface LinkView {
+  label: string
+  href: string
+}
+
+export interface MenuItemView {
+  label: string
+  href: string
+  /** Tujuan di luar site; template boleh menambah rel/ikon. */
+  external: boolean
+  openInNewTab: boolean
+  children: MenuItemView[]
+}
+
+export interface SiteView {
+  name: string
+  tagline: string | null
+  /** Bahasa dokumen, mis. "id". */
+  locale: string
+  logo: ImageView | null
+  homeHref: string
+}
+
+/** Bagian halaman yang sama untuk semua view: identitas site, menu, tanggal. */
+export interface ChromeView {
+  site: SiteView
+  /** Menu per lokasi (header, footer, ...). Lokasi tanpa menu = array kosong. */
+  menus: Record<string, MenuItemView[]>
+  today: DateView
+}
+
+export interface ArticleCardView {
+  href: string
+  title: string
+  excerpt: string | null
+  category: LinkView
+  author: LinkView | null
+  publishedAt: DateView
+  image: ImageView | null
+  isFeatured: boolean
+  /** Format artikel (standard, review, ...); template boleh memberi gaya berbeda. */
+  format: string
+}
+
+export interface PaginationView {
+  page: number
+  totalPages: number
+  prevHref: string | null
+  nextHref: string | null
+  /** Nomor halaman yang ditampilkan; null = celah ("…"). */
+  pages: ({ number: number; href: string; current: boolean } | null)[]
+}
+
+// ---------- Block body (isi artikel dan halaman) ------------------------
+
+export type BlockView =
+  | { type: 'paragraph'; text: string }
+  | { type: 'heading'; level: 2 | 3 | 4; text: string }
+  | { type: 'image'; image: ImageView; caption: string | null }
+  | { type: 'quote'; text: string; cite: string | null }
+  | { type: 'list'; style: 'bullet' | 'numbered'; items: string[] }
+  | {
+      type: 'embed'
+      provider: 'youtube' | 'vimeo' | 'x'
+      /** URL asli, untuk tautan cadangan. */
+      url: string
+      /** URL iframe yang aman (dibangun core); null = tampilkan tautan saja. */
+      embedSrc: string | null
+    }
+
+export type BlockViewType = BlockView['type']
+
+// ---------- View per jenis halaman --------------------------------------
+
+export interface HomeView {
+  view: 'home'
+  featured: ArticleCardView[]
+  latest: ArticleCardView[]
+  pagination: PaginationView
+}
+
+export interface ArticleView {
+  view: 'article'
+  breadcrumb: LinkView[]
+  title: string
+  excerpt: string | null
+  category: LinkView
+  author: LinkView | null
+  publishedAt: DateView
+  /** Null bila tidak pernah diubah setelah terbit. */
+  updatedAt: DateView | null
+  image: ImageView | null
+  tags: LinkView[]
+  blocks: BlockView[]
+  format: string
+}
+
+export interface PageView {
+  view: 'page'
+  title: string
+  /** Varian tampilan halaman, mis. 'default', 'contact'. */
+  viewKey: string
+  blocks: BlockView[]
+}
+
+export interface CategoryView {
+  view: 'category'
+  breadcrumb: LinkView[]
+  name: string
+  description: string | null
+  children: LinkView[]
+  articles: ArticleCardView[]
+  pagination: PaginationView
+}
+
+export interface TagView {
+  view: 'tag'
+  name: string
+  articles: ArticleCardView[]
+  pagination: PaginationView
+}
+
+export interface AuthorView {
+  view: 'author'
+  name: string
+  bio: string | null
+  avatar: ImageView | null
+  articles: ArticleCardView[]
+  pagination: PaginationView
+}
+
+export interface SearchView {
+  view: 'search'
+  /** URL tujuan form pencarian (GET, parameter q). */
+  action: string
+  /** Kata kunci yang sudah dibersihkan; '' bila belum mencari. */
+  query: string
+  articles: ArticleCardView[]
+  pagination: PaginationView
+}
+
+export interface NotFoundView {
+  view: 'not-found'
+  /** Path yang diminta, untuk ditampilkan. */
+  path: string
+}
+
+export type PageViewModel =
+  | HomeView
+  | ArticleView
+  | PageView
+  | CategoryView
+  | TagView
+  | AuthorView
+  | SearchView
+  | NotFoundView
+
+export type ViewName = PageViewModel['view']
+
+export const VIEW_NAMES = [
+  'home',
+  'article',
+  'page',
+  'category',
+  'tag',
+  'author',
+  'search',
+  'not-found',
+] as const satisfies readonly ViewName[]
+
+/** View model untuk satu jenis halaman, mis. ViewModelOf<'article'>. */
+export type ViewModelOf<V extends ViewName> = Extract<PageViewModel, { view: V }>
+```
+
+3. Tulis util token → CSS variable di `tokens.ts`. Hasilnya disisipkan ke `<style>` di `<head>`, jadi nilainya dijaga ketat walau sudah divalidasi skema:
+   - Karakter yang bisa keluar dari deklarasi atau blok CSS (`; { } < > \` dan baris baru) ditolak, begitu juga `url(...)`.
+   - Hanya string dan angka yang diterima.
+   - Nilai di grup `font` diberi tanda kutip, karena nama seperti `Source Sans 3` tidak sah tanpa kutip.
+
+`packages/template-kit/src/tokens.ts`
+
+```ts
+// Design token -> CSS custom property.
+//
+//   { color: { primary: '#0f62fe' }, font: { heading: 'Source Sans 3' } }
+//   -> --color-primary: #0f62fe;  --font-heading: "Source Sans 3";
+//
+// Hasilnya disisipkan ke <style> di <head>, jadi nilai dijaga ketat walau
+// sudah divalidasi skema manifest: karakter yang bisa menutup deklarasi atau
+// blok CSS (; { } < > \ dan baris baru) ditolak.
+//
+// Konvensi: nilai di grup `font` adalah nama font family dan ditulis
+// dengan tanda kutip, karena nama seperti "Source Sans 3" tidak sah tanpa
+// kutip. CSS template memakainya dengan fallback:
+//   font-family: var(--font-body), system-ui, sans-serif;
+
+export type TokenValue = string | number
+export interface TokenTree {
+  [key: string]: TokenValue | TokenTree
+}
+
+export class TokenError extends Error {
+  override name = 'TokenError'
+}
+
+const SAFE_VALUE = /^[#a-zA-Z0-9 .,%()+\-/*]+$/
+const SAFE_FONT = /^[a-zA-Z0-9 -]+$/
+const SAFE_KEY = /^[a-zA-Z][a-zA-Z0-9]*$/
+
+/** camelCase -> kebab-case: lineHeight -> line-height. */
+function kebab(key: string): string {
+  return key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)
+}
+
+/** Token bersarang -> pasangan nama variabel dan nilai, urut sesuai urutan key. */
+export function tokensToCssVars(tokens: TokenTree): Record<string, string> {
+  const vars: Record<string, string> = {}
+
+  function walk(node: TokenTree, path: string[]) {
+    for (const [key, value] of Object.entries(node)) {
+      if (!SAFE_KEY.test(key)) throw new TokenError(`key token tidak valid: ${[...path, key].join('.')}`)
+      const next = [...path, key]
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        walk(value, next)
+        continue
+      }
+      const name = `--${next.map(kebab).join('-')}`
+      vars[name] = formatValue(next, value)
+    }
+  }
+
+  walk(tokens, [])
+  return vars
+}
+
+function formatValue(path: string[], value: unknown): string {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new TokenError(`nilai token ${path.join('.')} harus string atau angka, bukan ${value === null ? 'null' : typeof value}`)
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TokenError(`nilai token ${path.join('.')} bukan angka terbatas`)
+    return String(value)
+  }
+  const text = value.trim()
+  if (path[0] === 'font') {
+    if (!SAFE_FONT.test(text)) throw new TokenError(`nama font tidak valid di ${path.join('.')}: ${JSON.stringify(value)}`)
+    return `"${text}"`
+  }
+  // url(...) ditolak: token tidak boleh memuat sumber eksternal.
+  if (!SAFE_VALUE.test(text) || /url\s*\(/i.test(text)) {
+    throw new TokenError(`nilai token tidak valid di ${path.join('.')}: ${JSON.stringify(value)}`)
+  }
+  return text
+}
+
+/** Kelas root halaman untuk satu template: .tpl-magazine */
+export function templateRootClass(templateKey: string): string {
+  return `tpl-${templateKey}`
+}
+
+/**
+ * Satu aturan CSS yang mendefinisikan variabel di bawah kelas root template,
+ * mis. `.tpl-magazine{--color-primary:#0f62fe;...}`. Variabel dibatasi ke
+ * kelas root agar tidak bocor ke template lain di mode multi-site.
+ */
+export function renderTokenCss(templateKey: string, tokens: TokenTree): string {
+  const vars = tokensToCssVars(tokens)
+  const body = Object.entries(vars).map(([name, value]) => `${name}:${value}`).join(';')
+  return `.${templateRootClass(templateKey)}{${body}}`
+}
+```
+
+4. Tulis `defineTemplate` di `manifest.ts`. Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri: skema token/opsi, default (digabung per key dengan `mergeDeep`), lokasi menu, layout, dan view. Semuanya diperiksa saat modul di-import: format key, semver, default lolos skema dan bisa dijadikan CSS, serta view lengkap. Manifest yang salah langsung gagal di test dan build:
+
+`packages/template-kit/src/manifest.ts`
+
+```ts
+// Manifest template (ADR-005): satu paket = satu defineTemplate().
+//
+//   export default defineTemplate({
+//     key: 'magazine', version: '1.0.0', name: 'Magazine', extends: base,
+//     tokens: { defaults: { color: { primary: '#0f62fe' } } },
+//   })
+//
+// Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri:
+// skema token/opsi, default (digabung per key), lokasi menu, slot iklan,
+// layout, dan view. Template tanpa `extends` (base) wajib lengkap.
+//
+// Semua dicek saat defineTemplate dipanggil, yaitu saat modul di-import,
+// jadi manifest yang salah langsung gagal di test dan build.
+//
+// Belum didukung (ditambahkan saat dibutuhkan): sections dan defaultLayouts
+// (M3), migrateConfig (M3), override komponen (pengecualian, wajib ADR).
+import type { Component } from 'vue'
+import { z } from 'zod'
+import { isPlainObject, mergeDeep } from './objects'
+import { TokenError, tokensToCssVars, type TokenTree } from './tokens'
+import { VIEW_NAMES, type ViewName } from './view-models'
+
+/** Komponen yang dimuat saat dibutuhkan: () => import('./views/Home.vue'). */
+export type ComponentLoader = () => Promise<Component | { default: Component }>
+
+/** Skema config: object Zod di level atas, agar bisa divalidasi per key. */
+export type ConfigSchema = z.ZodObject
+
+export interface ConfigInput {
+  /** Wajib untuk template tanpa extends; bila diisi, menggantikan skema induk. */
+  schema?: ConfigSchema
+  /** Digabung per key di atas default induk, lalu divalidasi skema. */
+  defaults: Record<string, unknown>
+}
+
+export interface TemplateInput {
+  /** Huruf kecil, angka, tanda hubung; dipakai di site_themes.template_key dan kelas root .tpl-<key>. */
+  key: string
+  /** Semver, mis. 1.0.0. */
+  version: string
+  name: string
+  extends?: TemplateDefinition
+  tokens?: ConfigInput
+  options?: ConfigInput
+  menuLocations?: string[]
+  adSlots?: string[]
+  layout?: ComponentLoader
+  views?: Partial<Record<ViewName, ComponentLoader>>
+}
+
+export interface ConfigSpec {
+  schema: ConfigSchema
+  defaults: Record<string, unknown>
+}
+
+/** Hasil defineTemplate: sudah lengkap, warisan sudah diterapkan. */
+export interface TemplateDefinition {
+  readonly key: string
+  readonly version: string
+  readonly name: string
+  /** Rantai pewarisan, dari template ini ke akar: ['magazine', 'base']. */
+  readonly lineage: readonly string[]
+  readonly tokens: ConfigSpec
+  readonly options: ConfigSpec
+  readonly menuLocations: readonly string[]
+  readonly adSlots: readonly string[]
+  readonly layout: ComponentLoader
+  readonly views: Readonly<Record<ViewName, ComponentLoader>>
+}
+
+export class TemplateDefinitionError extends Error {
+  override name = 'TemplateDefinitionError'
+}
+
+const TEMPLATE_KEY = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+
+export function defineTemplate(input: TemplateInput): TemplateDefinition {
+  const fail = (message: string): never => {
+    throw new TemplateDefinitionError(`template "${input.key}": ${message}`)
+  }
+
+  if (!TEMPLATE_KEY.test(input.key)) fail('key harus huruf kecil, angka, dan tanda hubung, diawali huruf')
+  if (!SEMVER.test(input.version)) fail(`version "${input.version}" bukan semver (mis. 1.0.0)`)
+  if (input.name.trim() === '') fail('name wajib diisi')
+
+  const parent = input.extends
+  if (parent && parent.lineage.includes(input.key)) fail(`key sama dengan induknya (${parent.lineage.join(' -> ')})`)
+
+  const tokens = resolveSpec('tokens', input.tokens, parent?.tokens, fail)
+  const options = resolveSpec('options', input.options, parent?.options, fail)
+
+  try {
+    tokensToCssVars(tokens.defaults as TokenTree)
+  } catch (error) {
+    fail(`default tokens tidak bisa dijadikan CSS variable: ${error instanceof TokenError ? error.message : String(error)}`)
+  }
+
+  const layout = input.layout ?? parent?.layout ?? fail('layout wajib untuk template tanpa extends')
+  const views = { ...parent?.views, ...input.views }
+  const missing = VIEW_NAMES.filter((name) => !views[name])
+  if (missing.length > 0) fail(`view belum ada: ${missing.join(', ')}`)
+
+  return Object.freeze({
+    key: input.key,
+    version: input.version,
+    name: input.name,
+    lineage: Object.freeze([input.key, ...(parent?.lineage ?? [])]),
+    tokens,
+    options,
+    menuLocations: Object.freeze([...(input.menuLocations ?? parent?.menuLocations ?? [])]),
+    adSlots: Object.freeze([...(input.adSlots ?? parent?.adSlots ?? [])]),
+    layout,
+    views: Object.freeze(views as Record<ViewName, ComponentLoader>),
+  })
+}
+
+function resolveSpec(
+  label: 'tokens' | 'options',
+  own: ConfigInput | undefined,
+  inherited: ConfigSpec | undefined,
+  fail: (message: string) => never,
+): ConfigSpec {
+  const schema = own?.schema ?? inherited?.schema ?? fail(`${label}.schema wajib untuk template tanpa extends`)
+  if (!(schema instanceof z.ZodObject)) fail(`${label}.schema harus z.object(...)`)
+  if (own && !isPlainObject(own.defaults)) fail(`${label}.defaults harus object`)
+
+  const merged = mergeDeep(inherited?.defaults ?? {}, own?.defaults ?? {})
+  const parsed = schema.safeParse(merged)
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((i) => `${i.path.join('.') || '(akar)'}: ${i.message}`).join('; ')
+    fail(`${label}.defaults tidak lolos skema -> ${detail}`)
+  }
+  return Object.freeze({ schema, defaults: parsed.data as Record<string, unknown> })
+}
+```
+
+`packages/template-kit/src/objects.ts`
+
+```ts
+/** Object biasa ({...}), bukan array, null, Date, atau instance kelas. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+/**
+ * Gabung `override` di atas `base` per key, rekursif untuk object biasa.
+ * Array dan nilai lain diganti utuh. Tidak mengubah argumen.
+ */
+export function mergeDeep(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base }
+  for (const [key, value] of Object.entries(override)) {
+    const current = out[key]
+    out[key] = isPlainObject(current) && isPlainObject(value) ? mergeDeep(current, value) : value
+  }
+  return out
+}
+```
+
+5. Tulis registry dan validasi theme di `theme.ts`:
+   - `resolveConfig` memvalidasi config per key. Nilai yang tidak valid jatuh ke default, dan key yang tidak dikenal dibuang. Satu warna yang salah tidak merusak seluruh theme.
+   - `createTemplateRegistry(...).resolveTheme(barisSiteThemes)` mencari template berdasarkan `template_key`. Bila tidak terdaftar, dipakai template fallback (base), dan semua masalah dikumpulkan di `issues` untuk dicatat, bukan dilempar sebagai error.
+   - Hasilnya (`ResolvedTheme`) hanya berisi data JSON, jadi bisa dikirim ke browser. Komponen diambil lagi dari registry lewat `templateKey`.
+
+`packages/template-kit/src/theme.ts`
+
+```ts
+// Registry template dan pemuatan theme aktif sebuah site.
+//
+// Alur (dokumen desain, "Alur saat satu halaman dirender"):
+//  1. Baris aktif site_themes dicari template-nya di registry berdasarkan
+//     template_key. Tidak ditemukan -> template fallback (base), dicatat
+//     sebagai issue, bukan crash.
+//  2. tokens dan options divalidasi skema manifest PER KEY: nilai yang tidak
+//     valid jatuh ke default, key yang tidak dikenal dibuang. Satu warna
+//     yang salah tidak merusak seluruh theme.
+//  3. Token dijadikan CSS variable di bawah kelas root .tpl-<key>.
+//
+// Hasilnya (ResolvedTheme) hanya berisi data JSON, jadi bisa dikirim dari
+// server ke browser; komponen diambil lagi dari registry lewat templateKey.
+import { z } from 'zod'
+import type { ConfigSchema, ConfigSpec, TemplateDefinition } from './manifest'
+import { isPlainObject } from './objects'
+import { renderTokenCss, templateRootClass, type TokenTree } from './tokens'
+
+/** Bentuk baris site_themes yang dibutuhkan registry. */
+export interface StoredTheme {
+  templateKey: string
+  templateVersion: string
+  tokens: unknown
+  options: unknown
+}
+
+export interface ResolvedTheme {
+  /** Template yang benar-benar dipakai (bisa fallback). */
+  templateKey: string
+  templateVersion: string
+  /** Kelas root halaman: .tpl-<templateKey>. */
+  rootClass: string
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  /** Satu aturan CSS berisi variabel token, untuk <style> di <head>. */
+  css: string
+  /** Hal yang perlu dicatat ke log: fallback template, nilai tidak valid. Kosong bila bersih. */
+  issues: string[]
+}
+
+export interface ConfigResult {
+  value: Record<string, unknown>
+  issues: string[]
+}
+
+/**
+ * Validasi config per key terhadap skema object. Object bersarang divalidasi
+ * rekursif; nilai lain (leaf) dipakai bila lolos skemanya, bila tidak memakai
+ * default. Key yang tidak ada di skema dibuang.
+ */
+export function resolveConfig(spec: ConfigSpec, raw: unknown, label = 'config'): ConfigResult {
+  const issues: string[] = []
+
+  function walk(schema: ConfigSchema, defaults: Record<string, unknown>, input: unknown, path: string[]) {
+    const out: Record<string, unknown> = {}
+    const source = isPlainObject(input) ? input : {}
+    if (input !== undefined && input !== null && !isPlainObject(input)) {
+      issues.push(`${label}.${path.join('.') || '(akar)'}: bukan object, memakai default`)
+    }
+    for (const [key, sub] of Object.entries(schema.shape)) {
+      const fallback = defaults[key]
+      const value = source[key]
+      const here = [...path, key]
+      if (sub instanceof z.ZodObject) {
+        out[key] = walk(sub, isPlainObject(fallback) ? fallback : {}, value, here)
+        continue
+      }
+      if (value === undefined) {
+        out[key] = fallback
+        continue
+      }
+      const parsed = (sub as z.ZodType).safeParse(value)
+      if (parsed.success) {
+        out[key] = parsed.data
+      } else {
+        out[key] = fallback
+        issues.push(`${label}.${here.join('.')}: nilai ${JSON.stringify(value)} tidak valid, memakai default`)
+      }
+    }
+    for (const key of Object.keys(source)) {
+      if (!(key in schema.shape)) issues.push(`${label}.${[...path, key].join('.')}: key tidak dikenal, diabaikan`)
+    }
+    return out
+  }
+
+  const value = walk(spec.schema, spec.defaults, raw, [])
+  // Skema bisa punya aturan lintas key (refine); bila gagal, pakai default utuh.
+  const whole = spec.schema.safeParse(value)
+  if (!whole.success) {
+    issues.push(`${label}: kombinasi nilai tidak valid, memakai default`)
+    return { value: spec.defaults, issues }
+  }
+  return { value: whole.data as Record<string, unknown>, issues }
+}
+
+export interface TemplateRegistry {
+  /** Template terdaftar, urut sesuai pendaftaran. */
+  readonly templates: readonly TemplateDefinition[]
+  readonly fallback: TemplateDefinition
+  /** Template berdasarkan key; fallback bila tidak terdaftar. */
+  get(key: string): TemplateDefinition
+  has(key: string): boolean
+  /** Theme aktif site -> template + config tervalidasi. Null (site tanpa theme) -> fallback dengan default. */
+  resolveTheme(stored: StoredTheme | null): ResolvedTheme
+}
+
+export function createTemplateRegistry(templates: TemplateDefinition[], options: { fallback: string }): TemplateRegistry {
+  const byKey = new Map<string, TemplateDefinition>()
+  for (const template of templates) {
+    if (byKey.has(template.key)) throw new Error(`template "${template.key}" didaftarkan dua kali`)
+    byKey.set(template.key, template)
+  }
+  const fallback = byKey.get(options.fallback)
+  if (!fallback) throw new Error(`template fallback "${options.fallback}" tidak terdaftar`)
+
+  return {
+    templates: Object.freeze([...templates]),
+    fallback,
+    has: (key) => byKey.has(key),
+    get: (key) => byKey.get(key) ?? fallback,
+
+    resolveTheme(stored) {
+      const issues: string[] = []
+      let template = fallback
+      if (stored) {
+        const found = byKey.get(stored.templateKey)
+        if (found) {
+          template = found
+          if (major(stored.templateVersion) !== major(found.version)) {
+            issues.push(`config disimpan untuk ${found.key}@${stored.templateVersion}, template terpasang ${found.version}; migrateConfig belum didukung`)
+          }
+        } else {
+          issues.push(`template "${stored.templateKey}" tidak terdaftar, memakai ${fallback.key}`)
+        }
+      }
+
+      const tokens = resolveConfig(template.tokens, stored?.tokens, 'tokens')
+      const opts = resolveConfig(template.options, stored?.options, 'options')
+      issues.push(...tokens.issues, ...opts.issues)
+
+      let css: string
+      try {
+        css = renderTokenCss(template.key, tokens.value as TokenTree)
+      } catch (error) {
+        issues.push(`tokens: ${error instanceof Error ? error.message : String(error)}; memakai default`)
+        tokens.value = template.tokens.defaults
+        css = renderTokenCss(template.key, template.tokens.defaults as TokenTree)
+      }
+
+      return {
+        templateKey: template.key,
+        templateVersion: template.version,
+        rootClass: templateRootClass(template.key),
+        tokens: tokens.value,
+        options: opts.value,
+        css,
+        issues,
+      }
+    },
+  }
+}
+
+function major(version: string): string {
+  return version.split('.')[0] ?? version
+}
+```
+
+6. Ekspor semuanya dari `index.ts`. `z` diekspor ulang agar template menulis skema tanpa dependency Zod sendiri:
+
+`packages/template-kit/src/index.ts`
+
+```ts
+// Kontrak template (ADR-005). Paket ini tidak boleh bergantung pada core,
+// db, atau driver database (dijaga eslint.config.js).
+//
+// `z` diekspor ulang supaya template menulis skema token/opsi tanpa
+// dependency zod sendiri, dan memakai versi Zod yang sama dengan validasinya.
+export { z } from 'zod'
+export * from './manifest'
+export { isPlainObject, mergeDeep } from './objects'
+export * from './theme'
+export * from './tokens'
+export * from './view-models'
+```
+
+7. Lengkapi `package.json` dan `tsconfig.json` template-kit. Vue cukup jadi `peerDependencies` karena hanya tipe `Component` yang dipakai:
+
+`packages/template-kit/package.json`
+
+```json
+{
+  "name": "@framework/template-kit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kontrak template: defineTemplate, tipe view model, token -> CSS variable, registry",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
+}
+```
+
+8. Uji template-kit: token berbahaya ditolak, pewarisan manifest, validasi per key, dan registry dengan fallback:
+
+`packages/template-kit/src/tokens.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { renderTokenCss, TokenError, tokensToCssVars } from './tokens'
+
+describe('tokensToCssVars', () => {
+  it('meratakan token bersarang dan mengubah camelCase ke kebab-case', () => {
+    expect(tokensToCssVars({ color: { primary: '#0f62fe', textMuted: '#555555' }, radius: { card: '8px' }, lineHeight: 1.6 })).toEqual({
+      '--color-primary': '#0f62fe',
+      '--color-text-muted': '#555555',
+      '--radius-card': '8px',
+      '--line-height': '1.6',
+    })
+  })
+
+  it('nama font ditulis dengan tanda kutip', () => {
+    expect(tokensToCssVars({ font: { heading: 'Source Sans 3', body: 'Inter' } })).toEqual({
+      '--font-heading': '"Source Sans 3"',
+      '--font-body': '"Inter"',
+    })
+  })
+
+  it('mengizinkan fungsi CSS biasa', () => {
+    expect(tokensToCssVars({ space: { gutter: 'clamp(1rem, 2vw + 0.5rem, 2rem)' } })['--space-gutter']).toBe('clamp(1rem, 2vw + 0.5rem, 2rem)')
+  })
+
+  it.each([
+    ['menutup deklarasi', { color: { primary: 'red;} body{display:none' } }],
+    ['menutup tag style', { color: { primary: '</style><script>' } }],
+    ['url eksternal', { color: { primary: 'url(//evil.example/x.png)' } }],
+    ['kutip di nama font', { font: { body: 'Inter", serif' } }],
+    ['baris baru', { color: { primary: '#fff\n}' } }],
+    ['key aneh', { 'color-primary': '#fff' }],
+    ['angka tak terbatas', { scale: Number.POSITIVE_INFINITY }],
+    ['boolean', { dense: true } as never],
+    ['null', { color: { primary: null } } as never],
+  ])('menolak nilai berbahaya: %s', (_label, tokens) => {
+    expect(() => tokensToCssVars(tokens)).toThrow(TokenError)
+  })
+})
+
+describe('renderTokenCss', () => {
+  it('variabel dibatasi ke kelas root template', () => {
+    expect(renderTokenCss('magazine', { color: { primary: '#0f62fe' }, font: { body: 'Inter' } })).toBe(
+      '.tpl-magazine{--color-primary:#0f62fe;--font-body:"Inter"}',
+    )
+  })
+})
+```
+
+`packages/template-kit/src/manifest.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
+import { defineTemplate, TemplateDefinitionError, type ComponentLoader, type TemplateInput } from './manifest'
+import { VIEW_NAMES, type ViewName } from './view-models'
+
+// Komponen palsu: manifest hanya menyimpan loader, tidak memanggilnya.
+const loader = (name: string): ComponentLoader => async () => ({ default: { name } })
+const allViews = Object.fromEntries(VIEW_NAMES.map((v) => [v, loader(v)])) as Record<ViewName, ComponentLoader>
+
+const baseInput: TemplateInput = {
+  key: 'base',
+  version: '1.0.0',
+  name: 'Base',
+  tokens: {
+    schema: z.object({
+      color: z.object({ primary: z.string().regex(/^#[0-9a-f]{6}$/i), text: z.string().regex(/^#[0-9a-f]{6}$/i) }),
+      font: z.object({ body: z.enum(['Inter', 'Merriweather']) }),
+    }),
+    defaults: { color: { primary: '#333333', text: '#111111' }, font: { body: 'Inter' } },
+  },
+  options: {
+    schema: z.object({ header: z.object({ style: z.enum(['left', 'centered']), showDate: z.boolean() }) }),
+    defaults: { header: { style: 'left', showDate: false } },
+  },
+  menuLocations: ['header', 'footer'],
+  layout: loader('Layout'),
+  views: allViews,
+}
+
+describe('defineTemplate', () => {
+  const base = defineTemplate(baseInput)
+
+  it('template dasar lengkap', () => {
+    expect(base).toMatchObject({ key: 'base', version: '1.0.0', lineage: ['base'], menuLocations: ['header', 'footer'], adSlots: [] })
+    expect(Object.keys(base.views).sort()).toEqual([...VIEW_NAMES].sort())
+    expect(Object.isFrozen(base)).toBe(true)
+  })
+
+  it('extends: mewarisi skema, view, layout; default digabung per key', () => {
+    const home = loader('MagazineHome')
+    const magazine = defineTemplate({
+      key: 'magazine',
+      version: '1.0.0',
+      name: 'Magazine',
+      extends: base,
+      tokens: { defaults: { color: { primary: '#0f62fe' } } },
+      options: { defaults: { header: { style: 'centered' } } },
+      views: { home },
+    })
+    expect(magazine.lineage).toEqual(['magazine', 'base'])
+    expect(magazine.tokens.schema).toBe(base.tokens.schema)
+    expect(magazine.tokens.defaults).toEqual({ color: { primary: '#0f62fe', text: '#111111' }, font: { body: 'Inter' } })
+    expect(magazine.options.defaults).toEqual({ header: { style: 'centered', showDate: false } })
+    expect(magazine.views.home).toBe(home)
+    expect(magazine.views.article).toBe(base.views.article)
+    expect(magazine.layout).toBe(base.layout)
+    expect(magazine.menuLocations).toEqual(['header', 'footer'])
+  })
+
+  it('default dari input tidak diubah', () => {
+    const defaults = { color: { primary: '#0f62fe' } }
+    defineTemplate({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults } })
+    expect(defaults).toEqual({ color: { primary: '#0f62fe' } })
+  })
+
+  it.each<[string, Partial<TemplateInput>, RegExp]>([
+    ['key huruf besar', { key: 'Magazine' }, /key harus/],
+    ['key diawali angka', { key: '1mag' }, /key harus/],
+    ['version bukan semver', { version: '1.0' }, /bukan semver/],
+    ['name kosong', { name: ' ' }, /name wajib/],
+    ['tanpa skema tokens', { tokens: { defaults: {} } }, /tokens.schema wajib/],
+    ['default tidak lolos skema', { tokens: { ...baseInput.tokens!, defaults: { color: { primary: 'merah', text: '#111111' }, font: { body: 'Inter' } } } }, /tokens.defaults tidak lolos skema -> color.primary/],
+    ['default token tidak bisa jadi CSS', { tokens: { schema: z.object({ color: z.object({ primary: z.string() }) }), defaults: { color: { primary: 'red;}' } } } }, /CSS variable/],
+    ['tanpa layout', { layout: undefined }, /layout wajib/],
+    ['view kurang', { views: { home: loader('Home') } }, /view belum ada: article/],
+  ])('menolak: %s', (_label, patch, message) => {
+    expect(() => defineTemplate({ ...baseInput, ...patch })).toThrow(TemplateDefinitionError)
+    expect(() => defineTemplate({ ...baseInput, ...patch })).toThrow(message)
+  })
+
+  it('menolak key yang sama dengan induk', () => {
+    expect(() => defineTemplate({ key: 'base', version: '2.0.0', name: 'Base 2', extends: base })).toThrow(/sama dengan induknya/)
+  })
+
+  it('menolak default turunan yang melanggar skema induk', () => {
+    expect(() => defineTemplate({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults: { font: { body: 'Comic Sans' } } } })).toThrow(/font.body/)
+  })
+})
+```
+
+`packages/template-kit/src/theme.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
+import { defineTemplate, type ComponentLoader, type ConfigSpec } from './manifest'
+import { createTemplateRegistry, resolveConfig } from './theme'
+import { VIEW_NAMES, type ViewName } from './view-models'
+
+const hex = z.string().regex(/^#[0-9a-f]{6}$/i)
+const spec: ConfigSpec = {
+  schema: z.object({
+    color: z.object({ primary: hex, surface: hex }),
+    radius: z.object({ card: z.enum(['0px', '8px']) }),
+    scale: z.number().min(0.5).max(2),
+  }),
+  defaults: { color: { primary: '#000000', surface: '#ffffff' }, radius: { card: '0px' }, scale: 1 },
+}
+
+describe('resolveConfig', () => {
+  it('nilai valid dipakai, sisanya default', () => {
+    expect(resolveConfig(spec, { color: { primary: '#0f62fe' } })).toEqual({
+      value: { color: { primary: '#0f62fe', surface: '#ffffff' }, radius: { card: '0px' }, scale: 1 },
+      issues: [],
+    })
+  })
+
+  it('nilai tidak valid jatuh ke default per key, bukan seluruh config', () => {
+    const { value, issues } = resolveConfig(spec, { color: { primary: 'merah', surface: '#fafafa' }, radius: { card: '99px' }, scale: 1.25 }, 'tokens')
+    expect(value).toEqual({ color: { primary: '#000000', surface: '#fafafa' }, radius: { card: '0px' }, scale: 1.25 })
+    expect(issues).toEqual([
+      'tokens.color.primary: nilai "merah" tidak valid, memakai default',
+      'tokens.radius.card: nilai "99px" tidak valid, memakai default',
+    ])
+  })
+
+  it('key tidak dikenal dibuang dan dicatat', () => {
+    const { value, issues } = resolveConfig(spec, { color: { accent: '#ff0000' }, extra: 1 }, 'tokens')
+    expect(value).not.toHaveProperty('extra')
+    expect(value['color']).not.toHaveProperty('accent')
+    expect(issues).toEqual(['tokens.color.accent: key tidak dikenal, diabaikan', 'tokens.extra: key tidak dikenal, diabaikan'])
+  })
+
+  it.each([null, undefined, {}])('config kosong (%j) -> default tanpa issue', (raw) => {
+    expect(resolveConfig(spec, raw)).toEqual({ value: spec.defaults, issues: [] })
+  })
+
+  it('bentuk salah (bukan object) -> default dan dicatat', () => {
+    const { value, issues } = resolveConfig(spec, { color: 'biru' }, 'tokens')
+    expect(value['color']).toEqual({ primary: '#000000', surface: '#ffffff' })
+    expect(issues).toEqual(['tokens.color: bukan object, memakai default'])
+  })
+
+  it('aturan lintas key yang gagal -> default utuh', () => {
+    const refined: ConfigSpec = {
+      schema: z.object({ min: z.number(), max: z.number() }).refine((v) => v.min <= v.max),
+      defaults: { min: 1, max: 2 },
+    }
+    expect(resolveConfig(refined, { min: 5, max: 3 })).toEqual({ value: { min: 1, max: 2 }, issues: ['config: kombinasi nilai tidak valid, memakai default'] })
+  })
+})
+
+describe('createTemplateRegistry', () => {
+  const loader: ComponentLoader = async () => ({ default: {} })
+  const views = Object.fromEntries(VIEW_NAMES.map((v) => [v, loader])) as Record<ViewName, ComponentLoader>
+  const base = defineTemplate({ key: 'base', version: '1.0.0', name: 'Base', tokens: spec, options: { schema: z.object({ showDate: z.boolean() }), defaults: { showDate: false } }, layout: loader, views })
+  const magazine = defineTemplate({ key: 'magazine', version: '1.2.0', name: 'Magazine', extends: base, tokens: { defaults: { color: { primary: '#0f62fe' } } } })
+  const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+
+  it('theme tersimpan -> template, config tervalidasi, dan CSS', () => {
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.0.0', tokens: { radius: { card: '8px' } }, options: { showDate: true } })
+    expect(theme).toEqual({
+      templateKey: 'magazine',
+      templateVersion: '1.2.0',
+      rootClass: 'tpl-magazine',
+      tokens: { color: { primary: '#0f62fe', surface: '#ffffff' }, radius: { card: '8px' }, scale: 1 },
+      options: { showDate: true },
+      css: '.tpl-magazine{--color-primary:#0f62fe;--color-surface:#ffffff;--radius-card:8px;--scale:1}',
+      issues: [],
+    })
+  })
+
+  it('template tidak terdaftar -> fallback base, config tetap dipakai sejauh valid, dicatat', () => {
+    const theme = registry.resolveTheme({ templateKey: 'news', templateVersion: '1.0.0', tokens: { color: { primary: '#b3261e' }, font: { heading: 'Merriweather' } }, options: {} })
+    expect(theme).toMatchObject({ templateKey: 'base', rootClass: 'tpl-base', tokens: { color: { primary: '#b3261e', surface: '#ffffff' } } })
+    expect(theme.issues).toEqual(['template "news" tidak terdaftar, memakai base', 'tokens.font: key tidak dikenal, diabaikan'])
+  })
+
+  it('site tanpa theme -> fallback dengan default, tanpa issue', () => {
+    expect(registry.resolveTheme(null)).toMatchObject({ templateKey: 'base', tokens: spec.defaults, issues: [] })
+  })
+
+  it('beda versi mayor dicatat (migrateConfig belum ada)', () => {
+    expect(registry.resolveTheme({ templateKey: 'magazine', templateVersion: '0.9.0', tokens: {}, options: {} }).issues).toEqual([
+      'config disimpan untuk magazine@0.9.0, template terpasang 1.2.0; migrateConfig belum didukung',
+    ])
+  })
+
+  it('hasil bisa dikirim sebagai JSON tanpa kehilangan data', () => {
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.0.0', tokens: {}, options: {} })
+    expect(JSON.parse(JSON.stringify(theme))).toEqual(theme)
+  })
+
+  it('get: key tidak dikenal -> fallback', () => {
+    expect(registry.get('magazine')).toBe(magazine)
+    expect(registry.get('tidak-ada')).toBe(base)
+    expect(registry.has('tidak-ada')).toBe(false)
+  })
+
+  it('menolak pendaftaran ganda dan fallback yang tidak terdaftar', () => {
+    expect(() => createTemplateRegistry([base, base], { fallback: 'base' })).toThrow(/dua kali/)
+    expect(() => createTemplateRegistry([magazine], { fallback: 'base' })).toThrow(/fallback "base" tidak terdaftar/)
+  })
+})
+```
+
+9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
+
+`packages/core/src/media/storage.ts`
+
+```ts
+// Sisi BACA storage media: storage_key -> URL publik.
+//
+// storage_key disimpan relatif dan diawali kode site, mis.
+//   kabar-tekno/2026/11/hp.webp
+// Upload (sisi tulis) menyusul di M4 lewat adapter yang sama. Saat media
+// pindah ke R2/CDN, cukup baseUrl yang diganti; data di database tetap.
+import type { ImageView } from '@framework/template-kit'
+import type { MediaRef } from '../repositories/types'
+
+export interface MediaUrlOptions {
+  /**
+   * Awalan URL. Default '/media' (dilayani apps/web dari disk lokal).
+   * Bisa URL absolut, mis. https://cdn.example.com/media.
+   */
+  baseUrl?: string
+}
+
+export type MediaUrlResolver = (storageKey: string) => string
+
+/** Satu segmen storage_key yang sah: bukan kosong, '.', atau '..'. */
+const SEGMENT = /^(?!\.{1,2}$)[a-zA-Z0-9._-]+$/
+
+/** Memecah storage_key menjadi segmen; null bila key tidak sah (path traversal, karakter aneh). */
+export function splitStorageKey(storageKey: string): string[] | null {
+  const segments = storageKey.split('/')
+  return segments.length >= 2 && segments.every((s) => SEGMENT.test(s)) ? segments : null
+}
+
+export function createMediaUrlResolver(options: MediaUrlOptions = {}): MediaUrlResolver {
+  const base = (options.baseUrl ?? '/media').replace(/\/+$/, '')
+  return (storageKey) => {
+    const segments = splitStorageKey(storageKey)
+    if (!segments) throw new Error(`storage_key tidak valid: ${JSON.stringify(storageKey)}`)
+    return `${base}/${segments.map(encodeURIComponent).join('/')}`
+  }
+}
+
+/** MediaRef dari repository -> ImageView untuk SmartImage. */
+export function toImageView(media: MediaRef, mediaUrl: MediaUrlResolver, fallbackAlt = ''): ImageView {
+  return {
+    src: mediaUrl(media.storageKey),
+    alt: media.altText ?? fallbackAlt,
+    width: media.width,
+    height: media.height,
+    focalX: media.focalX,
+    focalY: media.focalY,
+    caption: media.caption,
+    credit: media.credit,
+  }
+}
+```
+
+`packages/core/src/media/storage.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import type { MediaRef } from '../repositories/types'
+import { createMediaUrlResolver, splitStorageKey, toImageView } from './storage'
+
+describe('createMediaUrlResolver', () => {
+  it('default /media', () => {
+    expect(createMediaUrlResolver()('kabar-tekno/2026/11/hp.webp')).toBe('/media/kabar-tekno/2026/11/hp.webp')
+  })
+
+  it('baseUrl absolut, slash di ujung diabaikan', () => {
+    expect(createMediaUrlResolver({ baseUrl: 'https://cdn.example.com/m/' })('dapur-nusantara/logo.svg')).toBe('https://cdn.example.com/m/dapur-nusantara/logo.svg')
+  })
+
+  it.each(['../etc/passwd', 'kabar-tekno/../dapur/x.png', '/kabar-tekno/x.png', 'kabar-tekno//x.png', 'logo.svg', 'kabar-tekno/a b.png', 'kabar-tekno/%2e%2e/x'])(
+    'menolak key tidak sah: %s',
+    (key) => {
+      expect(splitStorageKey(key)).toBeNull()
+      expect(() => createMediaUrlResolver()(key)).toThrow(/storage_key tidak valid/)
+    },
+  )
+})
+
+describe('toImageView', () => {
+  const media: MediaRef = {
+    id: 'm1', storageKey: 'kabar-tekno/2026/11/hp.webp', mimeType: 'image/webp', width: 1600, height: 900,
+    altText: null, caption: 'Foto: redaksi', credit: null, focalX: 0.62, focalY: 0.4,
+  }
+
+  it('memetakan semua field dan memakai alt cadangan', () => {
+    expect(toImageView(media, createMediaUrlResolver(), 'Ponsel lipat')).toEqual({
+      src: '/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat', width: 1600, height: 900,
+      focalX: 0.62, focalY: 0.4, caption: 'Foto: redaksi', credit: null,
+    })
+  })
+})
+```
+
+10. Daftarkan subpath `./media` di `packages/core/package.json` dan tambahkan dependency `@framework/template-kit` (untuk tipe `ImageView`). Subpath ini penting: entry utama core membawa `@framework/db` dan driver `pg`, sedangkan subpath `media` murni dan aman di-import dari kode Vue:
+
+`packages/core/package.json`
+
+```json
+{
+  "name": "@framework/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Domain: service, repository, validasi Zod, block schema, view model",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./media": "./src/media/storage.ts"
+  },
+  "dependencies": {
+    "@framework/db": "workspace:*",
+    "@framework/template-kit": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}
+```
+
+11. Buat skema token dan opsi base di `templates/base/src/config.ts`. Template turunan mewarisinya, jadi komponen base boleh mengandalkan variabel `--color-primary`, `--color-surface`, `--color-text`, `--font-heading`, `--font-body`, `--radius-card`, serta opsi `header.style` dan `header.showDate`:
+
+`templates/base/src/config.ts`
+
+```ts
+// Skema token dan opsi template base. Template turunan mewarisinya, jadi
+// semua komponen base boleh mengandalkan variabel CSS dan opsi di sini.
+import { z } from '@framework/template-kit'
+
+/** Font yang file-nya di-self-host (styles/fonts.css). Menambah font = tambah di sini dan di fonts.css. */
+export const FONTS = ['Inter', 'Merriweather', 'Source Sans 3'] as const
+
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'warna hex 6 digit, mis. #0f62fe')
+
+export const baseTokenSchema = z.object({
+  color: z.object({
+    /** Aksen: tautan, tombol, label kategori. */
+    primary: hexColor,
+    /** Latar halaman. */
+    surface: hexColor,
+    /** Teks utama. Warna sekunder diturunkan dari text dan surface di CSS. */
+    text: hexColor,
+  }),
+  font: z.object({
+    heading: z.enum(FONTS),
+    body: z.enum(FONTS),
+  }),
+  radius: z.object({
+    card: z.enum(['0px', '2px', '4px', '8px', '16px']),
+  }),
+})
+
+export const baseOptionsSchema = z.object({
+  header: z.object({
+    style: z.enum(['left', 'centered']),
+    /** Tampilkan tanggal hari ini (zona waktu site) di header. */
+    showDate: z.boolean(),
+  }),
+})
+
+export type BaseTokens = z.output<typeof baseTokenSchema>
+export type BaseOptions = z.output<typeof baseOptionsSchema>
+
+export const baseTokenDefaults: BaseTokens = {
+  color: { primary: '#1f4b99', surface: '#ffffff', text: '#1a1a1a' },
+  font: { heading: 'Source Sans 3', body: 'Source Sans 3' },
+  radius: { card: '4px' },
+}
+
+export const baseOptionDefaults: BaseOptions = {
+  header: { style: 'left', showDate: false },
+}
+```
+
+12. Tulis manifest base. Setiap view dimuat saat dibutuhkan (`() => import(...)`), dan CSS serta font di-import sebagai efek samping modul:
+
+`templates/base/src/index.ts`
+
+```ts
+// Template base: semua komponen UI default, dipakai bersama oleh semua
+// template (ADR-005). Gaya netral; template lain membedakan diri lewat
+// token, opsi, dan CSS di bawah kelas root-nya.
+import { defineTemplate } from '@framework/template-kit'
+import { baseOptionDefaults, baseOptionsSchema, baseTokenDefaults, baseTokenSchema } from './config'
+import './styles/fonts.css'
+import './styles/base.css'
+
+export default defineTemplate({
+  key: 'base',
+  version: '1.0.0',
+  name: 'Base',
+  tokens: { schema: baseTokenSchema, defaults: baseTokenDefaults },
+  options: { schema: baseOptionsSchema, defaults: baseOptionDefaults },
+  menuLocations: ['header', 'footer'],
+  adSlots: [],
+  layout: () => import('./TemplateLayout.vue'),
+  views: {
+    home: () => import('./views/HomeView.vue'),
+    article: () => import('./views/ArticleView.vue'),
+    page: () => import('./views/PageView.vue'),
+    category: () => import('./views/CategoryView.vue'),
+    tag: () => import('./views/TagView.vue'),
+    author: () => import('./views/AuthorView.vue'),
+    search: () => import('./views/SearchView.vue'),
+    'not-found': () => import('./views/NotFoundView.vue'),
+  },
+})
+
+export * from './config'
+```
+
+13. Self-host font. Paket `@fontsource` berisi file woff2 dan `@font-face` dengan `unicode-range`, sehingga browser hanya mengunduh family dan subset yang dipakai:
+
+`templates/base/src/styles/fonts.css`
+
+```css
+/*
+ * Font yang boleh dipilih lewat token (config.ts: FONTS), di-self-host dari
+ * paket @fontsource: file woff2 ikut di-bundle ke /_nuxt/, tanpa CDN pihak
+ * ketiga. Browser hanya mengunduh family yang benar-benar dipakai halaman,
+ * dan hanya subset karakter yang dibutuhkan (unicode-range).
+ */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/700.css';
+@import '@fontsource/merriweather/400.css';
+@import '@fontsource/merriweather/700.css';
+@import '@fontsource/source-sans-3/400.css';
+@import '@fontsource/source-sans-3/700.css';
+```
+
+14. Tulis komponen dasar di `templates/base/src/components/`:
+    - `SmartImage.vue`: satu-satunya cara menampilkan gambar. Dengan `ratio`, gambar dipotong dengan titik fokus media sebagai pusat (`object-position`). Rasio yang tidak sesuai pola diabaikan.
+    - `MenuTree.vue`: menu sebagai pohon, rekursif untuk submenu.
+    - `SiteHeader.vue`, `SiteFooter.vue`: memakai opsi `header.style` dan `header.showDate`.
+    - `ArticleCard.vue`, `ArticleList.vue`, `PaginationNav.vue`, `BreadcrumbNav.vue`.
+    - `BlockRenderer.vue`: versi dasar untuk enam tipe block. Teks dirender lewat interpolasi Vue (di-escape), tidak pernah `v-html`. Embed masih berupa tautan keluar; iframe ditambahkan di bab "Menambahkan Embed, SEO, dan Feed".
+
+`templates/base/src/components/SmartImage.vue`
+
+```vue
+<!--
+  Satu-satunya cara template menampilkan gambar. Bila `ratio` diisi, gambar
+  dipotong ke rasio itu dengan titik fokus media sebagai pusat, jadi wajah
+  atau objek utama tidak terpotong. Tanpa `ratio`, gambar tampil utuh.
+-->
+<script setup lang="ts">
+import type { ImageView } from '@framework/template-kit'
+import { computed } from 'vue'
+
+const props = withDefaults(defineProps<{
+  image: ImageView
+  /** Rasio tampilan, mis. "16/9", "4/3", "1/1". */
+  ratio?: string
+  /** "eager" untuk gambar utama di atas layar; sisanya lazy. */
+  loading?: 'lazy' | 'eager'
+  sizes?: string
+}>(), {
+  ratio: undefined,
+  loading: 'lazy',
+  sizes: undefined,
+})
+
+const RATIO = /^\d+(\.\d+)?\/\d+(\.\d+)?$/
+
+const style = computed(() => {
+  const percent = (v: number) => `${Math.round(Math.min(Math.max(v, 0), 1) * 1000) / 10}%`
+  if (!props.ratio || !RATIO.test(props.ratio)) return undefined
+  return {
+    aspectRatio: props.ratio,
+    objectFit: 'cover' as const,
+    objectPosition: `${percent(props.image.focalX)} ${percent(props.image.focalY)}`,
+  }
+})
+</script>
+
+<template>
+  <img
+    class="smart-image"
+    :src="image.src"
+    :alt="image.alt"
+    :width="image.width ?? undefined"
+    :height="image.height ?? undefined"
+    :loading="loading"
+    :fetchpriority="loading === 'eager' ? 'high' : undefined"
+    decoding="async"
+    :sizes="sizes"
+    :style="style"
+  >
+</template>
+```
+
+`templates/base/src/components/MenuTree.vue`
+
+```vue
+<!--
+  Menu sebagai pohon (menu dan submenu dari tabel menus/menu_items).
+  Rekursif: submenu memakai komponen ini lagi.
+-->
+<script setup lang="ts">
+import type { MenuItemView } from '@framework/template-kit'
+
+withDefaults(defineProps<{
+  items: MenuItemView[]
+  depth?: number
+}>(), { depth: 0 })
+</script>
+
+<template>
+  <ul
+    v-if="items.length > 0"
+    class="menu-tree"
+    :class="depth === 0 ? 'menu-tree--root' : 'menu-tree--sub'"
+  >
+    <li
+      v-for="(item, index) in items"
+      :key="`${index}-${item.href}`"
+      class="menu-tree__item"
+      :class="{ 'menu-tree__item--parent': item.children.length > 0 }"
+    >
+      <a
+        class="menu-tree__link"
+        :href="item.href"
+        :target="item.openInNewTab ? '_blank' : undefined"
+        :rel="item.external || item.openInNewTab ? 'noopener noreferrer' : undefined"
+      >{{ item.label }}</a>
+      <MenuTree
+        v-if="item.children.length > 0"
+        :items="item.children"
+        :depth="depth + 1"
+      />
+    </li>
+  </ul>
+</template>
+```
+
+`templates/base/src/components/SiteHeader.vue`
+
+```vue
+<script setup lang="ts">
+import type { ChromeView } from '@framework/template-kit'
+import type { BaseOptions } from '../config'
+import MenuTree from './MenuTree.vue'
+import SmartImage from './SmartImage.vue'
+
+defineProps<{
+  chrome: ChromeView
+  options: BaseOptions
+}>()
+</script>
+
+<template>
+  <header
+    class="site-header"
+    :class="`site-header--${options.header.style}`"
+  >
+    <div class="site-header__inner container">
+      <p
+        v-if="options.header.showDate"
+        class="site-header__date"
+      >
+        <time :datetime="chrome.today.iso">{{ chrome.today.label }}</time>
+      </p>
+      <a
+        class="site-header__brand"
+        :href="chrome.site.homeHref"
+        rel="home"
+      >
+        <SmartImage
+          v-if="chrome.site.logo"
+          class="site-header__logo"
+          :image="{ ...chrome.site.logo, alt: chrome.site.name }"
+          loading="eager"
+        />
+        <span
+          v-else
+          class="site-header__name"
+        >{{ chrome.site.name }}</span>
+      </a>
+      <p
+        v-if="chrome.site.tagline"
+        class="site-header__tagline"
+      >
+        {{ chrome.site.tagline }}
+      </p>
+    </div>
+    <nav
+      v-if="(chrome.menus['header'] ?? []).length > 0"
+      class="site-header__nav"
+      aria-label="Menu utama"
+    >
+      <div class="container">
+        <MenuTree :items="chrome.menus['header'] ?? []" />
+      </div>
+    </nav>
+  </header>
+</template>
+```
+
+`templates/base/src/components/SiteFooter.vue`
+
+```vue
+<script setup lang="ts">
+import type { ChromeView } from '@framework/template-kit'
+import MenuTree from './MenuTree.vue'
+
+defineProps<{ chrome: ChromeView }>()
+</script>
+
+<template>
+  <footer class="site-footer">
+    <div class="site-footer__inner container">
+      <nav
+        v-if="(chrome.menus['footer'] ?? []).length > 0"
+        class="site-footer__nav"
+        aria-label="Menu footer"
+      >
+        <MenuTree :items="chrome.menus['footer'] ?? []" />
+      </nav>
+      <p class="site-footer__copy">
+        {{ chrome.site.name }}
+      </p>
+    </div>
+  </footer>
+</template>
+```
+
+`templates/base/src/components/ArticleCard.vue`
+
+```vue
+<script setup lang="ts">
+import type { ArticleCardView } from '@framework/template-kit'
+import SmartImage from './SmartImage.vue'
+
+withDefaults(defineProps<{
+  article: ArticleCardView
+  /** Kartu utama (lebih besar, gambar dimuat segera). */
+  lead?: boolean
+}>(), { lead: false })
+</script>
+
+<template>
+  <article
+    class="article-card"
+    :class="{ 'article-card--lead': lead, 'article-card--featured': article.isFeatured, [`article-card--${article.format}`]: true }"
+  >
+    <a
+      v-if="article.image"
+      class="article-card__media"
+      :href="article.href"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <SmartImage
+        :image="article.image"
+        ratio="16/9"
+        :loading="lead ? 'eager' : 'lazy'"
+      />
+    </a>
+    <div class="article-card__body">
+      <a
+        class="article-card__category"
+        :href="article.category.href"
+      >{{ article.category.label }}</a>
+      <h3 class="article-card__title">
+        <a :href="article.href">{{ article.title }}</a>
+      </h3>
+      <p
+        v-if="article.excerpt"
+        class="article-card__excerpt"
+      >
+        {{ article.excerpt }}
+      </p>
+      <p class="article-card__meta">
+        <a
+          v-if="article.author"
+          class="article-card__author"
+          :href="article.author.href"
+        >{{ article.author.label }}</a>
+        <time :datetime="article.publishedAt.iso">{{ article.publishedAt.label }}</time>
+      </p>
+    </div>
+  </article>
+</template>
+```
+
+`templates/base/src/components/ArticleList.vue`
+
+```vue
+<script setup lang="ts">
+import type { ArticleCardView } from '@framework/template-kit'
+import ArticleCard from './ArticleCard.vue'
+
+withDefaults(defineProps<{
+  articles: ArticleCardView[]
+  /** Teks saat daftar kosong. */
+  emptyText?: string
+}>(), { emptyText: 'Belum ada artikel.' })
+</script>
+
+<template>
+  <div
+    v-if="articles.length > 0"
+    class="article-list"
+  >
+    <ArticleCard
+      v-for="article in articles"
+      :key="article.href"
+      :article="article"
+    />
+  </div>
+  <p
+    v-else
+    class="article-list__empty"
+  >
+    {{ emptyText }}
+  </p>
+</template>
+```
+
+`templates/base/src/components/PaginationNav.vue`
+
+```vue
+<script setup lang="ts">
+import type { PaginationView } from '@framework/template-kit'
+
+defineProps<{ pagination: PaginationView }>()
+</script>
+
+<template>
+  <nav
+    v-if="pagination.totalPages > 1"
+    class="pagination"
+    aria-label="Halaman"
+  >
+    <a
+      v-if="pagination.prevHref"
+      class="pagination__prev"
+      :href="pagination.prevHref"
+      rel="prev"
+    >Sebelumnya</a>
+    <ol class="pagination__pages">
+      <li
+        v-for="(item, index) in pagination.pages"
+        :key="item ? item.number : `gap-${index}`"
+      >
+        <span
+          v-if="!item"
+          class="pagination__gap"
+        >…</span>
+        <span
+          v-else-if="item.current"
+          class="pagination__current"
+          aria-current="page"
+        >{{ item.number }}</span>
+        <a
+          v-else
+          :href="item.href"
+        >{{ item.number }}</a>
+      </li>
+    </ol>
+    <a
+      v-if="pagination.nextHref"
+      class="pagination__next"
+      :href="pagination.nextHref"
+      rel="next"
+    >Berikutnya</a>
+  </nav>
+</template>
+```
+
+`templates/base/src/components/BreadcrumbNav.vue`
+
+```vue
+<script setup lang="ts">
+import type { LinkView } from '@framework/template-kit'
+
+defineProps<{ items: LinkView[] }>()
+</script>
+
+<template>
+  <nav
+    v-if="items.length > 0"
+    class="breadcrumb"
+    aria-label="Breadcrumb"
+  >
+    <ol>
+      <li
+        v-for="(item, index) in items"
+        :key="item.href"
+      >
+        <a
+          v-if="index < items.length - 1"
+          :href="item.href"
+        >{{ item.label }}</a>
+        <span
+          v-else
+          aria-current="page"
+        >{{ item.label }}</span>
+      </li>
+    </ol>
+  </nav>
+</template>
+```
+
+`templates/base/src/components/BlockRenderer.vue`
+
+```vue
+<!--
+  Isi artikel/halaman (block body v1). Teks selalu polos dan dirender lewat
+  interpolasi Vue (di-escape), tidak pernah v-html.
+
+  Embed: iframe hanya dari `embedSrc` yang dibangun core (domain dikenal,
+  bukan HTML penulis), dengan sandbox. Tanpa embedSrc (mis. X) tampil
+  sebagai tautan keluar.
+
+  Tipe block yang tidak dikenal tidak cocok dengan cabang mana pun, jadi
+  tidak merender apa-apa. Core sudah membuangnya dan mencatatnya ke log.
+-->
+<script setup lang="ts">
+import type { BlockView } from '@framework/template-kit'
+import SmartImage from './SmartImage.vue'
+
+defineProps<{ blocks: BlockView[] }>()
+
+const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], string> = {
+  youtube: 'YouTube',
+  vimeo: 'Vimeo',
+  x: 'X',
+}
+</script>
+
+<template>
+  <div class="prose">
+    <template
+      v-for="(block, index) in blocks"
+      :key="index"
+    >
+      <p v-if="block.type === 'paragraph'">
+        {{ block.text }}
+      </p>
+      <component
+        :is="`h${block.level}`"
+        v-else-if="block.type === 'heading'"
+      >
+        {{ block.text }}
+      </component>
+      <figure
+        v-else-if="block.type === 'image'"
+        class="prose__figure"
+      >
+        <SmartImage :image="block.image" />
+        <figcaption v-if="block.caption || block.image.credit">
+          {{ block.caption }}
+          <span
+            v-if="block.image.credit"
+            class="prose__credit"
+          >{{ block.image.credit }}</span>
+        </figcaption>
+      </figure>
+      <blockquote v-else-if="block.type === 'quote'">
+        <p>{{ block.text }}</p>
+        <footer v-if="block.cite">
+          <cite>{{ block.cite }}</cite>
+        </footer>
+      </blockquote>
+      <ol v-else-if="block.type === 'list' && block.style === 'numbered'">
+        <li
+          v-for="(item, i) in block.items"
+          :key="i"
+        >
+          {{ item }}
+        </li>
+      </ol>
+      <ul v-else-if="block.type === 'list'">
+        <li
+          v-for="(item, i) in block.items"
+          :key="i"
+        >
+          {{ item }}
+        </li>
+      </ul>
+      <figure
+        v-else-if="block.type === 'embed' && block.embedSrc"
+        class="prose__embed prose__embed--frame"
+      >
+        <iframe
+          :src="block.embedSrc"
+          :title="`Video ${PROVIDER_LABEL[block.provider]}`"
+          loading="lazy"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+          allowfullscreen
+          referrerpolicy="strict-origin-when-cross-origin"
+          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+        />
+      </figure>
+      <p
+        v-else-if="block.type === 'embed'"
+        class="prose__embed"
+      >
+        <a
+          :href="block.url"
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+        >Lihat di {{ PROVIDER_LABEL[block.provider] }}</a>
+      </p>
+    </template>
+  </div>
+</template>
+```
+
+15. Tulis layout dan delapan view, satu per jenis halaman. Setiap view menerima satu prop `vm` dengan tipe view model halamannya:
+
+`templates/base/src/TemplateLayout.vue`
+
+```vue
+<!--
+  Kerangka semua halaman: header, isi (slot), footer. Kelas root
+  .tpl-<key> dipasang aplikasi di luar komponen ini, jadi layout tidak
+  perlu tahu template mana yang aktif.
+-->
+<script setup lang="ts">
+import type { ChromeView } from '@framework/template-kit'
+import SiteFooter from './components/SiteFooter.vue'
+import SiteHeader from './components/SiteHeader.vue'
+import type { BaseOptions } from './config'
+
+defineProps<{
+  chrome: ChromeView
+  options: BaseOptions
+}>()
+</script>
+
+<template>
+  <div class="layout">
+    <a
+      class="skip-link"
+      href="#isi"
+    >Lompat ke isi</a>
+    <SiteHeader
+      :chrome="chrome"
+      :options="options"
+    />
+    <main
+      id="isi"
+      class="layout__main container"
+    >
+      <slot />
+    </main>
+    <SiteFooter :chrome="chrome" />
+  </div>
+</template>
+```
+
+`templates/base/src/views/HomeView.vue`
+
+```vue
+<script setup lang="ts">
+import type { HomeView } from '@framework/template-kit'
+import ArticleCard from '../components/ArticleCard.vue'
+import ArticleList from '../components/ArticleList.vue'
+import PaginationNav from '../components/PaginationNav.vue'
+
+defineProps<{ vm: HomeView }>()
+</script>
+
+<template>
+  <div class="view view--home">
+    <section
+      v-if="vm.featured.length > 0"
+      class="home__featured"
+      aria-label="Pilihan redaksi"
+    >
+      <ArticleCard
+        v-for="(article, index) in vm.featured"
+        :key="article.href"
+        :article="article"
+        :lead="index === 0"
+      />
+    </section>
+    <section
+      class="home__latest"
+      aria-labelledby="judul-terbaru"
+    >
+      <h2
+        id="judul-terbaru"
+        class="section-title"
+      >
+        Terbaru
+      </h2>
+      <ArticleList :articles="vm.latest" />
+      <PaginationNav :pagination="vm.pagination" />
+    </section>
+  </div>
+</template>
+```
+
+`templates/base/src/views/ArticleView.vue`
+
+```vue
+<script setup lang="ts">
+import type { ArticleView } from '@framework/template-kit'
+import BlockRenderer from '../components/BlockRenderer.vue'
+import BreadcrumbNav from '../components/BreadcrumbNav.vue'
+import SmartImage from '../components/SmartImage.vue'
+
+defineProps<{ vm: ArticleView }>()
+</script>
+
+<template>
+  <article
+    class="view view--article article"
+    :class="`article--${vm.format}`"
+  >
+    <BreadcrumbNav :items="vm.breadcrumb" />
+    <header class="article__header">
+      <a
+        class="article__category"
+        :href="vm.category.href"
+      >{{ vm.category.label }}</a>
+      <h1 class="article__title">
+        {{ vm.title }}
+      </h1>
+      <p
+        v-if="vm.excerpt"
+        class="article__excerpt"
+      >
+        {{ vm.excerpt }}
+      </p>
+      <p class="article__meta">
+        <a
+          v-if="vm.author"
+          class="article__author"
+          :href="vm.author.href"
+          rel="author"
+        >{{ vm.author.label }}</a>
+        <time :datetime="vm.publishedAt.iso">{{ vm.publishedAt.label }}</time>
+        <span
+          v-if="vm.updatedAt"
+          class="article__updated"
+        >Diperbarui <time :datetime="vm.updatedAt.iso">{{ vm.updatedAt.label }}</time></span>
+      </p>
+    </header>
+    <figure
+      v-if="vm.image"
+      class="article__image"
+    >
+      <SmartImage
+        :image="vm.image"
+        ratio="16/9"
+        loading="eager"
+      />
+      <figcaption v-if="vm.image.caption || vm.image.credit">
+        {{ vm.image.caption }}
+        <span
+          v-if="vm.image.credit"
+          class="prose__credit"
+        >{{ vm.image.credit }}</span>
+      </figcaption>
+    </figure>
+    <BlockRenderer :blocks="vm.blocks" />
+    <footer
+      v-if="vm.tags.length > 0"
+      class="article__tags"
+    >
+      <ul aria-label="Tag">
+        <li
+          v-for="tag in vm.tags"
+          :key="tag.href"
+        >
+          <a
+            :href="tag.href"
+            rel="tag"
+          >{{ tag.label }}</a>
+        </li>
+      </ul>
+    </footer>
+  </article>
+</template>
+```
+
+`templates/base/src/views/PageView.vue`
+
+```vue
+<script setup lang="ts">
+import type { PageView } from '@framework/template-kit'
+import BlockRenderer from '../components/BlockRenderer.vue'
+
+defineProps<{ vm: PageView }>()
+</script>
+
+<template>
+  <article
+    class="view view--page page"
+    :class="`page--${vm.viewKey}`"
+  >
+    <h1 class="page__title">
+      {{ vm.title }}
+    </h1>
+    <BlockRenderer :blocks="vm.blocks" />
+  </article>
+</template>
+```
+
+`templates/base/src/views/CategoryView.vue`
+
+```vue
+<script setup lang="ts">
+import type { CategoryView } from '@framework/template-kit'
+import ArticleList from '../components/ArticleList.vue'
+import BreadcrumbNav from '../components/BreadcrumbNav.vue'
+import PaginationNav from '../components/PaginationNav.vue'
+
+defineProps<{ vm: CategoryView }>()
+</script>
+
+<template>
+  <div class="view view--category listing">
+    <BreadcrumbNav :items="vm.breadcrumb" />
+    <header class="listing__header">
+      <h1 class="listing__title">
+        {{ vm.name }}
+      </h1>
+      <p
+        v-if="vm.description"
+        class="listing__description"
+      >
+        {{ vm.description }}
+      </p>
+      <ul
+        v-if="vm.children.length > 0"
+        class="listing__children"
+        aria-label="Subkategori"
+      >
+        <li
+          v-for="child in vm.children"
+          :key="child.href"
+        >
+          <a :href="child.href">{{ child.label }}</a>
+        </li>
+      </ul>
+    </header>
+    <ArticleList
+      :articles="vm.articles"
+      empty-text="Belum ada artikel di kategori ini."
+    />
+    <PaginationNav :pagination="vm.pagination" />
+  </div>
+</template>
+```
+
+`templates/base/src/views/TagView.vue`
+
+```vue
+<script setup lang="ts">
+import type { TagView } from '@framework/template-kit'
+import ArticleList from '../components/ArticleList.vue'
+import PaginationNav from '../components/PaginationNav.vue'
+
+defineProps<{ vm: TagView }>()
+</script>
+
+<template>
+  <div class="view view--tag listing">
+    <header class="listing__header">
+      <p class="listing__kicker">
+        Tag
+      </p>
+      <h1 class="listing__title">
+        {{ vm.name }}
+      </h1>
+    </header>
+    <ArticleList
+      :articles="vm.articles"
+      empty-text="Belum ada artikel dengan tag ini."
+    />
+    <PaginationNav :pagination="vm.pagination" />
+  </div>
+</template>
+```
+
+`templates/base/src/views/AuthorView.vue`
+
+```vue
+<script setup lang="ts">
+import type { AuthorView } from '@framework/template-kit'
+import ArticleList from '../components/ArticleList.vue'
+import PaginationNav from '../components/PaginationNav.vue'
+import SmartImage from '../components/SmartImage.vue'
+
+defineProps<{ vm: AuthorView }>()
+</script>
+
+<template>
+  <div class="view view--author listing">
+    <header class="listing__header author">
+      <SmartImage
+        v-if="vm.avatar"
+        class="author__avatar"
+        :image="vm.avatar"
+        ratio="1/1"
+        loading="eager"
+      />
+      <div>
+        <p class="listing__kicker">
+          Penulis
+        </p>
+        <h1 class="listing__title">
+          {{ vm.name }}
+        </h1>
+        <p
+          v-if="vm.bio"
+          class="listing__description"
+        >
+          {{ vm.bio }}
+        </p>
+      </div>
+    </header>
+    <ArticleList
+      :articles="vm.articles"
+      empty-text="Penulis ini belum punya artikel."
+    />
+    <PaginationNav :pagination="vm.pagination" />
+  </div>
+</template>
+```
+
+`templates/base/src/views/SearchView.vue`
+
+```vue
+<script setup lang="ts">
+import type { SearchView } from '@framework/template-kit'
+import ArticleList from '../components/ArticleList.vue'
+import PaginationNav from '../components/PaginationNav.vue'
+
+defineProps<{ vm: SearchView }>()
+</script>
+
+<template>
+  <div class="view view--search listing">
+    <header class="listing__header">
+      <h1 class="listing__title">
+        Cari
+      </h1>
+      <form
+        class="search-form"
+        role="search"
+        method="get"
+        :action="vm.action"
+      >
+        <label
+          class="visually-hidden"
+          for="kata-kunci"
+        >Kata kunci</label>
+        <input
+          id="kata-kunci"
+          type="search"
+          name="q"
+          :value="vm.query"
+          maxlength="200"
+        >
+        <button type="submit">
+          Cari
+        </button>
+      </form>
+    </header>
+    <template v-if="vm.query">
+      <p class="search__summary">
+        Hasil untuk “{{ vm.query }}”
+      </p>
+      <ArticleList
+        :articles="vm.articles"
+        empty-text="Tidak ada artikel yang cocok."
+      />
+      <PaginationNav :pagination="vm.pagination" />
+    </template>
+  </div>
+</template>
+```
+
+`templates/base/src/views/NotFoundView.vue`
+
+```vue
+<script setup lang="ts">
+import type { NotFoundView } from '@framework/template-kit'
+
+defineProps<{ vm: NotFoundView }>()
+</script>
+
+<template>
+  <div class="view view--not-found not-found">
+    <h1 class="not-found__title">
+      Halaman tidak ditemukan
+    </h1>
+    <p>
+      Tidak ada halaman di <code>{{ vm.path }}</code>. Mungkin sudah dipindah atau alamatnya salah ketik.
+    </p>
+    <p>
+      <a href="/">Kembali ke beranda</a>
+    </p>
+  </div>
+</template>
+```
+
+16. Tulis CSS dasar. Semua aturan di bawah `.tpl` (wrapper halaman), dan semua nilai visual dari variabel token. Warna sekunder diturunkan dengan `color-mix`, jadi token warna cukup tiga:
+
+`templates/base/src/styles/base.css`
+
+```css
+/*
+ * Gaya dasar, netral. Semua aturan di bawah .tpl (wrapper halaman) dan
+ * semua nilai visual dari variabel token (--color-*, --font-*, --radius-*),
+ * yang didefinisikan per template di .tpl-<key> oleh aplikasi.
+ *
+ * Template lain menimpa gaya ini dari CSS-nya sendiri, selalu di bawah
+ * kelas root-nya: .tpl-magazine .article-card { ... }
+ */
+
+.tpl {
+  /* Warna turunan dari tiga token warna. */
+  --c-muted: color-mix(in srgb, var(--color-text) 62%, var(--color-surface));
+  --c-border: color-mix(in srgb, var(--color-text) 14%, var(--color-surface));
+  --c-tint: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
+  --f-heading: var(--font-heading), system-ui, sans-serif;
+  --f-body: var(--font-body), system-ui, sans-serif;
+  --space: 1rem;
+  --container: 72rem;
+
+  min-height: 100vh;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--f-body);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tpl *,
+.tpl *::before,
+.tpl *::after {
+  box-sizing: border-box;
+}
+
+.tpl a {
+  color: var(--color-primary);
+  text-underline-offset: 0.15em;
+}
+
+.tpl h1,
+.tpl h2,
+.tpl h3,
+.tpl h4 {
+  font-family: var(--f-heading);
+  line-height: 1.2;
+  margin: 0 0 0.5em;
+}
+
+.tpl img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.tpl .container {
+  width: 100%;
+  max-width: var(--container);
+  margin-inline: auto;
+  padding-inline: var(--space);
+}
+
+.tpl .visually-hidden,
+.tpl .skip-link:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tpl .skip-link:focus {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 10;
+  padding: 0.5rem 1rem;
+  background: var(--color-surface);
+}
+
+/* ---------- Header dan menu ------------------------------------------ */
+
+.tpl .site-header {
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl .site-header__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding-block: 1.25rem;
+}
+
+.tpl .site-header--centered .site-header__inner {
+  flex-direction: column;
+  text-align: center;
+}
+
+.tpl .site-header__date {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .site-header--left .site-header__date {
+  order: 3;
+  margin-left: auto;
+}
+
+.tpl .site-header__brand {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tpl .site-header__logo {
+  height: 2.5rem;
+  width: auto;
+}
+
+.tpl .site-header__name {
+  font-family: var(--f-heading);
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.tpl .site-header__tagline {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
+.tpl .site-header__nav {
+  border-top: 1px solid var(--c-border);
+}
+
+.tpl .site-header--centered .menu-tree--root {
+  justify-content: center;
+}
+
+.tpl .menu-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tpl .menu-tree--root {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.25rem;
+}
+
+.tpl .menu-tree__item {
+  position: relative;
+}
+
+.tpl .menu-tree__link {
+  display: inline-block;
+  padding-block: 0.625rem;
+  color: var(--color-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tpl .menu-tree__link:hover {
+  color: var(--color-primary);
+}
+
+/* Submenu: muncul saat hover atau fokus di dalamnya (tanpa JavaScript). */
+.tpl .site-header .menu-tree--sub {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 5;
+  min-width: 12rem;
+  padding: 0.25rem 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
+}
+
+.tpl .site-header .menu-tree__item--parent:hover > .menu-tree--sub,
+.tpl .site-header .menu-tree__item--parent:focus-within > .menu-tree--sub {
+  display: block;
+}
+
+.tpl .menu-tree--sub .menu-tree__link {
+  font-weight: 400;
+}
+
+/* ---------- Isi --------------------------------------------------------- */
+
+.tpl .layout__main {
+  padding-block: 2rem 3rem;
+}
+
+.tpl .section-title {
+  font-size: 1.25rem;
+  margin-top: 2rem;
+}
+
+.tpl .article-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: 2rem 1.5rem;
+}
+
+.tpl .article-list__empty {
+  color: var(--c-muted);
+}
+
+.tpl .article-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tpl .article-card__media img {
+  width: 100%;
+  border-radius: var(--radius-card);
+}
+
+.tpl .article-card__category,
+.tpl .article__category {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tpl .article-card__title {
+  margin: 0.25rem 0;
+  font-size: 1.25rem;
+}
+
+.tpl .article-card--lead .article-card__title {
+  font-size: 2rem;
+}
+
+.tpl .article-card__title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tpl .article-card__title a:hover {
+  text-decoration: underline;
+}
+
+.tpl .article-card__excerpt {
+  margin: 0;
+  color: var(--c-muted);
+}
+
+.tpl .article-card__meta,
+.tpl .article__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin: 0.25rem 0 0;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .article-card__author,
+.tpl .article__author {
+  color: inherit;
+}
+
+.tpl .home__featured {
+  display: grid;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+/* ---------- Artikel dan halaman --------------------------------------- */
+
+.tpl .article,
+.tpl .page {
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+.tpl .article__title,
+.tpl .page__title,
+.tpl .listing__title,
+.tpl .not-found__title {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+}
+
+.tpl .article__excerpt {
+  font-size: 1.1875rem;
+  color: var(--c-muted);
+}
+
+.tpl .article__image {
+  margin: 1.5rem 0;
+}
+
+.tpl .article__image img {
+  width: 100%;
+  border-radius: var(--radius-card);
+}
+
+.tpl figcaption {
+  margin-top: 0.5rem;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .prose__credit {
+  margin-left: 0.5rem;
+  font-style: italic;
+}
+
+.tpl .prose > * {
+  margin-block: 0 1.1em;
+}
+
+.tpl .prose h2,
+.tpl .prose h3,
+.tpl .prose h4 {
+  margin-top: 1.6em;
+}
+
+.tpl .prose blockquote {
+  margin-inline: 0;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  border-left: 4px solid var(--color-primary);
+  font-size: 1.1875rem;
+}
+
+.tpl .prose blockquote footer {
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
+.tpl .prose__embed--frame {
+  margin-inline: 0;
+}
+
+.tpl .prose__embed--frame iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: var(--radius-card);
+}
+
+.tpl .prose__figure img {
+  border-radius: var(--radius-card);
+}
+
+.tpl .article__tags ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0;
+}
+
+.tpl .article__tags a {
+  display: inline-block;
+  padding: 0.125rem 0.625rem;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+
+/* ---------- Listing, pencarian, navigasi ------------------------------ */
+
+.tpl .listing__header {
+  margin-bottom: 2rem;
+}
+
+.tpl .listing__kicker {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.tpl .listing__description {
+  color: var(--c-muted);
+}
+
+.tpl .listing__children {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  list-style: none;
+  padding: 0;
+}
+
+.tpl .author {
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+}
+
+.tpl .author__avatar {
+  width: 6rem;
+  border-radius: 50%;
+}
+
+.tpl .search-form {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 32rem;
+}
+
+.tpl .search-form input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
+  font: inherit;
+  color: inherit;
+  background: var(--color-surface);
+}
+
+.tpl .search-form button {
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: var(--radius-card);
+  background: var(--color-primary);
+  color: var(--color-surface);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tpl .breadcrumb ol,
+.tpl .pagination__pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tpl .breadcrumb {
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.tpl .breadcrumb li + li::before {
+  content: "/";
+  margin-right: 0.5rem;
+  color: var(--c-muted);
+}
+
+.tpl .pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 2.5rem;
+}
+
+.tpl .pagination__pages a,
+.tpl .pagination__current,
+.tpl .pagination__gap {
+  display: inline-block;
+  min-width: 2.25rem;
+  padding: 0.25rem 0.5rem;
+  text-align: center;
+  border-radius: var(--radius-card);
+}
+
+.tpl .pagination__current {
+  background: var(--c-tint);
+  font-weight: 700;
+}
+
+/* ---------- Footer ------------------------------------------------------ */
+
+.tpl .site-footer {
+  border-top: 1px solid var(--c-border);
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
+.tpl .site-footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 2rem;
+}
+
+.tpl .site-footer .menu-tree--root {
+  gap: 0 1rem;
+}
+
+.tpl .site-footer .menu-tree__link {
+  font-weight: 400;
+  color: inherit;
+}
+
+.tpl .site-footer .menu-tree--sub {
+  display: none;
+}
+```
+
+17. Lengkapi `package.json` base:
+
+`templates/base/package.json`
+
+```json
+{
+  "name": "@framework/template-base",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Semua komponen UI default; dipakai bersama oleh semua template",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/merriweather": "^5.3.0",
+    "@fontsource/source-sans-3": "^5.3.1",
+    "@framework/template-kit": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
+}
+```
+
+18. Buat template magazine. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
+
+`templates/magazine/src/index.ts`
+
+```ts
+// Template magazine 1.0.0: tampilan majalah yang dibangun hanya dari token,
+// opsi, dan CSS di atas komponen base. Tidak ada override komponen (ADR-005).
+import { defineTemplate } from '@framework/template-kit'
+import base from '@framework/template-base'
+import './styles.css'
+
+export default defineTemplate({
+  key: 'magazine',
+  version: '1.0.0',
+  name: 'Magazine',
+  extends: base,
+  tokens: {
+    defaults: {
+      color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' },
+      font: { heading: 'Inter', body: 'Inter' },
+      radius: { card: '8px' },
+    },
+  },
+  options: {
+    defaults: { header: { style: 'centered', showDate: true } },
+  },
+})
+```
+
+`templates/magazine/src/styles.css`
+
+```css
+/*
+ * Magazine: header di tengah dengan garis aksen, label kategori berupa
+ * pita berwarna, kartu berbayang, judul besar dan rapat. Semua di bawah
+ * .tpl-magazine agar tidak bocor ke site lain di server yang sama.
+ */
+
+.tpl-magazine {
+  --container: 76rem;
+}
+
+.tpl-magazine .site-header {
+  border-top: 6px solid var(--color-primary);
+  border-bottom: 0;
+}
+
+.tpl-magazine .site-header__inner {
+  padding-block: 1.75rem 1.25rem;
+}
+
+.tpl-magazine .site-header__name {
+  font-size: clamp(2rem, 5vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.tpl-magazine .site-header__date {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+}
+
+.tpl-magazine .site-header__nav {
+  border-top: 1px solid var(--color-text);
+  border-bottom: 3px double var(--color-text);
+}
+
+.tpl-magazine .menu-tree__link {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.8125rem;
+}
+
+.tpl-magazine h1,
+.tpl-magazine h2,
+.tpl-magazine h3 {
+  letter-spacing: -0.02em;
+}
+
+.tpl-magazine .section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.875rem;
+}
+
+.tpl-magazine .section-title::after {
+  content: "";
+  flex: 1;
+  height: 2px;
+  background: var(--color-text);
+}
+
+.tpl-magazine .article-card__category,
+.tpl-magazine .article__category {
+  align-self: flex-start;
+  padding: 0.125rem 0.5rem;
+  background: var(--color-primary);
+  color: var(--color-surface);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.6875rem;
+}
+
+.tpl-magazine .article-card {
+  overflow: hidden;
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 6px 20px rgb(0 0 0 / 0.06);
+}
+
+.tpl-magazine .article-card__media img {
+  border-radius: 0;
+}
+
+.tpl-magazine .article-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0 1.25rem 1.25rem;
+}
+
+.tpl-magazine .article-card:not(:has(.article-card__media)) .article-card__body {
+  padding-top: 1.25rem;
+}
+
+.tpl-magazine .article-card__title {
+  font-size: 1.375rem;
+}
+
+/* Kartu utama: gambar dan teks berdampingan di layar lebar. */
+@media (min-width: 48rem) {
+  .tpl-magazine .article-card--lead {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    align-items: center;
+  }
+
+  .tpl-magazine .article-card--lead .article-card__body {
+    padding: 2rem;
+  }
+
+  .tpl-magazine .article-card--lead .article-card__title {
+    font-size: 2.5rem;
+  }
+}
+
+.tpl-magazine .article__title {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+}
+
+.tpl-magazine .prose blockquote {
+  border-left: 0;
+  padding: 0;
+  font-family: var(--f-heading);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.tpl-magazine .prose blockquote::before {
+  content: "“";
+  display: block;
+  color: var(--color-primary);
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.tpl-magazine .site-footer {
+  background: var(--color-text);
+  color: var(--color-surface);
+}
+
+.tpl-magazine .site-footer a {
+  color: inherit;
+}
+```
+
+`templates/magazine/package.json`
+
+```json
+{
+  "name": "@framework/template-magazine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Template pertama: tampilan majalah dari token, opsi, dan CSS di atas base",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@framework/template-base": "workspace:*",
+    "@framework/template-kit": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
+}
+```
+
+19. Pasang dependency dan tooling. `@vitejs/plugin-vue` disamakan dengan versi yang dipakai Nuxt, dan `vue-tsc` di root dipakai untuk typecheck folder `templates/`:
+
+```bash
+pnpm install
+pnpm add -Dw @vitejs/plugin-vue@6.0.11 vue@^3.5.45 vue-tsc@^3.3.14
+```
+
+20. Typecheck template dengan `vue-tsc`, karena `tsc` biasa tidak membaca `.vue`. Buat `templates/tsconfig.json` dan deklarasi import CSS:
+
+`templates/tsconfig.json`
+
+```jsonc
+{
+  // Typecheck semua template (.ts dan .vue) dengan vue-tsc: pnpm typecheck.
+  // Template hanya boleh memakai API browser + Vue, jadi tanpa tipe Node,
+  // kecuali file test yang berjalan di Vitest.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["*/src/**/*.ts", "*/src/**/*.vue", "env.d.ts"]
+}
+```
+
+`templates/env.d.ts`
+
+```ts
+// Import CSS untuk efek samping (import './styles.css') diproses bundler
+// (Vite/Nuxt), bukan TypeScript.
+declare module '*.css'
+```
+
+   Lalu tambahkan ke script `typecheck` root:
+
+```json
+"typecheck": "tsc -p tsconfig.json && vue-tsc -p templates/tsconfig.json --noEmit && pnpm --filter @framework/web typecheck"
+```
+
+21. Pasang `@vitejs/plugin-vue` di `vitest.config.ts`, agar test bisa merender komponen `.vue` tanpa Nuxt:
+
+`vitest.config.ts`
+
+```ts
+import { existsSync, readFileSync } from 'node:fs'
+import { parseEnv } from 'node:util'
+import vue from '@vitejs/plugin-vue'
+import { defineConfig } from 'vitest/config'
+
+// .env lokal (mis. DATABASE_URL) ikut terbaca; di CI tanpa .env, test yang
+// butuh database otomatis dilewati.
+const envFile = new URL('.env', import.meta.url)
+const env = existsSync(envFile) ? parseEnv(readFileSync(envFile, 'utf8')) : {}
+
+// plugin-vue: test template merender komponen .vue (SSR) tanpa Nuxt.
+export default defineConfig({
+  plugins: [vue()],
+  test: {
+    include: ['**/*.test.ts'],
+    exclude: ['**/node_modules/**', '_archive/**', '**/.nuxt/**', '**/.output/**'],
+    env,
+  },
+})
+```
+
+22. Uji render SSR semua view base dengan view model contoh. Test ini memastikan manifest menunjuk ke file yang benar, setiap view menampilkan datanya, dan teks konten selalu di-escape:
+
+`templates/base/src/test-fixtures.ts`
+
+```ts
+// View model contoh untuk test render template. Bentuknya mengikuti kontrak
+// template-kit; isinya sengaja memuat kasus sulit (teks berisi HTML, menu
+// bersarang, pagination dengan celah).
+import type {
+  ArticleCardView,
+  ChromeView,
+  ImageView,
+  PageViewModel,
+  PaginationView,
+  ViewName,
+  ViewModelOf,
+} from '@framework/template-kit'
+
+export const image: ImageView = {
+  src: '/media/kabar-tekno/2026/11/hp.webp',
+  alt: 'Ponsel lipat di atas meja',
+  width: 1600,
+  height: 900,
+  focalX: 0.62,
+  focalY: 0.4,
+  caption: 'Ponsel lipat generasi ketiga',
+  credit: 'Redaksi',
+}
+
+const date = { iso: '2026-11-17T03:00:00.000Z', label: '17 November 2026' }
+
+export const chrome: ChromeView = {
+  site: { name: 'Kabar Tekno', tagline: 'Teknologi tanpa jargon', locale: 'id', logo: null, homeHref: '/' },
+  menus: {
+    header: [
+      { label: 'Gadget', href: '/gadget', external: false, openInNewTab: false, children: [
+        { label: 'Ponsel', href: '/gadget/ponsel', external: false, openInNewTab: false, children: [] },
+      ] },
+      { label: 'Komunitas', href: 'https://forum.example.com', external: true, openInNewTab: true, children: [] },
+    ],
+    footer: [{ label: 'Tentang', href: '/p/tentang', external: false, openInNewTab: false, children: [] }],
+  },
+  today: { iso: '2026-11-19', label: 'Kamis, 19 November 2026' },
+}
+
+export const card = (n: number, extra: Partial<ArticleCardView> = {}): ArticleCardView => ({
+  href: `/gadget/artikel-${n}`,
+  title: `Artikel ${n}`,
+  excerpt: `Ringkasan artikel ${n}`,
+  category: { label: 'Gadget', href: '/kategori/gadget' },
+  author: { label: 'Rina', href: '/penulis/rina' },
+  publishedAt: date,
+  image: null,
+  isFeatured: false,
+  format: 'standard',
+  ...extra,
+})
+
+export const pagination: PaginationView = {
+  page: 2,
+  totalPages: 9,
+  prevHref: '/?page=1',
+  nextHref: '/?page=3',
+  pages: [
+    { number: 1, href: '/?page=1', current: false },
+    { number: 2, href: '/?page=2', current: true },
+    { number: 3, href: '/?page=3', current: false },
+    null,
+    { number: 9, href: '/?page=9', current: false },
+  ],
+}
+
+const noPages: PaginationView = { page: 1, totalPages: 1, prevHref: null, nextHref: null, pages: [] }
+
+export const views: { [V in ViewName]: ViewModelOf<V> } = {
+  home: { view: 'home', featured: [card(1, { isFeatured: true, image })], latest: [card(2), card(3)], pagination },
+  article: {
+    view: 'article',
+    breadcrumb: [{ label: 'Beranda', href: '/' }, { label: 'Gadget', href: '/kategori/gadget' }, { label: 'Artikel 1', href: '/gadget/artikel-1' }],
+    title: 'Ponsel <script>alert(1)</script> lipat',
+    excerpt: 'Ringkasan',
+    category: { label: 'Gadget', href: '/kategori/gadget' },
+    author: { label: 'Rina', href: '/penulis/rina' },
+    publishedAt: date,
+    updatedAt: null,
+    image,
+    tags: [{ label: 'Android', href: '/tag/android' }],
+    format: 'review',
+    blocks: [
+      { type: 'paragraph', text: 'Paragraf <b>polos</b>.' },
+      { type: 'heading', level: 3, text: 'Subjudul' },
+      { type: 'image', image, caption: 'Keterangan gambar' },
+      { type: 'quote', text: 'Kutipan', cite: 'Narasumber' },
+      { type: 'list', style: 'numbered', items: ['Satu', 'Dua'] },
+      { type: 'list', style: 'bullet', items: ['Butir'] },
+      { type: 'embed', provider: 'youtube', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', embedSrc: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ' },
+      { type: 'embed', provider: 'x', url: 'https://x.com/a/status/1', embedSrc: null },
+    ],
+  },
+  page: { view: 'page', title: 'Tentang Kami', viewKey: 'default', blocks: [{ type: 'paragraph', text: 'Isi halaman' }] },
+  category: {
+    view: 'category',
+    breadcrumb: [{ label: 'Beranda', href: '/' }, { label: 'Gadget', href: '/kategori/gadget' }],
+    name: 'Gadget',
+    description: 'Ulasan perangkat',
+    children: [{ label: 'Ponsel', href: '/kategori/ponsel' }],
+    articles: [card(4)],
+    pagination: noPages,
+  },
+  tag: { view: 'tag', name: 'Android', articles: [], pagination: noPages },
+  author: { view: 'author', name: 'Rina', bio: 'Editor gadget', avatar: image, articles: [card(5)], pagination: noPages },
+  search: { view: 'search', action: '/cari', query: 'lipat', articles: [card(6)], pagination: noPages },
+  'not-found': { view: 'not-found', path: '/tidak-ada' },
+}
+
+/** Pastikan fixture mencakup setiap jenis halaman (gagal compile bila ada yang kurang). */
+export const allViews: PageViewModel[] = Object.values(views)
+```
+
+`templates/base/src/render.test.ts`
+
+```ts
+// Render SSR komponen base dengan view model contoh, tanpa Nuxt. Menjamin:
+//  - manifest menunjuk ke file view yang benar-benar ada dan bisa dirender,
+//  - setiap view menampilkan data utamanya,
+//  - teks dari konten selalu di-escape (tidak ada v-html),
+//  - SmartImage memakai titik fokus, menu bersarang, pagination dengan celah.
+import { VIEW_NAMES, type ComponentLoader } from '@framework/template-kit'
+import { describe, expect, it } from 'vitest'
+import { createSSRApp, h, type Component } from 'vue'
+import { renderToString } from 'vue/server-renderer'
+import base from './index'
+import { baseOptionDefaults } from './config'
+import SmartImage from './components/SmartImage.vue'
+import { chrome, image, views } from './test-fixtures'
+
+async function load(loader: ComponentLoader): Promise<Component> {
+  const mod = await loader()
+  return 'default' in mod ? (mod.default as Component) : mod
+}
+
+async function render(component: Component, props: Record<string, unknown>, slot?: () => unknown): Promise<string> {
+  return renderToString(createSSRApp({ render: () => h(component, props, slot ? { default: slot } : undefined) }))
+}
+
+describe('template base: view', () => {
+  it.each(VIEW_NAMES)('view %s dirender', async (name) => {
+    const html = await render(await load(base.views[name]), { vm: views[name] })
+    expect(html).toContain(`view--${name}`)
+  })
+
+  it('home: kartu utama, daftar terbaru, pagination dengan celah', async () => {
+    const html = await render(await load(base.views.home), { vm: views.home })
+    expect(html).toContain('article-card--lead')
+    expect(html).toContain('Artikel 2')
+    expect(html).toContain('aria-current="page"')
+    expect(html).toContain('pagination__gap')
+    expect(html).toContain('rel="next"')
+  })
+
+  it('artikel: semua tipe block, teks di-escape', async () => {
+    const html = await render(await load(base.views.article), { vm: views.article })
+    expect(html).toContain('Ponsel &lt;script&gt;alert(1)&lt;/script&gt; lipat')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('Paragraf &lt;b&gt;polos&lt;/b&gt;.')
+    expect(html).toMatch(/<h3[^>]*>\s*Subjudul\s*<\/h3>/)
+    expect(html).toContain('<ol>')
+    expect(html).toContain('<cite>Narasumber</cite>')
+    expect(html).toContain('src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"')
+    expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"')
+    expect(html).toContain('title="Video YouTube"')
+    expect(html).toContain('Lihat di X')
+    expect(html).toContain('rel="tag"')
+    expect(html).toContain('article--review')
+  })
+
+  it('tipe block tidak dikenal tidak merender apa-apa dan tidak crash', async () => {
+    const BlockRenderer = (await import('./components/BlockRenderer.vue')).default
+    const html = await render(BlockRenderer, { blocks: [{ type: 'carousel', items: [] }, { type: 'paragraph', text: 'Tetap ada' }] })
+    expect(html).toContain('Tetap ada')
+    expect(html).not.toContain('carousel')
+  })
+
+  it('pencarian: form memakai URL dari view model', async () => {
+    const html = await render(await load(base.views.search), { vm: views.search })
+    expect(html).toContain('action="/cari"')
+    expect(html).toContain('value="lipat"')
+  })
+
+  it('daftar kosong menampilkan teks pengganti', async () => {
+    const html = await render(await load(base.views.tag), { vm: views.tag })
+    expect(html).toContain('Belum ada artikel dengan tag ini.')
+  })
+})
+
+describe('template base: layout', () => {
+  it('header, menu bersarang, footer, dan isi slot', async () => {
+    const html = await render(await load(base.layout), { chrome, options: baseOptionDefaults }, () => h('p', 'ISI'))
+    expect(html).toContain('site-header--left')
+    expect(html).toContain('Kabar Tekno')
+    expect(html).toContain('menu-tree--sub')
+    expect(html).toContain('href="/gadget/ponsel"')
+    expect(html).toContain('target="_blank" rel="noopener noreferrer"')
+    expect(html).toContain('href="/p/tentang"')
+    expect(html).toContain('<p>ISI</p>')
+    expect(html).not.toContain('19 November 2026')
+  })
+
+  it('opsi header: tengah dan tanggal', async () => {
+    const html = await render(await load(base.layout), { chrome, options: { header: { style: 'centered', showDate: true } } })
+    expect(html).toContain('site-header--centered')
+    expect(html).toContain('<time datetime="2026-11-19">Kamis, 19 November 2026</time>')
+  })
+
+  it('logo dipakai bila ada, dengan nama site sebagai alt', async () => {
+    const html = await render(await load(base.layout), { chrome: { ...chrome, site: { ...chrome.site, logo: image } }, options: baseOptionDefaults })
+    expect(html).toContain('alt="Kabar Tekno"')
+    expect(html).not.toContain('site-header__name')
+  })
+})
+
+describe('SmartImage', () => {
+  it('rasio dan titik fokus', async () => {
+    const html = await render(SmartImage, { image, ratio: '16/9' })
+    expect(html).toContain('aspect-ratio:16/9')
+    expect(html).toContain('object-position:62% 40%')
+    expect(html).toContain('loading="lazy"')
+    expect(html).toContain('width="1600"')
+  })
+
+  it('tanpa rasio: tampil utuh; eager memberi prioritas', async () => {
+    const html = await render(SmartImage, { image, loading: 'eager' })
+    expect(html).not.toContain('object-fit')
+    expect(html).toContain('fetchpriority="high"')
+  })
+
+  it('rasio tidak valid diabaikan', async () => {
+    const html = await render(SmartImage, { image, ratio: '16/9;color:red' })
+    expect(html).not.toContain('aspect-ratio')
+  })
+})
+```
+
+23. Uji manifest magazine: semua view dan layout diwarisi dari base, dan config dari seed lolos validasi. Opsi `adSlots` di seed memang belum menjadi opsi template, jadi tercatat sebagai key tidak dikenal:
+
+`templates/magazine/src/manifest.test.ts`
+
+```ts
+import base from '@framework/template-base'
+import { createTemplateRegistry, VIEW_NAMES } from '@framework/template-kit'
+import { describe, expect, it } from 'vitest'
+import magazine from './index'
+
+describe('template magazine', () => {
+  it('manifest 1.0.0, mewarisi semua view dan layout dari base (tanpa override)', () => {
+    expect(magazine).toMatchObject({ key: 'magazine', version: '1.0.0', lineage: ['magazine', 'base'] })
+    for (const name of VIEW_NAMES) expect(magazine.views[name]).toBe(base.views[name])
+    expect(magazine.layout).toBe(base.layout)
+  })
+
+  it('token dan opsi sendiri di atas skema base', () => {
+    expect(magazine.tokens.schema).toBe(base.tokens.schema)
+    expect(magazine.tokens.defaults).toEqual({
+      color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' },
+      font: { heading: 'Inter', body: 'Inter' },
+      radius: { card: '8px' },
+    })
+    expect(magazine.options.defaults).toEqual({ header: { style: 'centered', showDate: true } })
+  })
+
+  it('config dari seed (kabar-tekno) lolos tanpa issue', () => {
+    const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+    const theme = registry.resolveTheme({
+      templateKey: 'magazine',
+      templateVersion: '1.0.0',
+      tokens: { color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' }, font: { heading: 'Inter', body: 'Inter' }, radius: { card: '8px' } },
+      options: { header: { style: 'centered', showDate: true }, adSlots: { header_banner: null } },
+    })
+    expect(theme.rootClass).toBe('tpl-magazine')
+    expect(theme.css).toBe('.tpl-magazine{--color-primary:#0f62fe;--color-surface:#ffffff;--color-text:#161616;--font-heading:"Inter";--font-body:"Inter";--radius-card:8px}')
+    // adSlots ada di seed tetapi belum menjadi opsi template: dibuang dan dicatat.
+    expect(theme.issues).toEqual(['options.adSlots: key tidak dikenal, diabaikan'])
+  })
+})
+```
+
+24. Jaga agar CSS satu template tidak bocor ke site lain. Di mode multi-site semua CSS template dimuat bersama, jadi test ini memeriksa bahwa setiap selector diawali kelas root template itu sendiri (`.tpl` untuk base, `.tpl-<key>` untuk yang lain):
+
+`tests/template-css.test.ts`
+
+```ts
+// CSS template tidak boleh bocor ke template lain (ADR-005): di mode
+// multi-site semua CSS template dimuat bersama, jadi setiap selector wajib
+// diawali kelas root template itu sendiri.
+//   templates/base     -> .tpl        (wrapper semua halaman)
+//   templates/<key>    -> .tpl-<key>
+// File font (@font-face) dikecualikan karena tidak memuat selector.
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const root = new URL('../templates/', import.meta.url).pathname
+
+function cssFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : cssFiles(path)
+    return entry.name.endsWith('.css') && entry.name !== 'fonts.css' ? [path] : []
+  })
+}
+
+/** Selector dari teks CSS: bagian sebelum '{' yang bukan at-rule (@media, @supports, ...). */
+function selectors(css: string): string[] {
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const result: string[] = []
+  for (const match of clean.matchAll(/([^{};]+)\{/g)) {
+    const prelude = (match[1] ?? '').trim()
+    if (prelude === '' || prelude.startsWith('@')) continue
+    result.push(...prelude.split(',').map((s) => s.trim()))
+  }
+  return result
+}
+
+describe('CSS template dibatasi kelas root', () => {
+  const files = cssFiles(root)
+
+  it('menemukan CSS base dan magazine', () => {
+    const names = files.map((f) => relative(root, f))
+    expect(names).toEqual(expect.arrayContaining(['base/src/styles/base.css', 'magazine/src/styles.css']))
+  })
+
+  it.each(files.map((f) => [relative(root, f), f]))('%s', (_name, file) => {
+    const key = relative(root, file).split('/')[0]
+    const prefix = key === 'base' ? '.tpl' : `.tpl-${key}`
+    const pattern = new RegExp(`^${prefix.replace('.', '\\.')}(?![\\w-])`)
+    const leaking = selectors(readFileSync(file, 'utf8')).filter((s) => !pattern.test(s))
+    expect(leaking).toEqual([])
+  })
+
+  it('pemeriksa selector menangkap CSS yang bocor', () => {
+    expect(selectors('.tpl-magazine a { color: red } body, .x { margin: 0 } @media (min-width: 1px) { .tpl p { x: y } }'))
+      .toEqual(['.tpl-magazine a', 'body', '.x', '.tpl p'])
+  })
+})
+```
+
+25. Di `apps/web`, tambahkan dependency ketiga paket template ke `package.json` (lihat bab aplikasi web), lalu buat registry. Menambah template cukup dengan mendaftarkannya di sini:
+
+`apps/web/app/templates.ts`
+
+```ts
+// Registry template yang di-bundle aplikasi ini. Menambah template = daftar
+// di sini (dan dependency di package.json); core tidak berubah (ADR-005).
+// Mode single-site nanti cukup mendaftarkan template yang dipakai (env
+// TEMPLATES, ADR-001) agar bundle kecil.
+import base from '@framework/template-base'
+import { createTemplateRegistry } from '@framework/template-kit'
+import magazine from '@framework/template-magazine'
+
+export const templateRegistry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+```
+
+26. Muat theme aktif di middleware. Hanya request halaman yang memuat theme; `/api/` dan `/media/` tidak membutuhkannya. Tambahkan juga `theme?: StoredTheme | null` ke augmentasi `RequestEventContext` di `shared/types/site-context.d.ts`. Versi akhir kedua file ada di bab berikutnya:
+
+```ts
+/** Route yang butuh site tetapi bukan halaman: tidak perlu memuat theme. */
+const NON_PAGE_PREFIXES = ['/api/', '/media/']
+
+// di cabang result.kind === 'site', setelah context.site diisi:
+if (!NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) {
+  event.context.theme = await useRepositories().sites.getActiveTheme(site.id)
+}
+```
+
+27. Selesaikan theme di plugin khusus server (`app/plugins/site.server.ts`). Akhiran `.server.ts` membuat plugin ini tidak ikut ke bundle browser:
+    - Theme diselesaikan lewat registry. `issues` dicatat ke log sekali per proses per site, bukan setiap request.
+    - Hasilnya disimpan di `useState` (`app/composables/useSiteTheme.ts`), sehingga ikut ke browser lewat payload.
+    - Untuk sementara kerangka halaman (`ChromeView`) dibangun ringkas di plugin ini: nama site, tagline, logo (lewat `toImageView`), tanggal hari ini, tanpa menu. Bab berikutnya menggantinya dengan view model dari core.
+    - Dari core hanya di-import tipe dan subpath murni `@framework/core/media`. Entry utama core membawa `pg`, yang rusak bila ikut di-bundle ke bundle SSR Vue. Gejalanya: halaman produksi gagal dengan `Class extends value #<Object> is not a constructor`, sedangkan dev dan `/api/health` tetap normal.
+
+```ts
+import type { SiteInfo } from '@framework/core'
+import { createMediaUrlResolver, toImageView } from '@framework/core/media'
+import { templateRegistry } from '../templates'
+
+export default defineNuxtPlugin(() => {
+  const context = useRequestEvent()?.context
+  const site = context?.site
+  if (!site) return
+  const theme = templateRegistry.resolveTheme(context.theme ?? null)
+  // ... catat theme.issues ke log, sekali per proses
+  useSiteTheme().value = theme
+  useChrome().value = temporaryChrome(site) // site + logo + tanggal, tanpa menu
+})
+```
+
+28. Pasang wrapper dan token di `app.vue`. Halaman dibungkus `<div class="tpl tpl-<key>">`, token menjadi `<style>` di `<head>` lewat `useHead`, dan layout template (`defineAsyncComponent(template.layout)`) dirender dengan isi sementara berupa nama site dan nama template. Versi akhirnya, yang juga merender view, ada di bab berikutnya.
+
+29. Kunci aturan import kode `app/` dengan ESLint (lihat `eslint.config.js`): dari `@framework/core` dan `@framework/db` hanya boleh import tipe (`@typescript-eslint/no-restricted-imports` dengan `allowTypeImports`), dan driver database dilarang. Kasusnya ditambahkan ke `tests/architecture.test.ts`.
+
+30. Sajikan media dari disk lokal lewat `server/routes/media/[...key].get.ts`:
+    - Hanya media milik site request itu: segmen pertama `storage_key` harus kode site.
+    - Path dicek dengan `splitStorageKey`, lalu dipastikan tetap di dalam `MEDIA_DIR`.
+    - SVG bisa memuat script, jadi respons diberi `Content-Security-Policy` ketat dan `nosniff`.
+    - Di dev, file yang tidak ada diganti placeholder SVG. Media seed tampil tanpa file gambar di Git.
+
+`apps/web/server/routes/media/[...key].get.ts`
+
+```ts
+// GET /media/<storage_key>: file media dari disk lokal (sisi baca storage
+// adapter; upload menyusul di M4).
+//
+//  - Hanya media milik site request ini: storage_key wajib diawali kode
+//    site, jadi gambar site lain tidak bisa diambil lewat domain ini.
+//  - Path dicek ketat (splitStorageKey) agar tidak bisa keluar dari MEDIA_DIR.
+//  - Di dev, file yang tidak ada diganti gambar placeholder SVG, jadi media
+//    seed tampil tanpa menyimpan file gambar di Git.
+import { readFile } from 'node:fs/promises'
+import { join, resolve, sep } from 'node:path'
+import { splitStorageKey } from '@framework/core'
+import { defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
+
+const CONTENT_TYPES: Record<string, string> = {
+  avif: 'image/avif',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+}
+
+export default defineEventHandler(async (event) => {
+  const site = event.context.site
+  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
+  const segments = splitStorageKey(key)
+  const extension = key.split('.').pop()?.toLowerCase() ?? ''
+  const contentType = CONTENT_TYPES[extension]
+
+  if (!site || !segments || segments[0] !== site.code || !contentType) return notFound(event)
+
+  const headers = event.res.headers
+  // SVG bisa memuat script; CSP ini mematikannya bila file dibuka langsung.
+  headers.set('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+  headers.set('x-content-type-options', 'nosniff')
+
+  const dir = process.env['MEDIA_DIR']
+  if (dir) {
+    const base = resolve(dir)
+    const file = join(base, ...segments)
+    if (file.startsWith(base + sep)) {
+      try {
+        const data = await readFile(file)
+        headers.set('content-type', contentType)
+        headers.set('cache-control', 'public, max-age=86400')
+        return data
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+  }
+
+  if (import.meta.dev) {
+    headers.set('content-type', 'image/svg+xml')
+    headers.set('cache-control', 'no-store')
+    return placeholderSvg(segments.at(-1) ?? key)
+  }
+  return notFound(event)
+})
+
+function notFound(event: Parameters<typeof setResponseStatus>[0]) {
+  setResponseStatus(event, 404)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  return 'Media tidak ditemukan.\n'
+}
+
+/** Placeholder dev: kotak abu-abu 16:9 bertuliskan nama file. */
+function placeholderSvg(name: string): string {
+  const label = name.replace(/[^a-zA-Z0-9._-]/g, '')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">`
+    + `<rect width="1600" height="900" fill="#d9dde3"/>`
+    + `<path d="M0 0L1600 900M1600 0L0 900" stroke="#c3c9d1" stroke-width="4"/>`
+    + `<text x="800" y="470" font-family="system-ui, sans-serif" font-size="56" fill="#5b6470" text-anchor="middle">${label}</text>`
+    + `</svg>`
+}
+```
+
+31. Tambahkan `MEDIA_DIR` dan `MEDIA_BASE_URL` (opsional) ke `.env.example` (lihat bab PostgreSQL).
+
+32. Batasi dev server ke `localhost` dengan `nuxt dev --host localhost`. Tanpa itu Nuxt mendengarkan di semua interface dan memperingatkan bahwa dev server (berikut source code-nya) bisa dibaca dari jaringan.
+
+33. Perluas smoke test build dengan `SMOKE_HOSTS`: untuk setiap domain, halaman `/` harus 200 dan memuat wrapper template. Smoke test lama hanya memanggil `/api/health`, sehingga tidak menangkap bug bundle SSR di langkah 27:
+
+`apps/web/scripts/smoke-build.mjs`
+
+```js
+// Smoke test hasil build: jalankan .output/server/index.mjs, panggil
+// /api/health, lalu cocokkan status HTTP dengan yang diharapkan.
+//
+//   node scripts/smoke-build.mjs          -> harus 200 (database hidup)
+//   EXPECT_STATUS=503 node scripts/...    -> database sengaja tidak ada (CI)
+//   SMOKE_HOSTS=a.test,b.test node ...    -> juga render halaman / tiap domain
+//
+// 503 tetap membuktikan bundle bisa start, route ikut ter-build, dan
+// driver pg ikut terbawa: tanpa pg, server crash dan status tidak pernah 503.
+//
+// SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
+// 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
+// muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+const port = process.env.SMOKE_PORT ?? '3999'
+const expected = Number(process.env.EXPECT_STATUS ?? '200')
+const timeoutMs = 30_000
+const entry = fileURLToPath(new URL('../.output/server/index.mjs', import.meta.url))
+const url = `http://127.0.0.1:${port}/api/health`
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+
+const server = spawn(process.execPath, [entry], {
+  env: { ...process.env, PORT: port, HOST: '127.0.0.1' },
+  stdio: ['ignore', 'inherit', 'inherit'],
+})
+
+let exited = false
+let stopping = false
+server.on('exit', (code) => {
+  exited = true
+  if (!stopping) console.error(`[smoke] server berhenti sendiri (exit ${code})`)
+})
+
+async function waitForResponse() {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline && !exited) {
+    try {
+      return await fetch(url)
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  return undefined
+}
+
+let failed = true
+try {
+  const response = await waitForResponse()
+  if (!response) {
+    console.error(`[smoke] GAGAL: ${url} tidak menjawab dalam ${timeoutMs / 1000} detik`)
+  } else {
+    const body = await response.text()
+    console.log(`[smoke] ${url} -> ${response.status} ${body}`)
+    if (response.status !== expected) {
+      console.error(`[smoke] GAGAL: status ${response.status}, seharusnya ${expected}`)
+    } else if (!body.includes('"status"')) {
+      console.error('[smoke] GAGAL: body bukan respons health check')
+    } else {
+      failed = !(await checkPages())
+      if (!failed) console.log('[smoke] OK')
+    }
+  }
+} finally {
+  stopping = true
+  if (!exited) server.kill('SIGTERM')
+}
+process.exitCode = failed ? 1 : 0
+
+/** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
+async function checkPages() {
+  let ok = true
+  for (const host of pageHosts) {
+    const target = `http://127.0.0.1:${port}/`
+    // fetch() tidak mengizinkan header Host; pakai node:http.
+    const { status, body } = await getWithHost(target, host)
+    const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
+    console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
+    if (status !== 200 || !wrapper) {
+      console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    }
+  }
+  return ok
+}
+
+async function getWithHost(target, host) {
+  const { request } = await import('node:http')
+  return new Promise((resolve, reject) => {
+    const req = request(target, { headers: { host } }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+```
+
+34. Ubah job CI `build` agar memakai PostgreSQL ber-seed (file lengkap di bab CI). Smoke test dijalankan dua kali: tanpa database (health 503, bukan crash) dan dengan database (health 200 + halaman `tekno.local.test` dan `kuliner.local.test`).
+
+35. Uji di dev dan produksi:
+
+```bash
+pnpm dev
+curl -s -H 'Host: tekno.local.test' http://127.0.0.1:3000/ | grep -o 'class="tpl[^"]*"'
+# class="tpl tpl-magazine"
+curl -s -H 'Host: kuliner.local.test' http://127.0.0.1:3000/ | grep -o '<style data-hid="theme-tokens">[^<]*'
+# .tpl-base{--color-primary:#b3261e;...;--font-heading:"Merriweather";--font-body:"Source Sans 3";...}
+# log server: [theme] site dapur-nusantara: template "news" tidak terdaftar, memakai base
+
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: kuliner.local.test' http://127.0.0.1:3000/media/kabar-tekno/logo.svg
+# 404: media site lain
+
+pnpm build
+ls apps/web/.output/public/_nuxt/*.woff2 | head    # font di-self-host
+SMOKE_HOSTS=tekno.local.test,kuliner.local.test pnpm --filter @framework/web smoke
+```
+
+36. Jalankan `pnpm check`. Lint, typecheck (root, template, Nuxt), dan semua test harus hijau.
+
+# Membangun Halaman Publik dari View Model
+
+1. Putuskan skema URL sebelum menulis route, karena URL publik mahal diubah setelah tersimpan di mesin pencari. Catat sebagai ADR-006:
+   - Artikel mengikuti `settings.permalink` per site (default `/:category/:slug`).
+   - Prefix tetap: `/category/{slug}`, `/tag/{slug}`, `/author/{slug}`, `/p/{slug}` untuk halaman statis, `/search?q=` untuk pencarian.
+   - Pagination memakai `?page=N`.
+   - Prefix dicocokkan lebih dulu, sisanya ke permalink. Artikel di path non-kanonik dialihkan 301.
+
+`docs/adr/006-skema-url.md`
+
+```markdown
+# ADR-006: Skema URL publik
+
+- Status: Diterima
+- Tanggal: 2026-11-19
+
+## Konteks
+
+URL publik tersimpan di mesin pencari, media sosial, dan tautan situs lain. Mengubahnya setelah
+site live berarti menulis redirect untuk setiap URL lama. Pola URL artikel sudah bisa diatur per
+site lewat `sites.settings.permalink` (token `:category`, `:year`, `:month`, `:slug`), jadi URL
+jenis halaman lain tidak boleh bentrok dengan permalink apa pun yang sah.
+
+## Keputusan
+
+| Halaman | URL | Catatan |
+| --- | --- | --- |
+| Home | `/` | |
+| Artikel | `settings.permalink`, default `/:category/:slug` | `:category` = slug kategori artikel itu sendiri (bisa subkategori); `:year`/`:month` dari `published_at` di zona waktu site |
+| Kategori | `/category/{slug}` | Termasuk artikel di subkategorinya |
+| Tag | `/tag/{slug}` | |
+| Penulis | `/author/{slug}` | |
+| Halaman statis | `/p/{slug}` | `view_key` memilih varian tampilan |
+| Pencarian | `/search?q=...` | |
+| Pagination | `?page=N` pada URL listing | Halaman 1 tanpa parameter; `page` tidak valid = 404 |
+| Feed (M2 2.4) | `/sitemap.xml`, `/robots.txt`, `/rss.xml` | |
+
+Aturan pencocokan, berurutan:
+
+1. Prefix tetap (`/category/`, `/tag/`, `/author/`, `/p/`, `/search`) dan home dicocokkan lebih
+   dulu.
+2. Sisanya dicocokkan ke pola permalink site. Artikel yang ditemukan dengan path yang berbeda
+   dari URL kanoniknya (mis. kategori sudah dipindah) dialihkan 301 ke URL kanonik.
+3. Tidak cocok atau konten tidak ada: cari di tabel `redirects`, lalu 404.
+
+Path dinormalisasi sebelum dicocokkan: slash di ujung dibuang (`/category/gadget/` →
+301 ke `/category/gadget`), huruf besar tidak diubah (slug selalu huruf kecil, jadi path huruf
+besar berakhir 404 atau redirect dari tabel).
+
+Prefix memakai bahasa Inggris (dipilih pemilik proyek) dan sama untuk semua site.
+
+## Alternatif yang ditolak
+
+- **Prefix berbahasa Indonesia** (`/kategori`, `/penulis`, `/cari`). Ditolak pemilik proyek;
+  prefix bahasa Inggris lebih umum di CMS.
+- **Halaman statis di `/{slug}`.** Bentrok dengan permalink satu segmen (`/:slug`) dan butuh
+  daftar slug terlarang yang terus bertambah.
+- **Pagination `/page/N`.** Butuh route tambahan per listing dan bentrok dengan permalink
+  `/:category/:slug` bila ada kategori bernama `page`.
+- **Prefix per site** (bisa diatur di settings). Belum ada kebutuhan; bisa ditambah nanti tanpa
+  mengubah URL lama karena default-nya tetap sama.
+
+## Konsekuensi
+
+- Slug kategori dan halaman tidak boleh memakai kata yang dipakai prefix atau route sistem bila
+  permalink membuatnya bentrok: `category`, `tag`, `author`, `p`, `search`, `api`, `media`,
+  `_nuxt`, `__nuxt`. Daftarnya ada di `RESERVED_SEGMENTS` (`packages/core`) dan wajib dicek saat
+  admin menyimpan slug (M4).
+- Hanya `packages/core` yang tahu pola URL (`createUrlBuilder`). Template menerima `href` jadi
+  dari view model.
+- Mengubah `settings.permalink` site yang sudah live mengubah URL semua artikelnya. Admin (M4)
+  wajib membuat redirect untuk URL lama saat permalink diganti.
+```
+
+2. Putuskan juga di mana view model dibangun, dan catat sebagai ADR-007. Kode Vue tidak boleh memanggil core (driver `pg` rusak di bundle SSR Vue). Karena itu, halaman dirender penuh di server dan view model dibangun di sisi Nitro (middleware). Tautan di template berupa `<a href>` biasa:
+
+`docs/adr/007-render-halaman-server.md`
+
+```markdown
+# ADR-007: Halaman publik dirender penuh di server
+
+- Status: Diterima
+- Tanggal: 2026-11-19
+
+## Konteks
+
+Halaman publik butuh data dari database (view model) sebelum dirender. Nuxt biasanya mengambil
+data lewat `useFetch` ke server API, lalu menavigasi di browser tanpa memuat ulang halaman. Dua
+hal membuat pola itu kurang cocok di sini:
+
+- Entry `@framework/core` membawa `@framework/db` dan driver `pg`. Driver ini rusak bila ikut
+  di-bundle ke bundle SSR Vue (terbukti di M2 2.2), jadi kode Vue tidak boleh memanggil core.
+- Site berita dibaca per artikel dari mesin pencari dan media sosial. Navigasi di browser hanya
+  menambah JavaScript dan kerumitan (cache view model per site di klien) tanpa banyak manfaat.
+
+## Keputusan
+
+1. Setiap halaman publik dirender penuh di server. Tautan di template adalah `<a href>` biasa;
+   tidak ada navigasi sisi klien.
+2. View model dibangun di sisi Nitro (`apps/web/server/`), dalam middleware yang sama dengan
+   resolver site: site → route → view model → `event.context.page`.
+3. Aplikasi Vue hanya menyalin `event.context.page` ke `useState` (plugin `.server.ts`) lalu
+   merender view template. Kode di `apps/web/app/` tidak pernah memanggil repository.
+4. Status HTTP (404) dan redirect (301 permalink, tabel `redirects`) diputuskan di middleware,
+   sebelum Vue dirender.
+
+## Alternatif yang ditolak
+
+- **`useFetch` ke server API + navigasi sisi klien.** Lebih banyak JavaScript, butuh endpoint
+  view model per jenis halaman, dan header `Host` harus diteruskan dengan benar pada fetch internal
+  agar site tidak tertukar.
+- **Membangun view model di plugin Vue `.server.ts` lewat core.** Membawa `pg` ke bundle SSR Vue.
+
+## Konsekuensi
+
+- Halaman ringan: JavaScript di browser hanya untuk hidrasi Vue. Bila nanti butuh interaksi
+  (mis. form komentar), tambahkan komponen kecil, bukan navigasi klien.
+- Cache halaman (M5) cukup di level HTTP per URL + Host.
+- Bila navigasi sisi klien dibutuhkan kelak, view model yang sama bisa dibuka lewat server API
+  tanpa mengubah template; keputusan ini cukup direvisi dengan ADR baru.
+```
+
+3. Lengkapi repository untuk kebutuhan view model:
+   - `content.getMediaByIds(siteId, ids)`: media untuk block gambar di isi artikel, hanya milik site itu. Daftarkan di test isolasi antar-site (`repositories.test.ts`), dan tambahkan test bahwa id media site lain tidak ikut kembali.
+   - Target menu `ARTICLE` membawa `publishedAt`, karena permalink boleh memakai `:year` dan `:month`.
+
+4. Tulis pembuat URL di `packages/core/src/views/urls.ts`. Inilah satu-satunya tempat yang tahu pola URL. Tahun dan bulan permalink dihitung di zona waktu site, jadi artikel yang terbit 1 Desember pukul 03.00 WIB masuk `/2026/12/...` walau server berjalan di UTC. `RESERVED_SEGMENTS` mencatat kata yang tidak boleh dipakai sebagai slug:
+
+`packages/core/src/views/urls.ts`
+
+```ts
+// Skema URL publik (ADR-006). Satu-satunya tempat yang tahu pola URL:
+// view model memakai builder ini, template hanya menerima href jadi.
+//
+//   artikel   settings.permalink (default /:category/:slug)
+//   kategori  /category/{slug}      tag  /tag/{slug}      penulis  /author/{slug}
+//   halaman   /p/{slug}             pencarian  /search?q=...
+//   pagination ?page=N (halaman 1 tanpa parameter)
+import { DEFAULT_PERMALINK } from '../site/settings'
+
+export const PREFIX = {
+  category: 'category',
+  tag: 'tag',
+  author: 'author',
+  page: 'p',
+  search: 'search',
+} as const
+
+/**
+ * Segmen pertama yang dipakai prefix publik atau route sistem. Slug yang
+ * sama dengan salah satunya tertutup route tetap bila permalink membuatnya
+ * bentrok; admin wajib menolaknya saat menyimpan (M4).
+ */
+export const RESERVED_SEGMENTS = [...Object.values(PREFIX), 'api', 'media', '_nuxt', '__nuxt'] as const
+
+export interface ArticleUrlInput {
+  slug: string
+  /** Slug kategori artikel itu sendiri (bisa subkategori). */
+  categorySlug: string
+  publishedAt: Date
+}
+
+export interface UrlBuilder {
+  home(): string
+  article(article: ArticleUrlInput): string
+  category(slug: string): string
+  tag(slug: string): string
+  author(slug: string): string
+  page(slug: string): string
+  /** /search, atau /search?q=... bila query tidak kosong. */
+  search(query?: string): string
+  /** Tambah ?page=N (atau &page=N) ke URL listing; halaman 1 dibiarkan tanpa parameter. */
+  withPage(href: string, page: number): string
+}
+
+/** Tahun dan bulan (2 digit) sebuah waktu di zona waktu site. */
+export function yearMonthIn(date: Date, timeZone: string): { year: string; month: string } {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit' }).formatToParts(date)
+  const pick = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  return { year: pick('year'), month: pick('month') }
+}
+
+export function createUrlBuilder(options: { permalink?: string; timeZone: string }): UrlBuilder {
+  const permalink = (options.permalink ?? DEFAULT_PERMALINK).split('/').filter(Boolean)
+
+  return {
+    home: () => '/',
+    article(article) {
+      const { year, month } = yearMonthIn(article.publishedAt, options.timeZone)
+      const values: Record<string, string> = { ':slug': article.slug, ':category': article.categorySlug, ':year': year, ':month': month }
+      return '/' + permalink.map((token) => encodeURIComponent(values[token] ?? token)).join('/')
+    },
+    category: (slug) => `/${PREFIX.category}/${encodeURIComponent(slug)}`,
+    tag: (slug) => `/${PREFIX.tag}/${encodeURIComponent(slug)}`,
+    author: (slug) => `/${PREFIX.author}/${encodeURIComponent(slug)}`,
+    page: (slug) => `/${PREFIX.page}/${encodeURIComponent(slug)}`,
+    search(query) {
+      const q = query?.trim()
+      return q ? `/${PREFIX.search}?${new URLSearchParams({ q })}` : `/${PREFIX.search}`
+    },
+    withPage(href, page) {
+      if (page <= 1) return href
+      return `${href}${href.includes('?') ? '&' : '?'}page=${page}`
+    },
+  }
+}
+```
+
+5. Tulis pencocok route di `routes.ts`. Fungsi ini murni: prefix tetap dicocokkan dulu, lalu pola permalink dengan format token yang ketat. Normalisasi slash di ujung dan parsing `?page=` ada di file yang sama:
+
+`packages/core/src/views/routes.ts`
+
+```ts
+// Path request -> jenis halaman (ADR-006). Murni: tidak membaca database.
+// Prefix tetap dicocokkan lebih dulu, sisanya ke pola permalink site.
+import { DEFAULT_PERMALINK } from '../site/settings'
+import { PREFIX } from './urls'
+
+export type Route =
+  | { kind: 'home' }
+  | { kind: 'category'; slug: string }
+  | { kind: 'tag'; slug: string }
+  | { kind: 'author'; slug: string }
+  | { kind: 'page'; slug: string }
+  | { kind: 'search' }
+  | { kind: 'article'; slug: string }
+  | { kind: 'unknown' }
+
+/** Format slug di semua tabel konten (lihat constraint *_slug_format). */
+const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/
+const TOKEN_FORMAT: Record<string, RegExp> = {
+  ':slug': SLUG,
+  ':category': SLUG,
+  ':year': /^\d{4}$/,
+  ':month': /^(0[1-9]|1[0-2])$/,
+}
+
+/** Path tanpa query. Slash ganda atau segmen kosong di tengah = tidak cocok. */
+export function matchRoute(pathname: string, permalink: string = DEFAULT_PERMALINK): Route {
+  if (pathname === '/') return { kind: 'home' }
+  const segments = pathname.split('/').slice(1)
+  if (segments.some((s) => s === '' || s.length > 200)) return { kind: 'unknown' }
+
+  const [first, second] = segments
+  if (segments.length === 1 && first === PREFIX.search) return { kind: 'search' }
+  if (segments.length === 2 && second !== undefined && SLUG.test(second)) {
+    switch (first) {
+      case PREFIX.category: return { kind: 'category', slug: second }
+      case PREFIX.tag: return { kind: 'tag', slug: second }
+      case PREFIX.author: return { kind: 'author', slug: second }
+      case PREFIX.page: return { kind: 'page', slug: second }
+    }
+  }
+
+  const tokens = permalink.split('/').filter(Boolean)
+  if (tokens.length !== segments.length) return { kind: 'unknown' }
+  let slug: string | undefined
+  for (const [i, token] of tokens.entries()) {
+    const value = segments[i] as string
+    const format = TOKEN_FORMAT[token]
+    if (!format || !format.test(value)) return { kind: 'unknown' }
+    if (token === ':slug') slug = value
+  }
+  return slug ? { kind: 'article', slug } : { kind: 'unknown' }
+}
+
+/**
+ * Normalisasi sebelum pencocokan: slash di ujung dibuang. Mengembalikan path
+ * yang sudah benar, atau null bila path sudah normal.
+ */
+export function canonicalPathname(pathname: string): string | null {
+  if (pathname.length > 1 && pathname.endsWith('/')) return pathname.replace(/\/+$/, '') || '/'
+  return null
+}
+
+/** Nomor halaman dari ?page=. Tidak ada -> 1; tidak valid -> null (404). */
+export function parsePageParam(value: string | null): number | null {
+  if (value === null) return 1
+  return /^[1-9]\d{0,5}$/.test(value) ? Number(value) : null
+}
+```
+
+6. Tulis format tanggal di `format.ts`. Tanggal selalu memakai locale dan zona waktu site:
+
+`packages/core/src/views/format.ts`
+
+```ts
+// Tanggal untuk view model: selalu dengan locale dan zona waktu SITE, bukan
+// zona waktu server. Server di UTC tetap menampilkan "19 November 2026"
+// untuk artikel yang terbit pukul 01.00 WIB tanggal 19.
+import type { DateView } from '@framework/template-kit'
+
+export interface DateFormatter {
+  /** Tanggal artikel, mis. "17 November 2026". */
+  date(value: Date): DateView
+  /** Hari ini lengkap dengan nama hari, untuk header; iso berupa YYYY-MM-DD. */
+  today(now: Date): DateView
+}
+
+export function createDateFormatter(locale: string, timeZone: string): DateFormatter {
+  const long = new Intl.DateTimeFormat(locale, { dateStyle: 'long', timeZone })
+  const full = new Intl.DateTimeFormat(locale, { dateStyle: 'full', timeZone })
+  // en-CA menulis tanggal sebagai YYYY-MM-DD.
+  const isoDay = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
+  return {
+    date: (value) => ({ iso: value.toISOString(), label: long.format(value) }),
+    today: (now) => ({ iso: isoDay.format(now), label: full.format(now) }),
+  }
+}
+
+/** Tanggal kalender (YYYY-MM-DD) di zona waktu tertentu. */
+export function calendarDay(value: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone }).format(value)
+}
+```
+
+7. Uji URL, route, dan tanggal:
+
+`packages/core/src/views/urls-routes.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { createDateFormatter } from './format'
+import { canonicalPathname, matchRoute, parsePageParam } from './routes'
+import { createUrlBuilder, RESERVED_SEGMENTS, yearMonthIn } from './urls'
+
+const JKT = 'Asia/Jakarta'
+
+describe('createUrlBuilder (ADR-006)', () => {
+  const urls = createUrlBuilder({ timeZone: JKT })
+  const art = { slug: 'ponsel-lipat', categorySlug: 'review', publishedAt: new Date('2026-11-10T01:00:00Z') }
+
+  it('prefix tetap', () => {
+    expect(urls.home()).toBe('/')
+    expect(urls.category('gadget')).toBe('/category/gadget')
+    expect(urls.tag('android')).toBe('/tag/android')
+    expect(urls.author('budi')).toBe('/author/budi')
+    expect(urls.page('tentang-kami')).toBe('/p/tentang-kami')
+    expect(urls.search()).toBe('/search')
+    expect(urls.search('  ponsel lipat & murah ')).toBe('/search?q=ponsel+lipat+%26+murah')
+  })
+
+  it('artikel mengikuti permalink default /:category/:slug', () => {
+    expect(urls.article(art)).toBe('/review/ponsel-lipat')
+  })
+
+  it('permalink dengan tahun dan bulan memakai zona waktu site, bukan UTC', () => {
+    const dated = createUrlBuilder({ permalink: '/:year/:month/:slug', timeZone: JKT })
+    // 30 Nov 20:00 UTC = 1 Des 03:00 WIB
+    expect(dated.article({ ...art, publishedAt: new Date('2026-11-30T20:00:00Z') })).toBe('/2026/12/ponsel-lipat')
+    expect(yearMonthIn(new Date('2026-11-30T20:00:00Z'), 'UTC')).toEqual({ year: '2026', month: '11' })
+  })
+
+  it('pagination: halaman 1 tanpa parameter, digabung dengan query yang ada', () => {
+    expect(urls.withPage('/category/gadget', 1)).toBe('/category/gadget')
+    expect(urls.withPage('/category/gadget', 3)).toBe('/category/gadget?page=3')
+    expect(urls.withPage('/search?q=ponsel', 2)).toBe('/search?q=ponsel&page=2')
+  })
+
+  it('daftar segmen terlarang memuat semua prefix dan route sistem', () => {
+    expect(RESERVED_SEGMENTS).toEqual(['category', 'tag', 'author', 'p', 'search', 'api', 'media', '_nuxt', '__nuxt'])
+  })
+})
+
+describe('matchRoute (ADR-006)', () => {
+  it.each([
+    ['/', { kind: 'home' }],
+    ['/category/gadget', { kind: 'category', slug: 'gadget' }],
+    ['/tag/android', { kind: 'tag', slug: 'android' }],
+    ['/author/budi-santoso', { kind: 'author', slug: 'budi-santoso' }],
+    ['/p/tentang-kami', { kind: 'page', slug: 'tentang-kami' }],
+    ['/search', { kind: 'search' }],
+    ['/review/ponsel-lipat', { kind: 'article', slug: 'ponsel-lipat' }],
+  ])('permalink default: %s', (path, route) => {
+    expect(matchRoute(path)).toEqual(route)
+  })
+
+  it.each([
+    '/review',
+    '/review/ponsel-lipat/extra',
+    '/review/Ponsel-Lipat',
+    '/review//x',
+    '/category/Gadget',
+    '/review/%2e%2e',
+    `/review/${'a'.repeat(201)}`,
+  ])('tidak cocok: %s', (path) => {
+    expect(matchRoute(path)).toEqual({ kind: 'unknown' })
+  })
+
+  it('prefix tetap menang atas permalink (kategori bernama "category" tertutup)', () => {
+    expect(matchRoute('/category/gadget', '/:category/:slug')).toEqual({ kind: 'category', slug: 'gadget' })
+    // Bukan prefix tetap -> dicoba sebagai permalink; build-page lalu mencari
+    // artikelnya dan mengalihkan ke URL kanonik atau 404.
+    expect(matchRoute('/search/ponsel', '/:category/:slug')).toEqual({ kind: 'article', slug: 'ponsel' })
+  })
+
+  it('permalink lain', () => {
+    expect(matchRoute('/2026/11/ponsel-lipat', '/:year/:month/:slug')).toEqual({ kind: 'article', slug: 'ponsel-lipat' })
+    expect(matchRoute('/2026/13/ponsel-lipat', '/:year/:month/:slug')).toEqual({ kind: 'unknown' })
+    expect(matchRoute('/ponsel-lipat', '/:slug')).toEqual({ kind: 'article', slug: 'ponsel-lipat' })
+    expect(matchRoute('/search', '/:slug')).toEqual({ kind: 'search' })
+  })
+
+  it('slash di ujung dinormalisasi', () => {
+    expect(canonicalPathname('/category/gadget/')).toBe('/category/gadget')
+    expect(canonicalPathname('/category/gadget//')).toBe('/category/gadget')
+    expect(canonicalPathname('/')).toBeNull()
+    expect(canonicalPathname('/category/gadget')).toBeNull()
+  })
+
+  it.each([
+    [null, 1],
+    ['1', 1],
+    ['12', 12],
+    ['0', null],
+    ['-1', null],
+    ['2a', null],
+    ['', null],
+    ['01', null],
+    ['9999999', null],
+  ])('parsePageParam(%j) = %j', (value, expected) => {
+    expect(parsePageParam(value)).toBe(expected)
+  })
+})
+
+describe('createDateFormatter', () => {
+  const dates = createDateFormatter('id-ID', JKT)
+
+  it('tanggal dalam locale dan zona waktu site', () => {
+    // 18 Nov 20:00 UTC = 19 Nov 03:00 WIB
+    expect(dates.date(new Date('2026-11-18T20:00:00Z'))).toEqual({ iso: '2026-11-18T20:00:00.000Z', label: '19 November 2026' })
+  })
+
+  it('hari ini: iso tanggal kalender site, label dengan nama hari', () => {
+    expect(dates.today(new Date('2026-11-18T20:00:00Z'))).toEqual({ iso: '2026-11-19', label: 'Kamis, 19 November 2026' })
+  })
+})
+```
+
+8. Tulis pembangun halaman di `build-page.ts`. Fungsi `build({ site, pathname, searchParams })` mengembalikan salah satu dari (file di bawah sudah memuat tambahan SEO dan `origin` dari bab "Menambahkan Embed, SEO, dan Feed"):
+   - `render` dengan status 200 atau 404, berisi `chrome` (identitas site, menu dengan URL jadi, tanggal hari ini) dan `vm` (view model halaman);
+   - `redirect`: slash di ujung, artikel di path non-kanonik, atau aturan di tabel `redirects` (dicek sebelum 404).
+
+   Aturan lain yang perlu diperhatikan:
+   - `?page` yang tidak valid atau di luar jangkauan menghasilkan 404. Listing kosong di halaman 1 tetap 200.
+   - Artikel featured tampil di atas home halaman 1 dan tidak diulang di daftar terbaru.
+   - Block yang dilewati dan block gambar yang medianya tidak ada dikumpulkan di `issues` untuk log, tidak membuat halaman gagal.
+
+`packages/core/src/views/build-page.ts`
+
+```ts
+// Request halaman publik -> view model (ADR-005, ADR-006, ADR-007).
+//
+//   site + path + query  ->  { render: 200/404, chrome + vm + seo }  atau  { redirect }
+//
+// Satu-satunya tempat yang menyusun data untuk template: URL dari
+// createUrlBuilder, tanggal dengan locale dan zona waktu site, gambar
+// lewat resolver media. Template tidak pernah melihat repository.
+import type {
+  ArticleCardView,
+  BlockView,
+  ChromeView,
+  ImageView,
+  LinkView,
+  MenuItemView,
+  PageViewModel,
+  PaginationView,
+} from '@framework/template-kit'
+import type { Block, LenientBody } from '../content/blocks'
+import { embedSrc } from '../content/embed'
+import { parseContentSeo } from '../content/seo'
+import { toImageView, type MediaUrlResolver } from '../media/storage'
+import type { Repositories } from '../repositories'
+import type { ArticleSummary, CategoryRef } from '../repositories/content-repository'
+import type { MenuNode } from '../repositories/menu-repository'
+import type { SiteInfo } from '../repositories/site-repository'
+import type { MediaRef, Page } from '../repositories/types'
+import { calendarDay, createDateFormatter, type DateFormatter } from './format'
+import { canonicalPathname, matchRoute, parsePageParam } from './routes'
+import { buildSeo, seoMediaIds, type SeoInput, type SeoMeta } from './seo'
+import { createUrlBuilder, type UrlBuilder } from './urls'
+
+export interface PageRequest {
+  site: SiteInfo
+  /** Path tanpa query, mis. /category/gadget. */
+  pathname: string
+  searchParams: URLSearchParams
+  /**
+   * Origin domain PRIMARY site untuk URL absolut (canonical, og:url, og:image),
+   * mis. https://tekno.example. Dihitung middleware dari request.
+   */
+  origin: string
+}
+
+export interface RenderedPage {
+  chrome: ChromeView
+  vm: PageViewModel
+  seo: SeoMeta
+}
+
+export type PageResult =
+  | {
+      kind: 'render'
+      status: 200 | 404
+      page: RenderedPage
+      /** Untuk log: block yang dilewati, media hilang. Tidak ditampilkan ke pembaca. */
+      issues: string[]
+    }
+  | { kind: 'redirect'; status: 301 | 302 | 307 | 308; location: string }
+
+export interface PageBuilderOptions {
+  mediaUrl: MediaUrlResolver
+  now?: () => Date
+  /** Lokasi menu yang dimuat untuk chrome. Default header dan footer. */
+  menuLocations?: readonly string[]
+  /** Artikel per halaman listing. Default 10. */
+  pageSize?: number
+}
+
+/** Label breadcrumb pertama. Site saat ini berbahasa Indonesia; dipindah ke settings bila perlu. */
+const HOME_LABEL = 'Beranda'
+/** Batas panjang kata kunci pencarian, sama dengan repository. */
+const MAX_QUERY = 200
+
+export function createPageBuilder(
+  repos: Pick<Repositories, 'content' | 'menus'>,
+  options: PageBuilderOptions,
+) {
+  const { content, menus } = repos
+  const now = options.now ?? (() => new Date())
+  const menuLocations = options.menuLocations ?? ['header', 'footer']
+  const pageSize = options.pageSize ?? 10
+
+  return {
+    async build(request: PageRequest): Promise<PageResult> {
+      const { site, pathname, searchParams, origin } = request
+
+      const normalized = canonicalPathname(pathname)
+      if (normalized) return redirect(301, normalized + queryString(searchParams))
+
+      const ctx: BuildContext = {
+        site,
+        urls: createUrlBuilder({ permalink: site.settings.permalink, timeZone: site.timezone }),
+        dates: createDateFormatter(site.defaultLocale, site.timezone),
+        origin,
+        issues: [],
+      }
+      const route = matchRoute(pathname, site.settings.permalink)
+      const page = parsePageParam(searchParams.get('page'))
+
+      const built = await (async (): Promise<Built | Redirect | null> => {
+        switch (route.kind) {
+          case 'home': return page === null ? null : home(ctx, page)
+          case 'category': return page === null ? null : category(ctx, route.slug, page)
+          case 'tag': return page === null ? null : tag(ctx, route.slug, page)
+          case 'author': return page === null ? null : author(ctx, route.slug, page)
+          case 'search': return page === null ? null : search(ctx, searchParams.get('q') ?? '', page)
+          case 'page': return staticPage(ctx, route.slug)
+          case 'article': return article(ctx, route.slug, pathname)
+          case 'unknown': return null
+        }
+      })()
+
+      if (built && 'kind' in built) return built
+      if (built) return render(ctx, 200, built)
+
+      // Tidak ada konten di path ini: redirect tersimpan, lalu 404.
+      const rule = await content.findRedirect(site.id, pathname)
+      if (rule) return redirect(rule.statusCode, rule.toPath)
+      return render(ctx, 404, {
+        vm: { view: 'not-found', path: pathname },
+        seo: { title: 'Halaman tidak ditemukan', description: null, type: 'website', image: null, canonicalPath: null, noindex: true },
+      })
+    },
+  }
+
+  async function render(ctx: BuildContext, status: 200 | 404, built: Built): Promise<PageResult> {
+    const ids = seoMediaIds(ctx.site, built.seo.contentSeo)
+    const [chromeView, media] = await Promise.all([
+      chrome(ctx),
+      ids.length ? content.getMediaByIds(ctx.site.id, ids) : Promise.resolve([]),
+    ])
+    const byId = new Map(media.map((m) => [m.id, m]))
+    const seo = buildSeo(
+      {
+        site: ctx.site,
+        origin: ctx.origin,
+        imageById: (id) => {
+          const ref = byId.get(id)
+          return ref ? image(ref, ctx.site.name) : null
+        },
+        favicon: ctx.site.favicon ? image(ctx.site.favicon, ctx.site.name) : null,
+      },
+      built.seo,
+    )
+    return { kind: 'render', status, page: { chrome: chromeView, vm: built.vm, seo }, issues: ctx.issues }
+  }
+
+  // ---------- Jenis halaman ------------------------------------------------
+
+  async function home(ctx: BuildContext, page: number): Promise<Built | null> {
+    const [featured, latest] = await Promise.all([
+      page === 1 ? content.listPublishedArticles(ctx.site.id, { featuredOnly: true, pageSize: 1 }) : null,
+      content.listPublishedArticles(ctx.site.id, { page, pageSize }),
+    ])
+    if (beyondLastPage(latest)) return null
+    const featuredItems = featured?.items ?? []
+    const shown = new Set(featuredItems.map((a) => a.id))
+    return {
+      vm: {
+        view: 'home',
+        featured: featuredItems.map((a) => card(ctx, a)),
+        latest: latest.items.filter((a) => !shown.has(a.id)).map((a) => card(ctx, a)),
+        pagination: pagination(ctx, latest, ctx.urls.home()),
+      },
+      seo: { title: null, description: null, type: 'website', image: null, canonicalPath: ctx.urls.withPage(ctx.urls.home(), page), page },
+    }
+  }
+
+  async function category(ctx: BuildContext, slug: string, page: number): Promise<Built | null> {
+    const found = await content.getCategory(ctx.site.id, slug)
+    if (!found) return null
+    const list = await content.listPublishedArticles(ctx.site.id, { categorySlug: slug, page, pageSize })
+    if (beyondLastPage(list)) return null
+    const href = ctx.urls.category(found.slug)
+    return {
+      vm: {
+        view: 'category',
+        breadcrumb: [homeCrumb(ctx), ...categoryCrumbs(ctx, found.parent, found)],
+        name: found.name,
+        description: found.description,
+        children: found.children.map((c) => ({ label: c.name, href: ctx.urls.category(c.slug) })),
+        articles: list.items.map((a) => card(ctx, a)),
+        pagination: pagination(ctx, list, href),
+      },
+      seo: {
+        title: found.name,
+        description: found.description,
+        type: 'website',
+        image: null,
+        canonicalPath: ctx.urls.withPage(href, page),
+        page,
+        contentSeo: parseContentSeo(found.seo),
+      },
+    }
+  }
+
+  async function tag(ctx: BuildContext, slug: string, page: number): Promise<Built | null> {
+    const found = await content.getTag(ctx.site.id, slug)
+    if (!found) return null
+    const list = await content.listPublishedArticles(ctx.site.id, { tagSlug: slug, page, pageSize })
+    if (beyondLastPage(list)) return null
+    const href = ctx.urls.tag(found.slug)
+    return {
+      vm: {
+        view: 'tag',
+        name: found.name,
+        articles: list.items.map((a) => card(ctx, a)),
+        pagination: pagination(ctx, list, href),
+      },
+      seo: { title: found.name, description: null, type: 'website', image: null, canonicalPath: ctx.urls.withPage(href, page), page },
+    }
+  }
+
+  async function author(ctx: BuildContext, slug: string, page: number): Promise<Built | null> {
+    const found = await content.getAuthor(ctx.site.id, slug)
+    if (!found) return null
+    const list = await content.listPublishedArticles(ctx.site.id, { authorSlug: slug, page, pageSize })
+    if (beyondLastPage(list)) return null
+    const href = ctx.urls.author(found.slug)
+    const avatar = found.avatar ? image(found.avatar, found.name) : null
+    return {
+      vm: {
+        view: 'author',
+        name: found.name,
+        bio: found.bio,
+        avatar,
+        articles: list.items.map((a) => card(ctx, a)),
+        pagination: pagination(ctx, list, href),
+      },
+      seo: { title: found.name, description: found.bio, type: 'website', image: avatar, canonicalPath: ctx.urls.withPage(href, page), page },
+    }
+  }
+
+  async function search(ctx: BuildContext, rawQuery: string, page: number): Promise<Built | null> {
+    const query = rawQuery.trim().slice(0, MAX_QUERY)
+    const list = await content.searchPublishedArticles(ctx.site.id, query, { page, pageSize })
+    if (beyondLastPage(list)) return null
+    return {
+      vm: {
+        view: 'search',
+        action: ctx.urls.search(),
+        query,
+        articles: list.items.map((a) => card(ctx, a)),
+        pagination: pagination(ctx, list, ctx.urls.search(query)),
+      },
+      // Hasil pencarian tidak diindeks (konten ganda, kata kunci tak terbatas).
+      seo: {
+        title: query ? `Pencarian: ${query}` : 'Pencarian',
+        description: null,
+        type: 'website',
+        image: null,
+        canonicalPath: ctx.urls.withPage(ctx.urls.search(query), page),
+        page,
+        noindex: true,
+      },
+    }
+  }
+
+  async function staticPage(ctx: BuildContext, slug: string): Promise<Built | null> {
+    const found = await content.getPublishedPage(ctx.site.id, slug)
+    if (!found) return null
+    return {
+      vm: {
+        view: 'page',
+        title: found.title,
+        viewKey: found.viewKey,
+        blocks: await blocks(ctx, found.body.blocks, found.bodyIssues, `halaman ${found.slug}`),
+      },
+      seo: {
+        title: found.title,
+        description: null,
+        type: 'website',
+        image: null,
+        canonicalPath: ctx.urls.page(found.slug),
+        contentSeo: parseContentSeo(found.seo),
+      },
+    }
+  }
+
+  async function article(ctx: BuildContext, slug: string, pathname: string): Promise<Built | Redirect | null> {
+    const found = await content.getPublishedArticle(ctx.site.id, slug)
+    if (!found) return null
+    const href = articleHref(ctx, found)
+    // Path benar tetapi bukan URL kanonik (mis. kategori sudah dipindah).
+    if (href !== pathname) return redirect(301, href)
+    const updated =
+      found.updatedAt > found.publishedAt
+      && calendarDay(found.updatedAt, ctx.site.timezone) !== calendarDay(found.publishedAt, ctx.site.timezone)
+    const featured = found.featuredMedia ? image(found.featuredMedia, found.title) : null
+    const vm: PageViewModel = {
+      view: 'article',
+      breadcrumb: [homeCrumb(ctx), ...categoryCrumbs(ctx, found.categoryParent, found.category), { label: found.title, href }],
+      title: found.title,
+      excerpt: found.excerpt,
+      category: { label: found.category.name, href: ctx.urls.category(found.category.slug) },
+      author: found.author ? { label: found.author.name, href: ctx.urls.author(found.author.slug) } : null,
+      publishedAt: ctx.dates.date(found.publishedAt),
+      updatedAt: updated ? ctx.dates.date(found.updatedAt) : null,
+      image: featured,
+      tags: found.tags.map((t) => ({ label: t.name, href: ctx.urls.tag(t.slug) })),
+      blocks: await blocks(ctx, found.body.blocks, found.bodyIssues, `artikel ${found.slug}`),
+      format: found.format,
+    }
+    return {
+      vm,
+      seo: {
+        title: found.title,
+        description: found.excerpt,
+        type: 'article',
+        image: featured,
+        canonicalPath: href,
+        contentSeo: parseContentSeo(found.seo),
+        article: {
+          publishedTime: found.publishedAt.toISOString(),
+          modifiedTime: found.updatedAt.toISOString(),
+          section: found.category.name,
+          tags: found.tags.map((t) => t.name),
+        },
+      },
+    }
+  }
+
+  // ---------- Bagian bersama -----------------------------------------------
+
+  async function chrome(ctx: BuildContext): Promise<ChromeView> {
+    const trees = await Promise.all(menuLocations.map((location) => menus.getMenuTree(ctx.site.id, location)))
+    const menuViews: Record<string, MenuItemView[]> = {}
+    menuLocations.forEach((location, i) => {
+      menuViews[location] = (trees[i]?.items ?? []).map((node) => menuItem(ctx, node))
+    })
+    const { site } = ctx
+    return {
+      site: {
+        name: site.name,
+        tagline: site.settings.tagline ?? null,
+        locale: site.defaultLocale,
+        logo: site.logo ? image(site.logo, site.name) : null,
+        homeHref: ctx.urls.home(),
+      },
+      menus: menuViews,
+      today: ctx.dates.today(now()),
+    }
+  }
+
+  function menuItem(ctx: BuildContext, node: MenuNode): MenuItemView {
+    const { target } = node
+    let href: string
+    let external = false
+    switch (target.type) {
+      case 'CATEGORY': href = ctx.urls.category(target.slug); break
+      case 'PAGE': href = ctx.urls.page(target.slug); break
+      case 'TAG': href = ctx.urls.tag(target.slug); break
+      case 'ARTICLE': href = articleHref(ctx, { slug: target.slug, category: { slug: target.categorySlug }, publishedAt: target.publishedAt }); break
+      case 'ROUTE': href = target.path; break
+      case 'URL': href = target.url; external = true; break
+    }
+    return {
+      label: node.label,
+      href,
+      external,
+      openInNewTab: node.openInNewTab,
+      children: node.children.map((child) => menuItem(ctx, child)),
+    }
+  }
+
+  function card(ctx: BuildContext, a: ArticleSummary): ArticleCardView {
+    return {
+      href: articleHref(ctx, a),
+      title: a.title,
+      excerpt: a.excerpt,
+      category: { label: a.category.name, href: ctx.urls.category(a.category.slug) },
+      author: a.author ? { label: a.author.name, href: ctx.urls.author(a.author.slug) } : null,
+      publishedAt: ctx.dates.date(a.publishedAt),
+      image: a.featuredMedia ? image(a.featuredMedia, a.title) : null,
+      isFeatured: a.isFeatured,
+      format: a.format,
+    }
+  }
+
+  function image(media: MediaRef, fallbackAlt: string): ImageView {
+    return toImageView(media, options.mediaUrl, fallbackAlt)
+  }
+
+  async function blocks(ctx: BuildContext, source: Block[], skipped: LenientBody['skipped'], label: string): Promise<BlockView[]> {
+    for (const s of skipped) {
+      ctx.issues.push(`${label}: block #${s.index} (${s.type ?? 'tanpa tipe'}) dilewati: ${s.reason}`)
+    }
+    const mediaIds = source.flatMap((b) => (b.type === 'image' ? [b.mediaId] : []))
+    const media = new Map((mediaIds.length ? await content.getMediaByIds(ctx.site.id, mediaIds) : []).map((m) => [m.id, m]))
+
+    const out: BlockView[] = []
+    // Catatan: posisi di `source` tidak sama dengan posisi di body asli
+    // (block rusak sudah dibuang), jadi pesan di bawah menyebut id media.
+    source.forEach((block) => {
+      switch (block.type) {
+        case 'image': {
+          const ref = media.get(block.mediaId)
+          if (!ref) {
+            ctx.issues.push(`${label}: block image dilewati: media ${block.mediaId} tidak ada di site ini`)
+            return
+          }
+          out.push({ type: 'image', image: image(ref, block.caption ?? ''), caption: block.caption ?? null })
+          return
+        }
+        case 'quote':
+          out.push({ type: 'quote', text: block.text, cite: block.cite ?? null })
+          return
+        case 'embed':
+          out.push({ ...block, embedSrc: embedSrc(block.provider, block.url) })
+          return
+        default:
+          out.push(block)
+      }
+    })
+    return out
+  }
+}
+
+// ---------- Fungsi murni ---------------------------------------------------
+
+interface BuildContext {
+  site: SiteInfo
+  urls: UrlBuilder
+  dates: DateFormatter
+  origin: string
+  issues: string[]
+}
+
+/** View model halaman + bahan SEO-nya. */
+interface Built {
+  vm: PageViewModel
+  seo: SeoInput
+}
+
+type Redirect = Extract<PageResult, { kind: 'redirect' }>
+
+function redirect(status: Redirect['status'], location: string): Redirect {
+  return { kind: 'redirect', status, location }
+}
+
+function queryString(params: URLSearchParams): string {
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
+
+function homeCrumb(ctx: BuildContext): LinkView {
+  return { label: HOME_LABEL, href: ctx.urls.home() }
+}
+
+function categoryCrumbs(ctx: BuildContext, parent: CategoryRef | null, self: Pick<CategoryRef, 'name' | 'slug'>): LinkView[] {
+  return [
+    ...(parent ? [{ label: parent.name, href: ctx.urls.category(parent.slug) }] : []),
+    { label: self.name, href: ctx.urls.category(self.slug) },
+  ]
+}
+
+function articleHref(ctx: BuildContext, a: { slug: string; category: { slug: string }; publishedAt: Date }): string {
+  return ctx.urls.article({ slug: a.slug, categorySlug: a.category.slug, publishedAt: a.publishedAt })
+}
+
+/** Halaman di luar jangkauan (mis. ?page=99) = 404. Listing kosong tetap 200 di halaman 1. */
+function beyondLastPage(list: Page<unknown>): boolean {
+  return list.page > 1 && list.page > list.totalPages
+}
+
+/** Nomor halaman yang ditampilkan: 1, terakhir, dan dua di sekitar halaman aktif; celah = null. */
+export function pageWindow(page: number, totalPages: number): (number | null)[] {
+  const wanted = new Set([1, totalPages, page - 1, page, page + 1].filter((n) => n >= 1 && n <= totalPages))
+  const sorted = [...wanted].sort((a, b) => a - b)
+  const out: (number | null)[] = []
+  sorted.forEach((n, i) => {
+    const prev = sorted[i - 1]
+    if (prev !== undefined && n - prev > 1) out.push(n - prev === 2 ? n - 1 : null)
+    out.push(n)
+  })
+  return out
+}
+
+function pagination(ctx: BuildContext, list: Page<unknown>, baseHref: string): PaginationView {
+  const { page, totalPages } = list
+  const href = (n: number) => ctx.urls.withPage(baseHref, n)
+  return {
+    page,
+    totalPages,
+    prevHref: page > 1 ? href(page - 1) : null,
+    nextHref: page < totalPages ? href(page + 1) : null,
+    pages: totalPages > 1
+      ? pageWindow(page, totalPages).map((n) => (n === null ? null : { number: n, href: href(n), current: n === page }))
+      : [],
+  }
+}
+```
+
+9. Ekspor modul `views` dari `packages/core/src/index.ts` (lihat bab repository).
+
+10. Uji pembangun halaman terhadap database seed dengan jam dipatok. Ukuran halaman diset 1 agar pagination ikut teruji dengan data sedikit:
+
+`packages/core/src/views/build-page.test.ts`
+
+```ts
+// Pembangun view model halaman publik.
+//  1. pageWindow (murni).
+//  2. Terhadap database dev yang di-seed (dilewati tanpa DATABASE_URL), jam
+//     dipatok 19 Nov 2026: setiap jenis halaman, redirect, 404, dua site.
+import { createDatabase } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { parseBodyLenient } from '../content/blocks'
+import { parseSiteSettings } from '../site/settings'
+import { createMediaUrlResolver } from '../media/storage'
+import { createRepositories, type ArticleDetail, type SiteInfo } from '../repositories'
+import { createPageBuilder, pageWindow, type PageRequest, type PageResult } from './build-page'
+
+describe('pageWindow', () => {
+  it.each([
+    [1, 1, [1]],
+    [1, 3, [1, 2, 3]],
+    [1, 9, [1, 2, null, 9]],
+    [5, 9, [1, null, 4, 5, 6, null, 9]],
+    [3, 9, [1, 2, 3, 4, null, 9]],
+    [9, 9, [1, null, 8, 9]],
+  ])('halaman %i dari %i', (page, total, expected) => {
+    expect(pageWindow(page, total)).toEqual(expected)
+  })
+})
+
+const NOW = new Date('2026-11-19T05:00:00Z')
+
+describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 3, applicationName: 'vitest-views' })
+  const repos = createRepositories(db, { now: () => NOW })
+  const builder = createPageBuilder(repos, { mediaUrl: createMediaUrlResolver(), now: () => NOW, pageSize: 1 })
+  afterAll(() => db.$client.end())
+
+  const sites = new Map<string, SiteInfo>()
+  async function site(code: string): Promise<SiteInfo> {
+    if (!sites.has(code)) {
+      const found = await repos.sites.findByCode(code)
+      if (!found) throw new Error(`site seed ${code} tidak ada`)
+      sites.set(code, found)
+    }
+    return sites.get(code) as SiteInfo
+  }
+
+  async function build(code: string, url: string): Promise<PageResult> {
+    const parsed = new URL(url, 'http://x')
+    const origin = code === 'kabar-tekno' ? 'https://tekno.local.test' : 'https://kuliner.local.test'
+    const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin }
+    return builder.build(request)
+  }
+
+  async function render(code: string, url: string) {
+    const result = await build(code, url)
+    if (result.kind !== 'render') throw new Error(`${url}: diharapkan render, dapat ${JSON.stringify(result)}`)
+    return result
+  }
+
+  it('chrome: identitas site, menu bersarang dengan URL jadi, tanggal hari ini', async () => {
+    const { page } = await render('kabar-tekno', '/')
+    expect(page.chrome.site).toEqual({
+      name: 'Kabar Tekno',
+      tagline: 'Teknologi tanpa jargon',
+      locale: 'id-ID',
+      logo: expect.objectContaining({ src: '/media/kabar-tekno/logo.svg', alt: 'Logo Kabar Tekno' }),
+      homeHref: '/',
+    })
+    expect(page.chrome.menus['header']).toEqual([
+      { label: 'Beranda', href: '/', external: false, openInNewTab: false, children: [] },
+      { label: 'Gadget', href: '/category/gadget', external: false, openInNewTab: false, children: [
+        { label: 'Review', href: '/category/review', external: false, openInNewTab: false, children: [] },
+      ] },
+      { label: 'AI', href: '/category/kecerdasan-buatan', external: false, openInNewTab: false, children: [] },
+    ])
+    expect(page.chrome.menus['footer']?.map((m) => [m.href, m.external])).toEqual([['/p/tentang-kami', false], ['https://x.com/kabartekno', true]])
+    expect(page.chrome.today).toEqual({ iso: '2026-11-19', label: 'Kamis, 19 November 2026' })
+  })
+
+  it('home: artikel featured di atas, sisanya terbaru dengan pagination; terjadwal tidak muncul', async () => {
+    const { status, page } = await render('kabar-tekno', '/')
+    expect(status).toBe(200)
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.featured.map((a) => a.href)).toEqual(['/review/ponsel-lipat-makin-murah'])
+    expect(page.vm.latest.map((a) => a.href)).toEqual(['/kecerdasan-buatan/cara-kerja-model-bahasa'])
+    expect(page.vm.pagination).toMatchObject({ page: 1, totalPages: 2, prevHref: null, nextHref: '/?page=2' })
+    const card = page.vm.featured[0]
+    expect(card).toMatchObject({
+      title: expect.any(String),
+      category: { label: 'Review', href: '/category/review' },
+      author: { label: 'Budi Santoso', href: '/author/budi-santoso' },
+      publishedAt: { label: '10 November 2026' },
+      image: { src: '/media/kabar-tekno/2026/11/hp.webp', focalX: 0.62 },
+    })
+  })
+
+  it('home halaman 2 tanpa featured; halaman di luar jangkauan atau tidak valid = 404', async () => {
+    const second = await render('kabar-tekno', '/?page=2')
+    if (second.page.vm.view !== 'home') throw new Error('bukan home')
+    expect(second.page.vm.featured).toEqual([])
+    expect(second.page.vm.latest.map((a) => a.href)).toEqual(['/review/ponsel-lipat-makin-murah'])
+    expect(second.page.vm.pagination).toMatchObject({ prevHref: '/', nextHref: null })
+    expect((await render('kabar-tekno', '/?page=3')).status).toBe(404)
+    expect((await render('kabar-tekno', '/?page=abc')).status).toBe(404)
+  })
+
+  it('artikel: breadcrumb dengan induk kategori, tag, block body termasuk gambar', async () => {
+    const { status, page, issues } = await render('kabar-tekno', '/review/ponsel-lipat-makin-murah')
+    expect(status).toBe(200)
+    if (page.vm.view !== 'article') throw new Error('bukan artikel')
+    expect(page.vm.breadcrumb.map((b) => b.href)).toEqual(['/', '/category/gadget', '/category/review', '/review/ponsel-lipat-makin-murah'])
+    expect(page.vm.tags).toEqual([{ label: 'Android', href: '/tag/android' }])
+    expect(page.vm.blocks.map((b) => b.type)).toEqual(['paragraph', 'heading', 'list', 'image'])
+    const img = page.vm.blocks.find((b) => b.type === 'image')
+    expect(img).toMatchObject({ image: { src: expect.stringMatching(/^\/media\/kabar-tekno\//) } })
+    expect(page.vm.publishedAt.label).toBe('10 November 2026')
+    expect(issues).toEqual([])
+  })
+
+  it('artikel di path non-kanonik -> 301 ke permalink', async () => {
+    expect(await build('kabar-tekno', '/gadget/ponsel-lipat-makin-murah')).toEqual({ kind: 'redirect', status: 301, location: '/review/ponsel-lipat-makin-murah' })
+  })
+
+  it('redirect dari tabel redirects sebelum 404', async () => {
+    expect(await build('kabar-tekno', '/gadget/ponsel-lipat-murah')).toEqual({ kind: 'redirect', status: 301, location: '/review/ponsel-lipat-makin-murah' })
+  })
+
+  it('slash di ujung -> 301, query dipertahankan', async () => {
+    expect(await build('kabar-tekno', '/category/gadget/?page=2')).toEqual({ kind: 'redirect', status: 301, location: '/category/gadget?page=2' })
+  })
+
+  it('kategori: termasuk subkategori, anak kategori, breadcrumb', async () => {
+    const { page } = await render('kabar-tekno', '/category/gadget')
+    if (page.vm.view !== 'category') throw new Error('bukan kategori')
+    expect(page.vm).toMatchObject({ name: 'Gadget', children: [{ label: 'Review', href: '/category/review' }] })
+    expect(page.vm.articles.map((a) => a.href)).toEqual(['/review/ponsel-lipat-makin-murah'])
+    expect(page.vm.breadcrumb.map((b) => b.label)).toEqual(['Beranda', 'Gadget'])
+  })
+
+  it('tag, penulis, halaman statis', async () => {
+    const tag = await render('kabar-tekno', '/tag/android')
+    expect(tag.page.vm).toMatchObject({ view: 'tag', name: 'Android', articles: [{ href: '/review/ponsel-lipat-makin-murah' }] })
+    const author = await render('kabar-tekno', '/author/budi-santoso')
+    expect(author.page.vm).toMatchObject({ view: 'author', name: 'Budi Santoso', bio: 'Menulis soal gawai sejak 2015.' })
+    const contact = await render('dapur-nusantara', '/p/kontak')
+    expect(contact.page.vm).toEqual({ view: 'page', title: 'Kontak', viewKey: 'contact', blocks: [] })
+  })
+
+  it('pencarian: query dibersihkan, pagination membawa q, tanpa query = form kosong', async () => {
+    const { page } = await render('kabar-tekno', '/search?q=%20ponsel%20')
+    expect(page.vm).toMatchObject({ view: 'search', action: '/search', query: 'ponsel', articles: [{ href: '/review/ponsel-lipat-makin-murah' }] })
+    const empty = await render('kabar-tekno', '/search')
+    expect(empty.page.vm).toMatchObject({ view: 'search', query: '', articles: [] })
+  })
+
+  it.each([
+    ['/category/tidak-ada'],
+    ['/tag/pedas'], // tag milik site lain
+    ['/p/kontak'], // halaman milik site lain
+    ['/resep/rendang-padang-empuk'], // artikel milik site lain
+    ['/kecerdasan-buatan/laptop-terbaik-mahasiswa-2030'], // terjadwal
+    ['/gadget/draf-ulasan-earbuds'], // draf
+    ['/apa/saja/ini'],
+  ])('404 dengan chrome site: %s', async (path) => {
+    const { status, page } = await render('kabar-tekno', path)
+    expect(status).toBe(404)
+    expect(page.vm).toEqual({ view: 'not-found', path })
+    expect(page.chrome.site.name).toBe('Kabar Tekno')
+  })
+
+  it('SEO artikel: kolom seo konten menang, canonical absolut di domain primary, Open Graph lengkap', async () => {
+    const { page } = await render('kabar-tekno', '/review/ponsel-lipat-makin-murah')
+    expect(page.seo).toEqual({
+      title: 'Ponsel lipat makin murah: layak dibeli? | Kabar Tekno',
+      description: 'Checklist sebelum membeli ponsel lipat.',
+      canonical: 'https://tekno.local.test/review/ponsel-lipat-makin-murah',
+      robots: null,
+      og: {
+        type: 'article',
+        title: 'Ponsel lipat makin murah: layak dibeli?',
+        description: 'Checklist sebelum membeli ponsel lipat.',
+        url: 'https://tekno.local.test/review/ponsel-lipat-makin-murah',
+        image: { url: 'https://tekno.local.test/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat di atas meja', width: 1600, height: 900 },
+        siteName: 'Kabar Tekno',
+        locale: 'id_ID',
+      },
+      article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'] },
+      feedUrl: 'https://tekno.local.test/rss.xml',
+      favicon: null,
+    })
+  })
+
+  it('SEO home, listing, pencarian, 404', async () => {
+    const home = (await render('kabar-tekno', '/')).page.seo
+    expect(home).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon', description: 'Berita dan ulasan teknologi.', canonical: 'https://tekno.local.test/', robots: null, og: { type: 'website', title: 'Kabar Tekno', image: null } })
+    const second = (await render('kabar-tekno', '/?page=2')).page.seo
+    expect(second).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon – Halaman 2', canonical: 'https://tekno.local.test/?page=2' })
+    expect((await render('kabar-tekno', '/category/gadget')).page.seo).toMatchObject({ title: 'Gadget | Kabar Tekno', canonical: 'https://tekno.local.test/category/gadget' })
+    expect((await render('kabar-tekno', '/search?q=ponsel')).page.seo).toMatchObject({ title: 'Pencarian: ponsel | Kabar Tekno', robots: 'noindex, follow' })
+    expect((await render('kabar-tekno', '/tidak/ada')).page.seo).toMatchObject({ title: 'Halaman tidak ditemukan | Kabar Tekno', canonical: null, robots: 'noindex, follow' })
+    expect((await render('dapur-nusantara', '/p/kontak')).page.seo).toMatchObject({ title: 'Kontak - Dapur Nusantara', canonical: 'https://kuliner.local.test/p/kontak' })
+  })
+
+  it('site kedua memakai datanya sendiri', async () => {
+    const { page } = await render('dapur-nusantara', '/sumatera/rendang-padang-empuk')
+    expect(page.vm).toMatchObject({ view: 'article', category: { href: '/category/sumatera' }, tags: [{ href: '/tag/pedas' }, { href: '/tag/tradisional' }] })
+    expect(page.chrome.menus['header']?.map((m) => m.label)).toEqual(['Beranda', 'Resep', 'Kuliner Daerah'])
+  })
+})
+
+// Body rusak tanpa database: repository palsu mengembalikan satu artikel.
+describe('body rusak dan embed', () => {
+  const site: SiteInfo = {
+    id: 'site-1', code: 'uji', name: 'Uji', defaultLocale: 'id-ID', timezone: 'Asia/Jakarta',
+    settings: parseSiteSettings({}), logo: null, favicon: null,
+  }
+  const rawBody = {
+    version: 1,
+    blocks: [
+      { type: 'paragraph', text: 'Pembuka' },
+      { type: 'carousel', items: [] },
+      { type: 'image', mediaId: 'bukan-uuid' },
+      { type: 'image', mediaId: '01930000-0000-7000-8000-00000000ffff', caption: 'Hilang' },
+      { type: 'embed', provider: 'youtube', url: 'https://youtu.be/dQw4w9WgXcQ' },
+      { type: 'embed', provider: 'x', url: 'https://x.com/a/status/1' },
+      'bukan object',
+    ],
+  }
+  const { body, skipped } = parseBodyLenient(rawBody)
+  const article: ArticleDetail = {
+    id: 'a1', title: 'Judul', slug: 'judul', excerpt: null, format: 'standard', isFeatured: false,
+    publishedAt: new Date('2026-11-10T01:00:00Z'), updatedAt: new Date('2026-11-10T01:00:00Z'),
+    category: { id: 'c1', name: 'Umum', slug: 'umum' }, categoryParent: null, author: null,
+    featuredMedia: null, tags: [], attributes: {}, seo: { title: 123 }, body, bodyIssues: skipped,
+  }
+  const content = {
+    getPublishedArticle: async (_siteId: string, slug: string) => (slug === 'judul' ? article : null),
+    getMediaByIds: async () => [],
+    findRedirect: async () => null,
+  }
+  const menus = { getMenuTree: async () => null }
+  const builder = createPageBuilder({ content, menus } as never, { mediaUrl: createMediaUrlResolver(), now: () => NOW })
+
+  it('block yang tidak dikenal atau rusak dilewati dan dicatat; halaman tetap 200', async () => {
+    const result = await builder.build({ site, pathname: '/umum/judul', searchParams: new URLSearchParams(), origin: 'https://uji.test' })
+    if (result.kind !== 'render') throw new Error('bukan render')
+    expect(result.status).toBe(200)
+    if (result.page.vm.view !== 'article') throw new Error('bukan artikel')
+    expect(result.page.vm.blocks).toEqual([
+      { type: 'paragraph', text: 'Pembuka' },
+      { type: 'embed', provider: 'youtube', url: 'https://youtu.be/dQw4w9WgXcQ', embedSrc: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ' },
+      { type: 'embed', provider: 'x', url: 'https://x.com/a/status/1', embedSrc: null },
+    ])
+    expect(result.issues).toEqual([
+      'artikel judul: block #1 (carousel) dilewati: tipe block tidak dikenal',
+      'artikel judul: block #2 (image) dilewati: isi block tidak valid',
+      'artikel judul: block #6 (tanpa tipe) dilewati: tipe block tidak dikenal',
+      'artikel judul: block image dilewati: media 01930000-0000-7000-8000-00000000ffff tidak ada di site ini',
+    ])
+    // seo.title bukan string: diabaikan, judul artikel dipakai.
+    expect(result.page.seo.title).toBe('Judul | Uji')
+  })
+})
+```
+
+11. Di `apps/web`, buat satu pembangun halaman per proses (`useFeedBuilder` menyusul di bab "Menambahkan Embed, SEO, dan Feed"):
+
+`apps/web/server/utils/pages.ts`
+
+```ts
+// Pembangun view model halaman publik dan feed, satu per proses (ADR-007).
+import { createFeedBuilder, createMediaUrlResolver, createPageBuilder } from '@framework/core'
+import { useRepositories } from './database'
+
+let pageBuilder: ReturnType<typeof createPageBuilder> | undefined
+let feedBuilder: ReturnType<typeof createFeedBuilder> | undefined
+
+export function usePageBuilder() {
+  pageBuilder ??= createPageBuilder(useRepositories(), {
+    mediaUrl: createMediaUrlResolver({ baseUrl: process.env['MEDIA_BASE_URL'] || '/media' }),
+  })
+  return pageBuilder
+}
+
+export function useFeedBuilder() {
+  feedBuilder ??= createFeedBuilder(useRepositories())
+  return feedBuilder
+}
+```
+
+12. Bangun halaman di middleware, setelah site ditemukan. Theme dan view model dimuat paralel. Redirect langsung dikirim dari middleware, `issues` dicatat ke log, dan hasilnya disimpan di `event.context.page`. Perhitungan `siteOrigin` dan prefix feed ditambahkan di bab "Menambahkan Embed, SEO, dan Feed":
+
+`apps/web/server/middleware/site.ts`
+
+```ts
+// Host request -> site, untuk setiap request (ADR-001).
+//
+//   site ditemukan  -> event.context.site / siteDomain; untuk request
+//                      halaman juga theme + view model (event.context.page),
+//                      atau redirect (permalink kanonik, tabel redirects)
+//   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
+//   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
+//
+// Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
+// dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
+import { resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
+import { useRepositories } from '../utils/database'
+import { usePageBuilder } from '../utils/pages'
+import { useSiteMode } from '../utils/site-mode'
+
+/** Route yang tidak butuh site: health check container dan aset build Nuxt. */
+const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
+const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
+
+export default defineEventHandler(async (event) => {
+  // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
+  const url = getRequestURL(event, { xForwardedProto: true })
+  if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+  const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
+
+  if (result.kind === 'site') {
+    const { site, matchedDomain, primaryDomain } = result.resolved
+    event.context.site = site
+    event.context.siteDomain = matchedDomain
+    // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
+    // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
+    event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
+    const [theme, built] = await Promise.all([
+      useRepositories().sites.getActiveTheme(site.id),
+      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
+    ])
+    if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
+    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    event.context.theme = theme
+    event.context.page = { status: built.status, ...built.page }
+    return
+  }
+
+  if (result.kind === 'redirect') {
+    url.hostname = result.toHost
+    return sendRedirect(event, url.toString(), 301)
+  }
+
+  setResponseStatus(event, 404)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  event.res.headers.set('cache-control', 'no-store')
+  return 'Situs tidak ditemukan.\n'
+})
+```
+
+`apps/web/shared/types/site-context.d.ts`
+
+```ts
+// Data per request yang diisi middleware server/middleware/site.ts.
+// Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
+import type { SeoMeta, SiteInfo } from '@framework/core'
+import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+
+declare module 'nuxt/schema' {
+  interface RequestEventContext {
+    /** Site yang melayani request ini. Tidak ada untuk route yang dilewati resolver (/api/health). */
+    site?: SiteInfo
+    /** Domain (sudah dinormalisasi) yang cocok dengan Host request. */
+    siteDomain?: string
+    /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
+    siteOrigin?: string
+    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
+    theme?: StoredTheme | null
+    /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
+    page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+  }
+}
+
+export {}
+```
+
+13. Ganti plugin `site.server.ts`: tidak lagi membangun chrome sementara, cukup menyalin `event.context.page` ke state dan memasang status 404 lewat `setResponseStatus`. Request yang sampai ke renderer tanpa halaman (mis. `/api/tidak-ada`) juga dijawab 404:
+
+`apps/web/app/plugins/site.server.ts`
+
+```ts
+// Khusus server (.server.ts), tidak ikut ke bundle browser. Menyalin hasil
+// server/middleware/site.ts (event.context) ke state halaman (ADR-007):
+// theme diselesaikan lewat registry, view model dipakai apa adanya.
+//
+// Kode app/ tidak pernah memanggil repository; dari @framework/core hanya
+// boleh import tipe (dijaga ESLint).
+import { templateRegistry } from '../templates'
+
+// Issue theme yang sama cukup dicatat sekali per proses, bukan setiap request.
+const loggedIssues = new Set<string>()
+const MAX_LOGGED = 1000
+
+export default defineNuxtPlugin(() => {
+  const event = useRequestEvent()
+  const context = event?.context
+  const site = context?.site
+  const page = context?.page
+  if (!event || !site || !page) {
+    // Request tanpa halaman yang sampai ke renderer (mis. /api/tidak-ada).
+    if (event) setResponseStatus(event, 404)
+    return
+  }
+
+  const theme = templateRegistry.resolveTheme(context.theme ?? null)
+  for (const issue of theme.issues) {
+    const key = `${site.id}:${issue}`
+    if (loggedIssues.has(key) || loggedIssues.size >= MAX_LOGGED) continue
+    loggedIssues.add(key)
+    console.warn(`[theme] site ${site.code}: ${issue}`)
+  }
+
+  useSiteTheme().value = theme
+  usePageState().value = page
+  if (page.status !== 200) setResponseStatus(event, page.status)
+})
+```
+
+`apps/web/app/composables/useSiteTheme.ts`
+
+```ts
+// State halaman untuk request ini. Diisi plugin site.server.ts di server
+// dari event.context (ADR-007), lalu ikut ke browser lewat payload useState.
+// Hanya data JSON; komponen diambil dari registry template.
+import type { SeoMeta } from '@framework/core'
+import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
+
+export function useSiteTheme() {
+  return useState<ResolvedTheme | null>('site-theme', () => null)
+}
+
+export interface PageState {
+  status: 200 | 404
+  chrome: ChromeView
+  vm: PageViewModel
+  seo: SeoMeta
+}
+
+/** Null untuk request tanpa site atau tanpa halaman (mis. /api yang tidak ada). */
+export function usePageState() {
+  return useState<PageState | null>('site-page', () => null)
+}
+```
+
+14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed":
+
+`apps/web/app/app.vue`
+
+```vue
+<!--
+  Kerangka halaman publik (ADR-007): wrapper kelas root template
+  (.tpl .tpl-<key>), token sebagai CSS variable di <head>, layout template,
+  lalu view untuk jenis halaman ini. Semua data datang dari state yang diisi
+  di server; tautan berupa <a href> biasa, tanpa navigasi sisi klien.
+-->
+<script setup lang="ts">
+import type { BaseOptions } from '@framework/template-base'
+import { templateRegistry } from './templates'
+
+const theme = useSiteTheme()
+const page = usePageState()
+
+const template = computed(() => templateRegistry.get(theme.value?.templateKey ?? templateRegistry.fallback.key))
+const Layout = computed(() => defineAsyncComponent(template.value.layout))
+const View = computed(() => (page.value ? defineAsyncComponent(template.value.views[page.value.vm.view]) : null))
+const options = computed(() => (theme.value?.options ?? template.value.options.defaults) as BaseOptions)
+
+// Metadata <head> dibangun core (page.seo); di sini hanya dipasang.
+const seo = computed(() => page.value?.seo ?? null)
+useSeoMeta({
+  title: () => seo.value?.title ?? 'Tidak ditemukan',
+  description: () => seo.value?.description ?? undefined,
+  robots: () => seo.value?.robots ?? undefined,
+  ogType: () => seo.value?.og.type,
+  ogTitle: () => seo.value?.og.title,
+  ogDescription: () => seo.value?.og.description ?? undefined,
+  ogUrl: () => seo.value?.og.url ?? undefined,
+  ogSiteName: () => seo.value?.og.siteName,
+  ogLocale: () => seo.value?.og.locale,
+  ogImage: () => seo.value?.og.image
+    ? { url: seo.value.og.image.url, alt: seo.value.og.image.alt, width: seo.value.og.image.width ?? undefined, height: seo.value.og.image.height ?? undefined }
+    : undefined,
+  twitterCard: () => (seo.value?.og.image ? 'summary_large_image' : 'summary'),
+  articlePublishedTime: () => seo.value?.article?.publishedTime,
+  articleModifiedTime: () => seo.value?.article?.modifiedTime,
+  articleSection: () => seo.value?.article?.section,
+  articleTag: () => seo.value?.article?.tags,
+})
+
+const links = computed(() => {
+  const out: (
+    | { rel: 'canonical'; href: string }
+    | { rel: 'alternate'; type: 'application/rss+xml'; title: string; href: string }
+    | { rel: 'icon'; href: string }
+  )[] = []
+  const meta = seo.value
+  if (!meta) return out
+  if (meta.canonical) out.push({ rel: 'canonical', href: meta.canonical })
+  out.push({ rel: 'alternate', type: 'application/rss+xml', title: meta.og.siteName, href: meta.feedUrl })
+  if (meta.favicon) out.push({ rel: 'icon', href: meta.favicon })
+  return out
+})
+
+useHead(() => ({
+  htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
+  link: links.value,
+  style: theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : [],
+}))
+</script>
+
+<template>
+  <div
+    v-if="page"
+    class="tpl"
+    :class="theme?.rootClass"
+  >
+    <component
+      :is="Layout"
+      :chrome="page.chrome"
+      :options="options"
+    >
+      <component
+        :is="View"
+        :vm="page.vm"
+      />
+    </component>
+  </div>
+  <p v-else>
+    Tidak ditemukan.
+  </p>
+</template>
+
+<style>
+body {
+  margin: 0;
+}
+</style>
+```
+
+15. Uji semua jenis halaman di dev:
+
+```bash
+pnpm dev
+for p in / /review/ponsel-lipat-makin-murah /gadget/ponsel-lipat-makin-murah /gadget/ponsel-lipat-murah \
+         /category/gadget /category/gadget/ /tag/android /author/budi-santoso /p/tentang-kami \
+         '/search?q=ponsel' '/?page=9' /tidak/ada; do
+  curl -s -o /dev/null -w "%{http_code} %{redirect_url}  $p\n" -H 'Host: tekno.local.test' "http://127.0.0.1:3000$p"
+done
+# 200 untuk halaman yang ada; 301 untuk path non-kanonik, redirect lama, dan slash di ujung;
+# 404 untuk ?page=9 dan /tidak/ada
+```
+
+16. Build produksi, jalankan smoke test dengan `SMOKE_HOSTS`, lalu `pnpm check`. Buka juga beberapa halaman di browser dan periksa console. Peringatan hidrasi berarti state server dan browser tidak sama.
+
+# Menambahkan Embed, SEO, dan Feed
+
+1. Bangun URL iframe embed di core (`packages/core/src/content/embed.ts`), bukan dari HTML yang ditempel penulis:
+   - Hanya host yang dikenal dan `https`. YouTube diarahkan ke `youtube-nocookie.com` (tanpa cookie pelacak sebelum video diputar); Vimeo dengan `dnt=1`.
+   - Id video divalidasi ketat, jadi URL yang disisipi karakter HTML atau domain mirip (`youtube.com.evil.example`) tidak menghasilkan iframe.
+   - X tidak punya URL iframe tanpa script widget mereka, jadi tetap tampil sebagai tautan.
+
+`packages/core/src/content/embed.ts`
+
+```ts
+// URL iframe untuk block embed, dibangun dari provider + url (bukan HTML
+// mentah dari penulis). Hanya bentuk URL yang dikenal yang menghasilkan
+// iframe; selain itu null dan template menampilkan tautan biasa.
+//
+//   youtube  -> https://www.youtube-nocookie.com/embed/<id>  (tanpa cookie pelacak sebelum diputar)
+//   vimeo    -> https://player.vimeo.com/video/<id>?dnt=1
+//   x        -> null: X hanya bisa di-embed lewat script widget mereka,
+//               yang tidak dimuat (privasi dan kecepatan), jadi tampil sebagai tautan.
+
+export type EmbedProvider = 'youtube' | 'vimeo' | 'x'
+
+const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/
+const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtube-nocookie.com'])
+const VIMEO_HOSTS = new Set(['vimeo.com', 'www.vimeo.com', 'player.vimeo.com'])
+
+export function embedSrc(provider: EmbedProvider, url: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:') return null
+  const segments = parsed.pathname.split('/').filter(Boolean)
+
+  switch (provider) {
+    case 'youtube': {
+      if (!YOUTUBE_HOSTS.has(parsed.hostname)) return null
+      let id: string | null | undefined
+      if (parsed.hostname === 'youtu.be') id = segments[0]
+      else if (segments[0] === 'watch') id = parsed.searchParams.get('v')
+      else if (segments[0] === 'embed' || segments[0] === 'shorts' || segments[0] === 'live') id = segments[1]
+      return id && YOUTUBE_ID.test(id) ? `https://www.youtube-nocookie.com/embed/${id}` : null
+    }
+    case 'vimeo': {
+      if (!VIMEO_HOSTS.has(parsed.hostname)) return null
+      const id = parsed.hostname === 'player.vimeo.com' && segments[0] === 'video' ? segments[1] : segments[0]
+      return id && /^\d{1,12}$/.test(id) ? `https://player.vimeo.com/video/${id}?dnt=1` : null
+    }
+    case 'x':
+      return null
+  }
+}
+```
+
+`packages/core/src/content/embed.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { embedSrc } from './embed'
+
+describe('embedSrc', () => {
+  it.each([
+    ['https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10', 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'],
+    ['https://youtu.be/dQw4w9WgXcQ', 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'],
+    ['https://m.youtube.com/shorts/dQw4w9WgXcQ', 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'],
+    ['https://www.youtube.com/embed/dQw4w9WgXcQ', 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'],
+  ])('youtube %s', (url, src) => {
+    expect(embedSrc('youtube', url)).toBe(src)
+  })
+
+  it.each([
+    ['https://vimeo.com/76979871', 'https://player.vimeo.com/video/76979871?dnt=1'],
+    ['https://player.vimeo.com/video/76979871', 'https://player.vimeo.com/video/76979871?dnt=1'],
+  ])('vimeo %s', (url, src) => {
+    expect(embedSrc('vimeo', url)).toBe(src)
+  })
+
+  it.each<[Parameters<typeof embedSrc>[0], string]>([
+    ['youtube', 'https://evil.example/watch?v=dQw4w9WgXcQ'],
+    ['youtube', 'https://www.youtube.com.evil.example/watch?v=dQw4w9WgXcQ'],
+    ['youtube', 'http://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+    ['youtube', 'https://www.youtube.com/watch?v=pendek'],
+    ['youtube', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ"><script>'],
+    ['youtube', 'https://www.youtube.com/channel/UC123'],
+    ['vimeo', 'https://vimeo.com/channels/staffpicks'],
+    ['vimeo', 'https://youtube.com/76979871'],
+    ['x', 'https://x.com/kabartekno/status/1'],
+    ['youtube', 'bukan url'],
+  ])('tidak menghasilkan iframe: %s %s', (provider, url) => {
+    expect(embedSrc(provider, url)).toBeNull()
+  })
+})
+```
+
+2. Tambahkan `embedSrc: string | null` ke block embed di `view-models.ts` (menambah field = aman untuk kontrak), lalu isi di `build-page.ts` dengan `embedSrc(block.provider, block.url)`.
+
+3. Render iframe di `BlockRenderer.vue` hanya dari `embedSrc`, dengan `sandbox`, `loading="lazy"`, `title`, dan rasio 16:9 dari CSS. Tanpa `embedSrc`, tampil tautan keluar. Tipe block yang tidak dikenal tidak cocok dengan cabang mana pun, jadi tidak merender apa-apa:
+
+`templates/base/src/components/BlockRenderer.vue`
+
+```vue
+<!--
+  Isi artikel/halaman (block body v1). Teks selalu polos dan dirender lewat
+  interpolasi Vue (di-escape), tidak pernah v-html.
+
+  Embed: iframe hanya dari `embedSrc` yang dibangun core (domain dikenal,
+  bukan HTML penulis), dengan sandbox. Tanpa embedSrc (mis. X) tampil
+  sebagai tautan keluar.
+
+  Tipe block yang tidak dikenal tidak cocok dengan cabang mana pun, jadi
+  tidak merender apa-apa. Core sudah membuangnya dan mencatatnya ke log.
+-->
+<script setup lang="ts">
+import type { BlockView } from '@framework/template-kit'
+import SmartImage from './SmartImage.vue'
+
+defineProps<{ blocks: BlockView[] }>()
+
+const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], string> = {
+  youtube: 'YouTube',
+  vimeo: 'Vimeo',
+  x: 'X',
+}
+</script>
+
+<template>
+  <div class="prose">
+    <template
+      v-for="(block, index) in blocks"
+      :key="index"
+    >
+      <p v-if="block.type === 'paragraph'">
+        {{ block.text }}
+      </p>
+      <component
+        :is="`h${block.level}`"
+        v-else-if="block.type === 'heading'"
+      >
+        {{ block.text }}
+      </component>
+      <figure
+        v-else-if="block.type === 'image'"
+        class="prose__figure"
+      >
+        <SmartImage :image="block.image" />
+        <figcaption v-if="block.caption || block.image.credit">
+          {{ block.caption }}
+          <span
+            v-if="block.image.credit"
+            class="prose__credit"
+          >{{ block.image.credit }}</span>
+        </figcaption>
+      </figure>
+      <blockquote v-else-if="block.type === 'quote'">
+        <p>{{ block.text }}</p>
+        <footer v-if="block.cite">
+          <cite>{{ block.cite }}</cite>
+        </footer>
+      </blockquote>
+      <ol v-else-if="block.type === 'list' && block.style === 'numbered'">
+        <li
+          v-for="(item, i) in block.items"
+          :key="i"
+        >
+          {{ item }}
+        </li>
+      </ol>
+      <ul v-else-if="block.type === 'list'">
+        <li
+          v-for="(item, i) in block.items"
+          :key="i"
+        >
+          {{ item }}
+        </li>
+      </ul>
+      <figure
+        v-else-if="block.type === 'embed' && block.embedSrc"
+        class="prose__embed prose__embed--frame"
+      >
+        <iframe
+          :src="block.embedSrc"
+          :title="`Video ${PROVIDER_LABEL[block.provider]}`"
+          loading="lazy"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+          allowfullscreen
+          referrerpolicy="strict-origin-when-cross-origin"
+          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+        />
+      </figure>
+      <p
+        v-else-if="block.type === 'embed'"
+        class="prose__embed"
+      >
+        <a
+          :href="block.url"
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+        >Lihat di {{ PROVIDER_LABEL[block.provider] }}</a>
+      </p>
+    </template>
+  </div>
+</template>
+```
+
+4. Baca kolom `seo` konten. Bentuknya mengikuti komentar DDL: `title`, `description`, `canonical`, `og_image_id`, `robots`. Setiap key divalidasi sendiri; nilai yang salah diabaikan, bukan menggagalkan halaman:
+
+`packages/core/src/content/seo.ts`
+
+```ts
+// Kolom seo (JSONB) di articles, pages, dan categories:
+//   { title, description, canonical, og_image_id, robots }
+// Database hanya menjamin object. Saat dibaca untuk halaman publik, setiap
+// key divalidasi sendiri: nilai yang salah diabaikan, bukan menggagalkan halaman.
+import { z } from 'zod'
+
+const fields = {
+  /** Judul untuk <title> dan og:title, menggantikan judul konten. */
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(320),
+  /** URL kanonik pengganti: path internal (/...) atau URL https absolut. */
+  canonical: z.union([
+    z.string().regex(/^\/(?!\/)\S*$/).max(2_048),
+    z.url({ protocol: /^https$/ }).max(2_048),
+  ]),
+  og_image_id: z.uuid(),
+  robots: z.enum(['noindex', 'noindex, follow', 'noindex, nofollow']),
+}
+
+export type ContentSeo = { [K in keyof typeof fields]?: z.output<(typeof fields)[K]> }
+
+export function parseContentSeo(raw: unknown): ContentSeo {
+  const out: Record<string, unknown> = {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
+  for (const [key, schema] of Object.entries(fields)) {
+    const parsed = schema.safeParse((raw as Record<string, unknown>)[key])
+    if (parsed.success) out[key] = parsed.data
+  }
+  return out as ContentSeo
+}
+```
+
+`packages/core/src/content/seo.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { parseContentSeo } from './seo'
+
+describe('parseContentSeo', () => {
+  it('key valid dipakai, key salah diabaikan satu per satu', () => {
+    expect(parseContentSeo({
+      title: ' Judul SEO ',
+      description: '',
+      canonical: '//evil.example/x',
+      og_image_id: '01930000-0000-7000-8000-000000000202',
+      robots: 'noindex',
+      extra: 1,
+    })).toEqual({ title: 'Judul SEO', og_image_id: '01930000-0000-7000-8000-000000000202', robots: 'noindex' })
+  })
+
+  it.each([['/review/x'], ['https://example.com/x']])('canonical sah: %s', (canonical) => {
+    expect(parseContentSeo({ canonical })).toEqual({ canonical })
+  })
+
+  it.each([null, 'teks', [], undefined])('bukan object (%j) -> kosong', (raw) => {
+    expect(parseContentSeo(raw)).toEqual({})
+  })
+})
+```
+
+5. Tulis pembangun metadata `<head>` di `packages/core/src/views/seo.ts`:
+   - Title lewat `settings.seo.titleTemplate`. Home memakai nama site dan tagline. Listing halaman ke-N diberi akhiran " – Halaman N" agar tidak ada judul ganda.
+   - Description: kolom `seo` konten, lalu ringkasan konten, lalu `settings.seo.defaultDescription`.
+   - Canonical dan `og:url` absolut di domain **primary**; 404 tanpa canonical.
+   - Pencarian dan 404 `noindex, follow`.
+   - `og:image`: `seo.og_image_id` konten, lalu gambar konten, lalu `settings.seo.defaultOgImageId`.
+
+`packages/core/src/views/seo.ts`
+
+```ts
+// Metadata <head> halaman publik: title, description, canonical, robots,
+// Open Graph. Dibangun core bersama view model; app memasangnya ke <head>,
+// template tidak ikut campur.
+//
+// Aturan:
+//  - title  : judul halaman lewat settings.seo.titleTemplate ("%s | Kabar Tekno");
+//             home memakai nama site (+ tagline). Halaman listing ke-N diberi
+//             akhiran " – Halaman N" agar tidak ada judul ganda.
+//  - description: kolom seo konten > ringkasan konten > settings.seo.defaultDescription.
+//  - canonical: URL absolut di domain PRIMARY (origin dari middleware); kolom
+//             seo.canonical konten menang. 404 tanpa canonical.
+//  - robots : pencarian dan 404 "noindex, follow"; kolom seo.robots konten menang.
+//  - og:image: seo.og_image_id konten > gambar konten > settings.seo.defaultOgImageId.
+import type { ImageView } from '@framework/template-kit'
+import type { ContentSeo } from '../content/seo'
+import type { SiteInfo } from '../repositories/site-repository'
+
+export interface SeoMeta {
+  title: string
+  description: string | null
+  /** URL absolut; null = tidak dipasang (404). */
+  canonical: string | null
+  robots: string | null
+  og: {
+    type: 'website' | 'article'
+    title: string
+    description: string | null
+    url: string | null
+    image: { url: string; alt: string; width: number | null; height: number | null } | null
+    siteName: string
+    /** Format Open Graph, mis. id_ID. */
+    locale: string
+  }
+  /** Hanya untuk artikel. */
+  article: { publishedTime: string; modifiedTime: string; section: string; tags: string[] } | null
+  /** URL absolut RSS site, untuk <link rel="alternate">. */
+  feedUrl: string
+  favicon: string | null
+}
+
+/** Bahan SEO dari tiap jenis halaman. */
+export interface SeoInput {
+  /** Judul halaman tanpa nama site; null = home. */
+  title: string | null
+  description: string | null
+  type: 'website' | 'article'
+  image: ImageView | null
+  /** Path (+ query) kanonik; null = tanpa canonical. */
+  canonicalPath: string | null
+  noindex?: boolean
+  /** Nomor halaman listing (>1 memberi akhiran judul). */
+  page?: number
+  contentSeo?: ContentSeo
+  article?: SeoMeta['article']
+}
+
+export interface SeoContext {
+  site: SiteInfo
+  /** Origin domain primary, mis. https://tekno.example. */
+  origin: string
+  /** Gambar OG dari id media (seo.og_image_id, defaultOgImageId); null bila tidak ada. */
+  imageById: (id: string) => ImageView | null
+  favicon: ImageView | null
+}
+
+export const NOINDEX = 'noindex, follow'
+
+export function absoluteUrl(origin: string, href: string): string {
+  return /^https?:\/\//.test(href) ? href : `${origin}${href.startsWith('/') ? '' : '/'}${href}`
+}
+
+/** id-ID -> id_ID (format og:locale). */
+export function ogLocale(locale: string): string {
+  return locale.replace('-', '_')
+}
+
+export function buildSeo(ctx: SeoContext, input: SeoInput): SeoMeta {
+  const { site, origin } = ctx
+  const seo = input.contentSeo ?? {}
+  const suffix = input.page && input.page > 1 ? ` – Halaman ${input.page}` : ''
+  const baseTitle = seo.title ?? input.title
+
+  let title: string
+  if (baseTitle === null) {
+    title = (site.settings.tagline ? `${site.name} – ${site.settings.tagline}` : site.name) + suffix
+  } else {
+    const template = site.settings.seo.titleTemplate ?? `%s | ${site.name}`
+    title = template.replace('%s', baseTitle + suffix)
+  }
+
+  const description = seo.description ?? input.description ?? site.settings.seo.defaultDescription ?? null
+  const canonical = seo.canonical
+    ? absoluteUrl(origin, seo.canonical)
+    : input.canonicalPath === null ? null : absoluteUrl(origin, input.canonicalPath)
+  const robots = seo.robots ?? (input.noindex ? NOINDEX : null)
+
+  const image =
+    (seo.og_image_id ? ctx.imageById(seo.og_image_id) : null)
+    ?? input.image
+    ?? (site.settings.seo.defaultOgImageId ? ctx.imageById(site.settings.seo.defaultOgImageId) : null)
+
+  return {
+    title,
+    description,
+    canonical,
+    robots,
+    og: {
+      type: input.type,
+      title: baseTitle ?? site.name,
+      description,
+      url: canonical,
+      image: image ? { url: absoluteUrl(origin, image.src), alt: image.alt, width: image.width, height: image.height } : null,
+      siteName: site.name,
+      locale: ogLocale(site.defaultLocale),
+    },
+    article: input.article ?? null,
+    feedUrl: absoluteUrl(origin, '/rss.xml'),
+    favicon: ctx.favicon?.src ?? null,
+  }
+}
+
+/** Id media yang perlu dimuat untuk og:image (kolom seo konten dan default site). */
+export function seoMediaIds(site: SiteInfo, contentSeo: ContentSeo | undefined): string[] {
+  return [contentSeo?.og_image_id, site.settings.seo.defaultOgImageId].filter((id): id is string => Boolean(id))
+}
+```
+
+6. Di `build-page.ts`, setiap jenis halaman sekarang mengembalikan view model **dan** bahan SEO-nya (`SeoInput`). Satu fungsi `render` memuat media OG yang dibutuhkan, lalu memanggil `buildSeo`. `PageRequest` mendapat field `origin` (origin domain primary) untuk URL absolut. File lengkapnya ada di bab sebelumnya.
+
+7. Uji SEO terhadap data seed, dan uji body rusak dengan repository palsu tanpa database (tipe block tidak dikenal, block image rusak, media yang hilang, embed). Test ini menemukan bug pesan log: nomor block untuk media yang hilang dihitung dari daftar setelah block rusak dibuang, sehingga menunjuk posisi yang salah. Pesannya kini menyebut id media. Lihat `build-page.test.ts` di bab sebelumnya.
+
+8. Tambahkan `content.listSitemapEntries(siteId)`: semua artikel dan halaman yang tampil (maksimal 50.000 artikel, batas satu file sitemap), kategori ACTIVE, serta tag dan penulis yang punya artikel tampil. Daftarkan di test isolasi antar-site (lihat bab repository).
+
+9. Tulis pembangun feed di `packages/core/src/feeds/feeds.ts`: `renderSitemap`, `renderRss` (RSS 2.0, `guid` berupa id artikel agar tidak berubah walau URL berganti), `renderRobots`, dan `createFeedBuilder` yang mengambil data dari repository:
+
+`packages/core/src/feeds/feeds.ts`
+
+```ts
+// sitemap.xml, rss.xml, robots.txt per site (ADR-006). URL absolut selalu di
+// domain PRIMARY site (origin dari middleware), sehingga domain alias tidak
+// pernah diumumkan ke mesin pencari. Hanya konten yang tampil publik: artikel
+// terjadwal baru muncul setelah published_at lewat.
+import type { Repositories } from '../repositories'
+import type { SiteInfo } from '../repositories/site-repository'
+import { absoluteUrl } from '../views/seo'
+import { createUrlBuilder, PREFIX } from '../views/urls'
+
+/** Jumlah artikel di RSS. */
+export const RSS_ITEMS = 20
+
+const XML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }
+
+/** Escape teks untuk isi elemen dan atribut XML; karakter kontrol yang dilarang XML 1.0 dibuang. */
+export function escapeXml(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '').replace(/[&<>"']/g, (c) => XML_ESCAPES[c] ?? c)
+}
+
+export interface SitemapUrl {
+  loc: string
+  lastmod?: Date
+}
+
+export function renderSitemap(urls: SitemapUrl[]): string {
+  const body = urls
+    .map((u) => `  <url><loc>${escapeXml(u.loc)}</loc>${u.lastmod ? `<lastmod>${u.lastmod.toISOString()}</lastmod>` : ''}</url>`)
+    .join('\n')
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${body}\n</urlset>\n`
+}
+
+export interface RssChannel {
+  title: string
+  link: string
+  description: string
+  language: string
+  selfUrl: string
+}
+
+export interface RssItem {
+  title: string
+  link: string
+  /** Stabil walau URL artikel berubah (kategori/permalink diganti). */
+  guid: string
+  pubDate: Date
+  description: string | null
+  category: string
+  author: string | null
+}
+
+export function renderRss(channel: RssChannel, items: RssItem[]): string {
+  const lastBuild = items[0]?.pubDate
+  const itemXml = items.map((i) => [
+    '    <item>',
+    `      <title>${escapeXml(i.title)}</title>`,
+    `      <link>${escapeXml(i.link)}</link>`,
+    `      <guid isPermaLink="false">${escapeXml(i.guid)}</guid>`,
+    `      <pubDate>${i.pubDate.toUTCString()}</pubDate>`,
+    `      <category>${escapeXml(i.category)}</category>`,
+    i.author ? `      <dc:creator>${escapeXml(i.author)}</dc:creator>` : null,
+    i.description ? `      <description>${escapeXml(i.description)}</description>` : null,
+    '    </item>',
+  ].filter(Boolean).join('\n')).join('\n')
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">',
+    '  <channel>',
+    `    <title>${escapeXml(channel.title)}</title>`,
+    `    <link>${escapeXml(channel.link)}</link>`,
+    `    <description>${escapeXml(channel.description)}</description>`,
+    `    <language>${escapeXml(channel.language)}</language>`,
+    `    <atom:link href="${escapeXml(channel.selfUrl)}" rel="self" type="application/rss+xml"/>`,
+    lastBuild ? `    <lastBuildDate>${lastBuild.toUTCString()}</lastBuildDate>` : null,
+    itemXml || null,
+    '  </channel>',
+    '</rss>',
+    '',
+  ].filter((line) => line !== null).join('\n')
+}
+
+/** Pencarian tidak di-crawl (hasil tak terbatas, konten ganda); /api/ bukan halaman. */
+export function renderRobots(origin: string): string {
+  return [
+    'User-agent: *',
+    'Disallow: /api/',
+    `Disallow: /${PREFIX.search}`,
+    '',
+    `Sitemap: ${absoluteUrl(origin, '/sitemap.xml')}`,
+    '',
+  ].join('\n')
+}
+
+export function createFeedBuilder(repos: Pick<Repositories, 'content'>) {
+  const { content } = repos
+
+  return {
+    async sitemap(site: SiteInfo, origin: string): Promise<string> {
+      const urls = createUrlBuilder({ permalink: site.settings.permalink, timeZone: site.timezone })
+      const abs = (href: string) => absoluteUrl(origin, href)
+      const entries = await content.listSitemapEntries(site.id)
+      return renderSitemap([
+        { loc: abs(urls.home()), ...(entries.articles[0] ? { lastmod: entries.articles[0].publishedAt } : {}) },
+        ...entries.articles.map((a) => ({
+          loc: abs(urls.article({ slug: a.slug, categorySlug: a.categorySlug, publishedAt: a.publishedAt })),
+          lastmod: a.updatedAt > a.publishedAt ? a.updatedAt : a.publishedAt,
+        })),
+        ...entries.pages.map((p) => ({ loc: abs(urls.page(p.slug)), lastmod: p.updatedAt })),
+        ...entries.categories.map((c) => ({ loc: abs(urls.category(c.slug)) })),
+        ...entries.tags.map((t) => ({ loc: abs(urls.tag(t.slug)) })),
+        ...entries.authors.map((a) => ({ loc: abs(urls.author(a.slug)) })),
+      ])
+    },
+
+    async rss(site: SiteInfo, origin: string): Promise<string> {
+      const urls = createUrlBuilder({ permalink: site.settings.permalink, timeZone: site.timezone })
+      const latest = await content.listPublishedArticles(site.id, { pageSize: RSS_ITEMS })
+      return renderRss(
+        {
+          title: site.name,
+          link: absoluteUrl(origin, urls.home()),
+          description: site.settings.tagline ?? site.settings.seo.defaultDescription ?? site.name,
+          language: site.defaultLocale.toLowerCase(),
+          selfUrl: absoluteUrl(origin, '/rss.xml'),
+        },
+        latest.items.map((a) => ({
+          title: a.title,
+          link: absoluteUrl(origin, urls.article({ slug: a.slug, categorySlug: a.category.slug, publishedAt: a.publishedAt })),
+          guid: `urn:uuid:${a.id}`,
+          pubDate: a.publishedAt,
+          description: a.excerpt,
+          category: a.category.name,
+          author: a.author?.name ?? null,
+        })),
+      )
+    },
+  }
+}
+```
+
+`packages/core/src/feeds/feeds.test.ts`
+
+```ts
+import { createDatabase } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createRepositories } from '../repositories'
+import { createFeedBuilder, escapeXml, renderRobots, renderRss, renderSitemap } from './feeds'
+
+describe('XML feed (murni)', () => {
+  it('escape karakter khusus dan buang karakter kontrol', () => {
+    expect(escapeXml(`a & b <c> "d" 'e'\u0000\u0007`)).toBe('a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos;')
+  })
+
+  it('sitemap', () => {
+    expect(renderSitemap([{ loc: 'https://x.test/?a=1&b=2', lastmod: new Date('2026-11-10T01:00:00Z') }, { loc: 'https://x.test/p/a' }])).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>\n'
+      + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+      + '  <url><loc>https://x.test/?a=1&amp;b=2</loc><lastmod>2026-11-10T01:00:00.000Z</lastmod></url>\n'
+      + '  <url><loc>https://x.test/p/a</loc></url>\n'
+      + '</urlset>\n',
+    )
+  })
+
+  it('RSS: judul di-escape, guid tidak bergantung URL, tanpa item tetap sah', () => {
+    const channel = { title: 'A & B', link: 'https://x.test/', description: 'd', language: 'id-id', selfUrl: 'https://x.test/rss.xml' }
+    const xml = renderRss(channel, [{
+      title: '<b>Judul</b>', link: 'https://x.test/a/b', guid: 'urn:uuid:1', pubDate: new Date('2026-11-10T01:00:00Z'),
+      description: null, category: 'Umum', author: null,
+    }])
+    expect(xml).toContain('<title>A &amp; B</title>')
+    expect(xml).toContain('<title>&lt;b&gt;Judul&lt;/b&gt;</title>')
+    expect(xml).toContain('<guid isPermaLink="false">urn:uuid:1</guid>')
+    expect(xml).toContain('<pubDate>Tue, 10 Nov 2026 01:00:00 GMT</pubDate>')
+    expect(xml).toContain('<lastBuildDate>Tue, 10 Nov 2026 01:00:00 GMT</lastBuildDate>')
+    expect(xml).not.toContain('<description></description>')
+    expect(renderRss(channel, [])).not.toContain('<item>')
+  })
+
+  it('robots.txt menunjuk sitemap di origin primary', () => {
+    expect(renderRobots('https://x.test')).toBe('User-agent: *\nDisallow: /api/\nDisallow: /search\n\nSitemap: https://x.test/sitemap.xml\n')
+  })
+})
+
+describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 2, applicationName: 'vitest-feeds' })
+  const repos = createRepositories(db, { now: () => new Date('2026-11-19T05:00:00Z') })
+  const feeds = createFeedBuilder(repos)
+  afterAll(() => db.$client.end())
+
+  async function siteOf(code: string) {
+    const site = await repos.sites.findByCode(code)
+    if (!site) throw new Error(code)
+    return site
+  }
+
+  it('sitemap kabar-tekno: URL absolut di origin primary, tanpa artikel terjadwal/draf, tanpa data site lain', async () => {
+    const xml = await feeds.sitemap(await siteOf('kabar-tekno'), 'https://tekno.local.test')
+    const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1])
+    expect(locs).toEqual([
+      'https://tekno.local.test/',
+      'https://tekno.local.test/kecerdasan-buatan/cara-kerja-model-bahasa',
+      'https://tekno.local.test/review/ponsel-lipat-makin-murah',
+      'https://tekno.local.test/p/tentang-kami',
+      'https://tekno.local.test/category/gadget',
+      'https://tekno.local.test/category/kecerdasan-buatan',
+      'https://tekno.local.test/category/review',
+      'https://tekno.local.test/tag/android',
+      'https://tekno.local.test/author/budi-santoso',
+      'https://tekno.local.test/author/redaksi',
+    ])
+    expect(xml).not.toContain('laptop-terbaik')
+    expect(xml).not.toContain('rendang')
+  })
+
+  it('RSS dapur-nusantara: terbaru dulu, link absolut, penulis', async () => {
+    const xml = await feeds.rss(await siteOf('dapur-nusantara'), 'https://kuliner.local.test')
+    expect([...xml.matchAll(/<link>([^<]+)<\/link>/g)].map((m) => m[1])).toEqual([
+      'https://kuliner.local.test/',
+      'https://kuliner.local.test/resep/sambal-matah-10-menit',
+      'https://kuliner.local.test/sumatera/rendang-padang-empuk',
+    ])
+    expect(xml).toContain('<title>Dapur Nusantara</title>')
+    expect(xml).toContain('<language>id-id</language>')
+    expect(xml).toContain('<dc:creator>Redaksi Dapur</dc:creator>')
+    expect(xml).toContain('<atom:link href="https://kuliner.local.test/rss.xml" rel="self" type="application/rss+xml"/>')
+  })
+})
+```
+
+10. Ekspor `content/embed`, `content/seo`, `views/seo`, dan `feeds/feeds` dari `packages/core/src/index.ts`.
+
+11. Hitung origin domain primary di middleware dan simpan di `event.context.siteOrigin`. Skema mengikuti request atau `X-Forwarded-Proto`, port ikut bila ada (dev `:3000`). Tambahkan `/sitemap.xml`, `/robots.txt`, `/rss.xml` ke daftar prefix non-halaman, dan teruskan `origin` ke `usePageBuilder().build(...)`:
+
+`apps/web/server/middleware/site.ts`
+
+```ts
+// Host request -> site, untuk setiap request (ADR-001).
+//
+//   site ditemukan  -> event.context.site / siteDomain; untuk request
+//                      halaman juga theme + view model (event.context.page),
+//                      atau redirect (permalink kanonik, tabel redirects)
+//   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
+//   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
+//
+// Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
+// dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
+import { resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
+import { useRepositories } from '../utils/database'
+import { usePageBuilder } from '../utils/pages'
+import { useSiteMode } from '../utils/site-mode'
+
+/** Route yang tidak butuh site: health check container dan aset build Nuxt. */
+const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
+const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
+
+export default defineEventHandler(async (event) => {
+  // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
+  const url = getRequestURL(event, { xForwardedProto: true })
+  if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+  const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
+
+  if (result.kind === 'site') {
+    const { site, matchedDomain, primaryDomain } = result.resolved
+    event.context.site = site
+    event.context.siteDomain = matchedDomain
+    // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
+    // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
+    event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
+    const [theme, built] = await Promise.all([
+      useRepositories().sites.getActiveTheme(site.id),
+      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
+    ])
+    if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
+    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    event.context.theme = theme
+    event.context.page = { status: built.status, ...built.page }
+    return
+  }
+
+  if (result.kind === 'redirect') {
+    url.hostname = result.toHost
+    return sendRedirect(event, url.toString(), 301)
+  }
+
+  setResponseStatus(event, 404)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  event.res.headers.set('cache-control', 'no-store')
+  return 'Situs tidak ditemukan.\n'
+})
+```
+
+`apps/web/shared/types/site-context.d.ts`
+
+```ts
+// Data per request yang diisi middleware server/middleware/site.ts.
+// Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
+import type { SeoMeta, SiteInfo } from '@framework/core'
+import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+
+declare module 'nuxt/schema' {
+  interface RequestEventContext {
+    /** Site yang melayani request ini. Tidak ada untuk route yang dilewati resolver (/api/health). */
+    site?: SiteInfo
+    /** Domain (sudah dinormalisasi) yang cocok dengan Host request. */
+    siteDomain?: string
+    /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
+    siteOrigin?: string
+    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
+    theme?: StoredTheme | null
+    /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
+    page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+  }
+}
+
+export {}
+```
+
+`apps/web/server/utils/pages.ts`
+
+```ts
+// Pembangun view model halaman publik dan feed, satu per proses (ADR-007).
+import { createFeedBuilder, createMediaUrlResolver, createPageBuilder } from '@framework/core'
+import { useRepositories } from './database'
+
+let pageBuilder: ReturnType<typeof createPageBuilder> | undefined
+let feedBuilder: ReturnType<typeof createFeedBuilder> | undefined
+
+export function usePageBuilder() {
+  pageBuilder ??= createPageBuilder(useRepositories(), {
+    mediaUrl: createMediaUrlResolver({ baseUrl: process.env['MEDIA_BASE_URL'] || '/media' }),
+  })
+  return pageBuilder
+}
+
+export function useFeedBuilder() {
+  feedBuilder ??= createFeedBuilder(useRepositories())
+  return feedBuilder
+}
+```
+
+12. Buat tiga route feed dengan satu helper bersama. Host tak dikenal sudah ditolak middleware, alias sudah dialihkan ke primary:
+
+`apps/web/server/utils/feed-response.ts`
+
+```ts
+// Respons feed (sitemap, RSS, robots) untuk site request ini. Middleware
+// site sudah menolak Host tak dikenal (404) dan mengalihkan alias (301).
+import { setResponseStatus, type RequestEvent } from 'nuxt/server'
+
+export async function feedResponse(
+  event: RequestEvent,
+  contentType: string,
+  render: (site: NonNullable<RequestEvent['context']['site']>, origin: string) => Promise<string> | string,
+): Promise<string> {
+  const { site, siteOrigin } = event.context
+  if (!site || !siteOrigin) {
+    setResponseStatus(event, 404)
+    return ''
+  }
+  const body = await render(site, siteOrigin)
+  event.res.headers.set('content-type', contentType)
+  // Feed boleh sedikit basi; cukup segar untuk artikel terjadwal yang baru tayang.
+  event.res.headers.set('cache-control', 'public, max-age=300')
+  return body
+}
+```
+
+`apps/web/server/routes/sitemap.xml.get.ts`
+
+```ts
+// GET /sitemap.xml: semua URL publik site ini (ADR-006).
+import { defineEventHandler } from 'nuxt/server'
+import { feedResponse } from '../utils/feed-response'
+import { useFeedBuilder } from '../utils/pages'
+
+export default defineEventHandler((event) =>
+  feedResponse(event, 'application/xml; charset=utf-8', (site, origin) => useFeedBuilder().sitemap(site, origin)))
+```
+
+`apps/web/server/routes/rss.xml.get.ts`
+
+```ts
+// GET /rss.xml: artikel terbaru site ini (RSS 2.0).
+import { defineEventHandler } from 'nuxt/server'
+import { feedResponse } from '../utils/feed-response'
+import { useFeedBuilder } from '../utils/pages'
+
+export default defineEventHandler((event) =>
+  feedResponse(event, 'application/rss+xml; charset=utf-8', (site, origin) => useFeedBuilder().rss(site, origin)))
+```
+
+`apps/web/server/routes/robots.txt.get.ts`
+
+```ts
+// GET /robots.txt: aturan crawler + lokasi sitemap site ini.
+import { renderRobots } from '@framework/core'
+import { defineEventHandler } from 'nuxt/server'
+import { feedResponse } from '../utils/feed-response'
+
+export default defineEventHandler((event) =>
+  feedResponse(event, 'text/plain; charset=utf-8', (_site, origin) => renderRobots(origin)))
+```
+
+13. Pasang metadata di `app.vue` dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
+
+`apps/web/app/app.vue`
+
+```vue
+<!--
+  Kerangka halaman publik (ADR-007): wrapper kelas root template
+  (.tpl .tpl-<key>), token sebagai CSS variable di <head>, layout template,
+  lalu view untuk jenis halaman ini. Semua data datang dari state yang diisi
+  di server; tautan berupa <a href> biasa, tanpa navigasi sisi klien.
+-->
+<script setup lang="ts">
+import type { BaseOptions } from '@framework/template-base'
+import { templateRegistry } from './templates'
+
+const theme = useSiteTheme()
+const page = usePageState()
+
+const template = computed(() => templateRegistry.get(theme.value?.templateKey ?? templateRegistry.fallback.key))
+const Layout = computed(() => defineAsyncComponent(template.value.layout))
+const View = computed(() => (page.value ? defineAsyncComponent(template.value.views[page.value.vm.view]) : null))
+const options = computed(() => (theme.value?.options ?? template.value.options.defaults) as BaseOptions)
+
+// Metadata <head> dibangun core (page.seo); di sini hanya dipasang.
+const seo = computed(() => page.value?.seo ?? null)
+useSeoMeta({
+  title: () => seo.value?.title ?? 'Tidak ditemukan',
+  description: () => seo.value?.description ?? undefined,
+  robots: () => seo.value?.robots ?? undefined,
+  ogType: () => seo.value?.og.type,
+  ogTitle: () => seo.value?.og.title,
+  ogDescription: () => seo.value?.og.description ?? undefined,
+  ogUrl: () => seo.value?.og.url ?? undefined,
+  ogSiteName: () => seo.value?.og.siteName,
+  ogLocale: () => seo.value?.og.locale,
+  ogImage: () => seo.value?.og.image
+    ? { url: seo.value.og.image.url, alt: seo.value.og.image.alt, width: seo.value.og.image.width ?? undefined, height: seo.value.og.image.height ?? undefined }
+    : undefined,
+  twitterCard: () => (seo.value?.og.image ? 'summary_large_image' : 'summary'),
+  articlePublishedTime: () => seo.value?.article?.publishedTime,
+  articleModifiedTime: () => seo.value?.article?.modifiedTime,
+  articleSection: () => seo.value?.article?.section,
+  articleTag: () => seo.value?.article?.tags,
+})
+
+const links = computed(() => {
+  const out: (
+    | { rel: 'canonical'; href: string }
+    | { rel: 'alternate'; type: 'application/rss+xml'; title: string; href: string }
+    | { rel: 'icon'; href: string }
+  )[] = []
+  const meta = seo.value
+  if (!meta) return out
+  if (meta.canonical) out.push({ rel: 'canonical', href: meta.canonical })
+  out.push({ rel: 'alternate', type: 'application/rss+xml', title: meta.og.siteName, href: meta.feedUrl })
+  if (meta.favicon) out.push({ rel: 'icon', href: meta.favicon })
+  return out
+})
+
+useHead(() => ({
+  htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
+  link: links.value,
+  style: theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : [],
+}))
+</script>
+
+<template>
+  <div
+    v-if="page"
+    class="tpl"
+    :class="theme?.rootClass"
+  >
+    <component
+      :is="Layout"
+      :chrome="page.chrome"
+      :options="options"
+    >
+      <component
+        :is="View"
+        :vm="page.vm"
+      />
+    </component>
+  </div>
+  <p v-else>
+    Tidak ditemukan.
+  </p>
+</template>
+
+<style>
+body {
+  margin: 0;
+}
+</style>
+```
+
+`apps/web/app/composables/useSiteTheme.ts`
+
+```ts
+// State halaman untuk request ini. Diisi plugin site.server.ts di server
+// dari event.context (ADR-007), lalu ikut ke browser lewat payload useState.
+// Hanya data JSON; komponen diambil dari registry template.
+import type { SeoMeta } from '@framework/core'
+import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
+
+export function useSiteTheme() {
+  return useState<ResolvedTheme | null>('site-theme', () => null)
+}
+
+export interface PageState {
+  status: 200 | 404
+  chrome: ChromeView
+  vm: PageViewModel
+  seo: SeoMeta
+}
+
+/** Null untuk request tanpa site atau tanpa halaman (mis. /api yang tidak ada). */
+export function usePageState() {
+  return useState<PageState | null>('site-page', () => null)
+}
+```
+
+14. Uji di dev, lalu validasi XML dengan parser:
+
+```bash
+pnpm dev
+curl -s -H 'Host: tekno.local.test:3000' http://127.0.0.1:3000/review/ponsel-lipat-makin-murah | grep -o '<link rel="canonical"[^>]*>\|<meta property="og:[^>]*>'
+for f in sitemap.xml rss.xml; do
+  curl -s -H 'Host: tekno.local.test:3000' http://127.0.0.1:3000/$f > /tmp/$f
+  python3 -c "import xml.dom.minidom as m; m.parse('/tmp/$f'); print('$f valid')"
+done
+curl -s -H 'Host: kuliner.local.test:3000' http://127.0.0.1:3000/robots.txt
+```
+
+15. Di build produksi, pastikan feed dari host tak dikenal dijawab 404, lalu jalankan `pnpm check`.

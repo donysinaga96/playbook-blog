@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import { defineConfig, globalIgnores } from 'eslint/config'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
+import pluginVue from 'eslint-plugin-vue'
 
 // Paket yang mengakses data. Template dan template-kit tidak boleh
 // bergantung padanya (lihat docs/adr/005-kontrak-template.md).
@@ -18,6 +19,19 @@ export default defineConfig(
   ]),
   js.configs.recommended,
   tseslint.configs.recommended,
+
+  // File .vue: aturan Vue yang disarankan. Blok <script lang="ts"> diparse
+  // dengan parser typescript-eslint, sehingga aturan import di bawah juga
+  // berlaku untuk komponen template.
+  pluginVue.configs['flat/recommended'],
+  {
+    files: ['**/*.vue'],
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+    // Nama yang tidak terdefinisi diperiksa vue-tsc (pnpm typecheck), seperti
+    // typescript-eslint mematikan aturan ini untuk .ts. Tanpa ini, auto-import
+    // Nuxt (useState, useRequestEvent, ...) dianggap error.
+    rules: { 'no-undef': 'off' },
+  },
 
   // Script dan config yang jalan di Node.
   {
@@ -50,6 +64,28 @@ export default defineConfig(
             message: 'Template tidak boleh import kode apps/ atau packages/ lewat path relatif (ADR-005).',
           },
         ],
+      }],
+    },
+  },
+
+  // Kode aplikasi Vue (apps/web/app) dirender di browser dan di bundle SSR
+  // Vue. Entry @framework/core membawa @framework/db dan driver pg, yang
+  // rusak bila ikut di-bundle di sana. Dari kedua paket itu hanya boleh
+  // import tipe; fungsi murni lewat subpath seperti @framework/core/media.
+  // Data dari database datang lewat server/ (event.context, server API).
+  {
+    files: ['apps/web/app/**/*.{js,ts,mts,vue}'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: ['@framework/core', '@framework/db'].map((name) => ({
+          name,
+          allowTypeImports: true,
+          message: 'Kode app/ hanya boleh import tipe dari paket ini; pakai subpath murni (mis. @framework/core/media) atau ambil data lewat server/.',
+        })),
+        patterns: [{
+          group: DATA_LAYER.filter((p) => !p.startsWith('@framework/')),
+          message: 'Driver database tidak boleh di kode app/ (ikut ke bundle browser).',
+        }],
       }],
     },
   },

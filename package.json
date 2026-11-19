@@ -8,8 +8,10 @@
     "node": ">=24"
   },
   "scripts": {
+    "dev": "pnpm --filter @framework/web dev",
+    "build": "pnpm --filter @framework/web build",
     "lint": "eslint .",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && vue-tsc -p templates/tsconfig.json --noEmit && pnpm --filter @framework/web typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
@@ -25,10 +27,15 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.19.2",
+    "@vitejs/plugin-vue": "6.0.11",
     "eslint": "^10.15.0",
+    "eslint-plugin-vue": "^10.12.1",
     "globals": "^17.14.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "~8.72.2",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "vue": "^3.5.45",
+    "vue-eslint-parser": "^10.4.2",
+    "vue-tsc": "^3.3.14"
   }
 }

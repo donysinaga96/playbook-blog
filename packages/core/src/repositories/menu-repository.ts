@@ -9,7 +9,7 @@ import type { RepositoryContext, SiteId, SiteScoped } from './types'
  */
 export type MenuTarget =
   | { type: 'CATEGORY'; slug: string; name: string }
-  | { type: 'ARTICLE'; slug: string; title: string; categorySlug: string }
+  | { type: 'ARTICLE'; slug: string; title: string; categorySlug: string; publishedAt: Date }
   | { type: 'PAGE'; slug: string; title: string }
   | { type: 'TAG'; slug: string; name: string }
   | { type: 'URL'; url: string }
@@ -83,7 +83,7 @@ export function createMenuRepository(ctx: RepositoryContext) {
           : [],
         articleIds.length
           ? db
-              .select({ id: articles.id, slug: articles.slug, title: articles.title, categorySlug: categories.slug })
+              .select({ id: articles.id, slug: articles.slug, title: articles.title, categorySlug: categories.slug, publishedAt: articles.publishedAt })
               .from(articles)
               .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
               .where(and(eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now()), inArray(articles.id, articleIds)))
@@ -111,7 +111,7 @@ export function createMenuRepository(ctx: RepositoryContext) {
           }
           case 'ARTICLE': {
             const a = item.articleId ? art.get(item.articleId) : undefined
-            return a ? { type: 'ARTICLE', slug: a.slug, title: a.title, categorySlug: a.categorySlug } : null
+            return a ? { type: 'ARTICLE', slug: a.slug, title: a.title, categorySlug: a.categorySlug, publishedAt: a.publishedAt as Date } : null
           }
           case 'URL':
             return item.url ? { type: 'URL', url: item.url } : null
