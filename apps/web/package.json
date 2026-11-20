@@ -10,7 +10,8 @@
     "preview": "node --env-file-if-exists=../../.env .output/server/index.mjs",
     "postinstall": "nuxt prepare",
     "typecheck": "nuxt typecheck",
-    "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs"
+    "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs",
+    "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs"
   },
   "dependencies": {
     "@framework/core": "workspace:*",

@@ -25,9 +25,11 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Melihat query lambat (> 250 ms) | `docker compose logs -f db` |
 | Mematikan (data tetap) | `docker compose down` |
 | Mengulang dari nol (data dev hilang) | `docker compose down -v && docker compose up -d` |
-| Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.local.test:3000 (lihat "Domain site di dev"), cek `/api/health` |
+| Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.localhost:3000 (lihat "Domain site di dev"), cek `/api/health` |
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+| Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
+| Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
 
 ## Aplikasi web
 
@@ -49,26 +51,25 @@ tidak butuh site. Domain dari seed:
 
 | Domain | Site | Perilaku |
 | --- | --- | --- |
-| `tekno.local.test` | Kabar Tekno | Dilayani |
-| `www.tekno.local.test` | Kabar Tekno | 301 ke `tekno.local.test` (alias) |
-| `kuliner.local.test` | Dapur Nusantara | Dilayani |
+| `tekno.localhost` | Kabar Tekno | Dilayani |
+| `www.tekno.localhost` | Kabar Tekno | 301 ke `tekno.localhost` (alias) |
+| `kuliner.localhost` | Dapur Nusantara | Dilayani |
 
-Untuk membukanya di browser, tambahkan baris ini ke `/etc/hosts`. Di WSL dengan browser
-Windows, tambahkan ke `C:\Windows\System32\drivers\etc\hosts` (sebagai Administrator):
+Domain berakhiran `.localhost` selalu mengarah ke komputer sendiri: Chrome, Edge, dan Firefox
+menjawabnya tanpa DNS dan tanpa file hosts, jadi tidak perlu hak Administrator. Setelah
+`pnpm dev`, langsung buka http://tekno.localhost:3000 atau http://kuliner.localhost:3000 (ketik
+lengkap dengan `http://`). Di WSL, browser Windows sampai ke server WSL lewat
+`networkingMode=mirrored` di `.wslconfig`.
 
-```
-127.0.0.1 tekno.local.test www.tekno.local.test kuliner.local.test
-```
-
-Tanpa mengubah file hosts, cukup kirim header Host dengan curl:
+Dari terminal, kirim header Host dengan curl:
 
 ```bash
-curl -H 'Host: kuliner.local.test' http://127.0.0.1:3000/
+curl -H 'Host: kuliner.localhost' http://127.0.0.1:3000/
 ```
 
-Dev server Vite hanya mengizinkan `localhost` dan `*.local.test` (`vite.server.allowedHosts` di
-`nuxt.config.ts`). Host lain mendapat 403 `Blocked request` dari Vite sebelum sampai ke
-middleware; di server produksi, Host lain mendapat 404.
+Dev server Vite secara bawaan hanya mengizinkan `localhost`, subdomain `.localhost`, dan alamat
+IP; Host lain mendapat 403 `Blocked request` sebelum sampai ke middleware. Karena itu domain dev
+memakai `.localhost`. Di server produksi, Host yang tidak terdaftar mendapat 404.
 
 Mode single-site: `SITE_MODE=single` dan `SITE_CODE=<sites.code>`. Domain tetap dicek, jadi
 domain milik site lain di database yang sama dijawab 404. Config yang salah (mis. `SITE_MODE`
@@ -87,13 +88,13 @@ Skema URL ada di [ADR-006](adr/006-skema-url.md); halaman dirender penuh di serv
 
 | Halaman | Contoh |
 | --- | --- |
-| Home | http://tekno.local.test:3000/ |
-| Artikel (`settings.permalink`) | http://tekno.local.test:3000/review/ponsel-lipat-makin-murah |
-| Kategori | http://tekno.local.test:3000/category/gadget |
-| Tag, penulis | http://tekno.local.test:3000/tag/android, http://tekno.local.test:3000/author/budi-santoso |
-| Halaman statis | http://kuliner.local.test:3000/p/kontak |
-| Pencarian | http://tekno.local.test:3000/search?q=ponsel |
-| Redirect lama (tabel `redirects`) | http://tekno.local.test:3000/gadget/ponsel-lipat-murah → 301 |
+| Home | http://tekno.localhost:3000/ |
+| Artikel (`settings.permalink`) | http://tekno.localhost:3000/review/ponsel-lipat-makin-murah |
+| Kategori | http://tekno.localhost:3000/category/gadget |
+| Tag, penulis | http://tekno.localhost:3000/tag/android, http://tekno.localhost:3000/author/budi-santoso |
+| Halaman statis | http://kuliner.localhost:3000/p/kontak |
+| Pencarian | http://tekno.localhost:3000/search?q=ponsel |
+| Redirect lama (tabel `redirects`) | http://tekno.localhost:3000/gadget/ponsel-lipat-murah → 301 |
 
 View model dibangun di `server/middleware/site.ts` lewat `createPageBuilder` (`packages/core`),
 lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicatat di log server:
@@ -110,7 +111,7 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
   `og_image_id`, `robots`) menimpa nilai otomatis; nilai yang tidak valid diabaikan per key.
 - Pencarian dan 404 diberi `noindex, follow`; `robots.txt` juga melarang crawl `/search` dan
   `/api/`.
-- Feed per domain: http://tekno.local.test:3000/sitemap.xml, `/rss.xml` (20 artikel terbaru),
+- Feed per domain: http://tekno.localhost:3000/sitemap.xml, `/rss.xml` (20 artikel terbaru),
   `/robots.txt`. Artikel terjadwal baru muncul setelah `published_at` lewat. Tag dan penulis
   tanpa artikel tampil tidak masuk sitemap.
 - Embed YouTube memakai `youtube-nocookie.com`, Vimeo memakai `dnt=1`. X tampil sebagai tautan

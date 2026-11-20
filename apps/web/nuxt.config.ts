@@ -10,7 +10,4 @@ export default defineNuxtConfig({
   nitro: {
     externals: { inline: ['@framework/core', '@framework/db'] },
   },
-  // Dev server Vite menolak Host selain localhost (403). Domain site dev
-  // (seed) berakhiran .local.test. Tidak berlaku untuk server produksi.
-  vite: { server: { allowedHosts: ['.local.test'] } },
 })

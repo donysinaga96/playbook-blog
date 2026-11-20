@@ -1,0 +1,857 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snapshot view model per jenis halaman > article (site kedua): dapur-nusantara /sumatera/rendang-padang-empuk 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": {
+      "modifiedTime": "<updated_at seed>",
+      "publishedTime": "2026-11-11T00:00:00.000Z",
+      "section": "Sumatera",
+      "tags": [
+        "Pedas",
+        "Tradisional",
+      ],
+    },
+    "canonical": "https://kuliner.localhost/sumatera/rendang-padang-empuk",
+    "description": "Kunci rendang empuk: api kecil dan sabar.",
+    "favicon": null,
+    "feedUrl": "https://kuliner.localhost/rss.xml",
+    "og": {
+      "description": "Kunci rendang empuk: api kecil dan sabar.",
+      "image": {
+        "alt": "Rendang di piring tanah liat",
+        "height": 1067,
+        "url": "https://kuliner.localhost/media/dapur-nusantara/2026/11/rendang.webp",
+        "width": 1600,
+      },
+      "locale": "id_ID",
+      "siteName": "Dapur Nusantara",
+      "title": "Rendang Padang yang empuk dalam 4 jam",
+      "type": "article",
+      "url": "https://kuliner.localhost/sumatera/rendang-padang-empuk",
+    },
+    "robots": null,
+    "title": "Rendang Padang yang empuk dalam 4 jam - Dapur Nusantara",
+  },
+  "status": 200,
+  "vm": {
+    "author": {
+      "href": "/author/redaksi",
+      "label": "Redaksi Dapur",
+    },
+    "blocks": [
+      {
+        "text": "Rendang butuh api kecil dan waktu.",
+        "type": "paragraph",
+      },
+      {
+        "level": 2,
+        "text": "Bahan",
+        "type": "heading",
+      },
+      {
+        "items": [
+          "1 kg daging sapi",
+          "2 liter santan",
+          "Bumbu halus",
+        ],
+        "style": "bullet",
+        "type": "list",
+      },
+    ],
+    "breadcrumb": [
+      {
+        "href": "/",
+        "label": "Beranda",
+      },
+      {
+        "href": "/category/kuliner-daerah",
+        "label": "Kuliner Daerah",
+      },
+      {
+        "href": "/category/sumatera",
+        "label": "Sumatera",
+      },
+      {
+        "href": "/sumatera/rendang-padang-empuk",
+        "label": "Rendang Padang yang empuk dalam 4 jam",
+      },
+    ],
+    "category": {
+      "href": "/category/sumatera",
+      "label": "Sumatera",
+    },
+    "excerpt": "Kunci rendang empuk: api kecil dan sabar.",
+    "format": "STANDARD",
+    "image": {
+      "alt": "Rendang di piring tanah liat",
+      "caption": null,
+      "credit": null,
+      "focalX": 0.45,
+      "focalY": 0.55,
+      "height": 1067,
+      "src": "/media/dapur-nusantara/2026/11/rendang.webp",
+      "width": 1600,
+    },
+    "publishedAt": {
+      "iso": "2026-11-11T00:00:00.000Z",
+      "label": "11 November 2026",
+    },
+    "tags": [
+      {
+        "href": "/tag/pedas",
+        "label": "Pedas",
+      },
+      {
+        "href": "/tag/tradisional",
+        "label": "Tradisional",
+      },
+    ],
+    "title": "Rendang Padang yang empuk dalam 4 jam",
+    "updatedAt": "<updated_at seed>",
+    "view": "article",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > article: kabar-tekno /review/ponsel-lipat-makin-murah 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": {
+      "modifiedTime": "<updated_at seed>",
+      "publishedTime": "2026-11-10T01:00:00.000Z",
+      "section": "Review",
+      "tags": [
+        "Android",
+      ],
+    },
+    "canonical": "https://tekno.localhost/review/ponsel-lipat-makin-murah",
+    "description": "Checklist sebelum membeli ponsel lipat.",
+    "favicon": null,
+    "feedUrl": "https://tekno.localhost/rss.xml",
+    "og": {
+      "description": "Checklist sebelum membeli ponsel lipat.",
+      "image": {
+        "alt": "Ponsel lipat di atas meja",
+        "height": 900,
+        "url": "https://tekno.localhost/media/kabar-tekno/2026/11/hp.webp",
+        "width": 1600,
+      },
+      "locale": "id_ID",
+      "siteName": "Kabar Tekno",
+      "title": "Ponsel lipat makin murah: layak dibeli?",
+      "type": "article",
+      "url": "https://tekno.localhost/review/ponsel-lipat-makin-murah",
+    },
+    "robots": null,
+    "title": "Ponsel lipat makin murah: layak dibeli? | Kabar Tekno",
+  },
+  "status": 200,
+  "vm": {
+    "author": {
+      "href": "/author/budi-santoso",
+      "label": "Budi Santoso",
+    },
+    "blocks": [
+      {
+        "text": "Harga ponsel lipat turun tajam tahun ini.",
+        "type": "paragraph",
+      },
+      {
+        "level": 2,
+        "text": "Yang perlu dicek",
+        "type": "heading",
+      },
+      {
+        "items": [
+          "Engsel",
+          "Lipatan layar",
+          "Garansi",
+        ],
+        "style": "bullet",
+        "type": "list",
+      },
+      {
+        "caption": "Ponsel lipat generasi baru",
+        "image": {
+          "alt": "Ponsel lipat di atas meja",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.62,
+          "focalY": 0.4,
+          "height": 900,
+          "src": "/media/kabar-tekno/2026/11/hp.webp",
+          "width": 1600,
+        },
+        "type": "image",
+      },
+    ],
+    "breadcrumb": [
+      {
+        "href": "/",
+        "label": "Beranda",
+      },
+      {
+        "href": "/category/gadget",
+        "label": "Gadget",
+      },
+      {
+        "href": "/category/review",
+        "label": "Review",
+      },
+      {
+        "href": "/review/ponsel-lipat-makin-murah",
+        "label": "Ponsel lipat makin murah, layak dibeli?",
+      },
+    ],
+    "category": {
+      "href": "/category/review",
+      "label": "Review",
+    },
+    "excerpt": "Harga turun, engsel makin awet. Ini yang perlu dicek sebelum membeli.",
+    "format": "STANDARD",
+    "image": {
+      "alt": "Ponsel lipat di atas meja",
+      "caption": null,
+      "credit": null,
+      "focalX": 0.62,
+      "focalY": 0.4,
+      "height": 900,
+      "src": "/media/kabar-tekno/2026/11/hp.webp",
+      "width": 1600,
+    },
+    "publishedAt": {
+      "iso": "2026-11-10T01:00:00.000Z",
+      "label": "10 November 2026",
+    },
+    "tags": [
+      {
+        "href": "/tag/android",
+        "label": "Android",
+      },
+    ],
+    "title": "Ponsel lipat makin murah, layak dibeli?",
+    "updatedAt": "<updated_at seed>",
+    "view": "article",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > author: kabar-tekno /author/budi-santoso 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": "https://tekno.localhost/author/budi-santoso",
+    "description": "Menulis soal gawai sejak 2015.",
+    "favicon": null,
+    "feedUrl": "https://tekno.localhost/rss.xml",
+    "og": {
+      "description": "Menulis soal gawai sejak 2015.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Kabar Tekno",
+      "title": "Budi Santoso",
+      "type": "website",
+      "url": "https://tekno.localhost/author/budi-santoso",
+    },
+    "robots": null,
+    "title": "Budi Santoso | Kabar Tekno",
+  },
+  "status": 200,
+  "vm": {
+    "articles": [
+      {
+        "author": {
+          "href": "/author/budi-santoso",
+          "label": "Budi Santoso",
+        },
+        "category": {
+          "href": "/category/review",
+          "label": "Review",
+        },
+        "excerpt": "Harga turun, engsel makin awet. Ini yang perlu dicek sebelum membeli.",
+        "format": "STANDARD",
+        "href": "/review/ponsel-lipat-makin-murah",
+        "image": {
+          "alt": "Ponsel lipat di atas meja",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.62,
+          "focalY": 0.4,
+          "height": 900,
+          "src": "/media/kabar-tekno/2026/11/hp.webp",
+          "width": 1600,
+        },
+        "isFeatured": true,
+        "publishedAt": {
+          "iso": "2026-11-10T01:00:00.000Z",
+          "label": "10 November 2026",
+        },
+        "title": "Ponsel lipat makin murah, layak dibeli?",
+      },
+    ],
+    "avatar": null,
+    "bio": "Menulis soal gawai sejak 2015.",
+    "name": "Budi Santoso",
+    "pagination": {
+      "nextHref": null,
+      "page": 1,
+      "pages": [],
+      "prevHref": null,
+      "totalPages": 1,
+    },
+    "view": "author",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > category: kabar-tekno /category/gadget 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": "https://tekno.localhost/category/gadget",
+    "description": "Berita dan ulasan teknologi.",
+    "favicon": null,
+    "feedUrl": "https://tekno.localhost/rss.xml",
+    "og": {
+      "description": "Berita dan ulasan teknologi.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Kabar Tekno",
+      "title": "Gadget",
+      "type": "website",
+      "url": "https://tekno.localhost/category/gadget",
+    },
+    "robots": null,
+    "title": "Gadget | Kabar Tekno",
+  },
+  "status": 200,
+  "vm": {
+    "articles": [
+      {
+        "author": {
+          "href": "/author/budi-santoso",
+          "label": "Budi Santoso",
+        },
+        "category": {
+          "href": "/category/review",
+          "label": "Review",
+        },
+        "excerpt": "Harga turun, engsel makin awet. Ini yang perlu dicek sebelum membeli.",
+        "format": "STANDARD",
+        "href": "/review/ponsel-lipat-makin-murah",
+        "image": {
+          "alt": "Ponsel lipat di atas meja",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.62,
+          "focalY": 0.4,
+          "height": 900,
+          "src": "/media/kabar-tekno/2026/11/hp.webp",
+          "width": 1600,
+        },
+        "isFeatured": true,
+        "publishedAt": {
+          "iso": "2026-11-10T01:00:00.000Z",
+          "label": "10 November 2026",
+        },
+        "title": "Ponsel lipat makin murah, layak dibeli?",
+      },
+    ],
+    "breadcrumb": [
+      {
+        "href": "/",
+        "label": "Beranda",
+      },
+      {
+        "href": "/category/gadget",
+        "label": "Gadget",
+      },
+    ],
+    "children": [
+      {
+        "href": "/category/review",
+        "label": "Review",
+      },
+    ],
+    "description": null,
+    "name": "Gadget",
+    "pagination": {
+      "nextHref": null,
+      "page": 1,
+      "pages": [],
+      "prevHref": null,
+      "totalPages": 1,
+    },
+    "view": "category",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > chrome dapur-nusantara 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "page": {
+    "chrome": {
+      "menus": {
+        "footer": [
+          {
+            "children": [],
+            "external": false,
+            "href": "/p/kontak",
+            "label": "Kontak",
+            "openInNewTab": false,
+          },
+        ],
+        "header": [
+          {
+            "children": [],
+            "external": false,
+            "href": "/",
+            "label": "Beranda",
+            "openInNewTab": false,
+          },
+          {
+            "children": [],
+            "external": false,
+            "href": "/category/resep",
+            "label": "Resep",
+            "openInNewTab": false,
+          },
+          {
+            "children": [
+              {
+                "children": [],
+                "external": false,
+                "href": "/category/sumatera",
+                "label": "Sumatera",
+                "openInNewTab": false,
+              },
+            ],
+            "external": false,
+            "href": "/category/kuliner-daerah",
+            "label": "Kuliner Daerah",
+            "openInNewTab": false,
+          },
+        ],
+      },
+      "site": {
+        "homeHref": "/",
+        "locale": "id-ID",
+        "logo": {
+          "alt": "Logo Dapur Nusantara",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "height": 64,
+          "src": "/media/dapur-nusantara/logo.svg",
+          "width": 200,
+        },
+        "name": "Dapur Nusantara",
+        "tagline": "Resep rumahan dari seluruh Indonesia",
+      },
+      "today": {
+        "iso": "2026-11-19",
+        "label": "Kamis, 19 November 2026",
+      },
+    },
+  },
+  "status": 200,
+}
+`;
+
+exports[`snapshot view model per jenis halaman > chrome kabar-tekno 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "page": {
+    "chrome": {
+      "menus": {
+        "footer": [
+          {
+            "children": [],
+            "external": false,
+            "href": "/p/tentang-kami",
+            "label": "Tentang Kami",
+            "openInNewTab": false,
+          },
+          {
+            "children": [],
+            "external": true,
+            "href": "https://x.com/kabartekno",
+            "label": "X / Twitter",
+            "openInNewTab": false,
+          },
+        ],
+        "header": [
+          {
+            "children": [],
+            "external": false,
+            "href": "/",
+            "label": "Beranda",
+            "openInNewTab": false,
+          },
+          {
+            "children": [
+              {
+                "children": [],
+                "external": false,
+                "href": "/category/review",
+                "label": "Review",
+                "openInNewTab": false,
+              },
+            ],
+            "external": false,
+            "href": "/category/gadget",
+            "label": "Gadget",
+            "openInNewTab": false,
+          },
+          {
+            "children": [],
+            "external": false,
+            "href": "/category/kecerdasan-buatan",
+            "label": "AI",
+            "openInNewTab": false,
+          },
+        ],
+      },
+      "site": {
+        "homeHref": "/",
+        "locale": "id-ID",
+        "logo": {
+          "alt": "Logo Kabar Tekno",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "height": 64,
+          "src": "/media/kabar-tekno/logo.svg",
+          "width": 240,
+        },
+        "name": "Kabar Tekno",
+        "tagline": "Teknologi tanpa jargon",
+      },
+      "today": {
+        "iso": "2026-11-19",
+        "label": "Kamis, 19 November 2026",
+      },
+    },
+  },
+  "status": 200,
+}
+`;
+
+exports[`snapshot view model per jenis halaman > home: kabar-tekno / 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": "https://tekno.localhost/",
+    "description": "Berita dan ulasan teknologi.",
+    "favicon": null,
+    "feedUrl": "https://tekno.localhost/rss.xml",
+    "og": {
+      "description": "Berita dan ulasan teknologi.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Kabar Tekno",
+      "title": "Kabar Tekno",
+      "type": "website",
+      "url": "https://tekno.localhost/",
+    },
+    "robots": null,
+    "title": "Kabar Tekno – Teknologi tanpa jargon",
+  },
+  "status": 200,
+  "vm": {
+    "featured": [
+      {
+        "author": {
+          "href": "/author/budi-santoso",
+          "label": "Budi Santoso",
+        },
+        "category": {
+          "href": "/category/review",
+          "label": "Review",
+        },
+        "excerpt": "Harga turun, engsel makin awet. Ini yang perlu dicek sebelum membeli.",
+        "format": "STANDARD",
+        "href": "/review/ponsel-lipat-makin-murah",
+        "image": {
+          "alt": "Ponsel lipat di atas meja",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.62,
+          "focalY": 0.4,
+          "height": 900,
+          "src": "/media/kabar-tekno/2026/11/hp.webp",
+          "width": 1600,
+        },
+        "isFeatured": true,
+        "publishedAt": {
+          "iso": "2026-11-10T01:00:00.000Z",
+          "label": "10 November 2026",
+        },
+        "title": "Ponsel lipat makin murah, layak dibeli?",
+      },
+    ],
+    "latest": [
+      {
+        "author": {
+          "href": "/author/redaksi",
+          "label": "Redaksi Kabar Tekno",
+        },
+        "category": {
+          "href": "/category/kecerdasan-buatan",
+          "label": "Kecerdasan Buatan",
+        },
+        "excerpt": "Penjelasan ringan tentang bagaimana model bahasa menebak kata berikutnya.",
+        "format": "STANDARD",
+        "href": "/kecerdasan-buatan/cara-kerja-model-bahasa",
+        "image": {
+          "alt": "Ilustrasi jaringan saraf",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "height": 900,
+          "src": "/media/kabar-tekno/2026/11/ai.webp",
+          "width": 1600,
+        },
+        "isFeatured": false,
+        "publishedAt": {
+          "iso": "2026-11-12T03:00:00.000Z",
+          "label": "12 November 2026",
+        },
+        "title": "Cara kerja model bahasa, tanpa matematika",
+      },
+    ],
+    "pagination": {
+      "nextHref": null,
+      "page": 1,
+      "pages": [],
+      "prevHref": null,
+      "totalPages": 1,
+    },
+    "view": "home",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > not-found: kabar-tekno /tidak/ada 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": null,
+    "description": "Berita dan ulasan teknologi.",
+    "favicon": null,
+    "feedUrl": "https://tekno.localhost/rss.xml",
+    "og": {
+      "description": "Berita dan ulasan teknologi.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Kabar Tekno",
+      "title": "Halaman tidak ditemukan",
+      "type": "website",
+      "url": null,
+    },
+    "robots": "noindex, follow",
+    "title": "Halaman tidak ditemukan | Kabar Tekno",
+  },
+  "status": 404,
+  "vm": {
+    "path": "/tidak/ada",
+    "view": "not-found",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > page: dapur-nusantara /p/kontak 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": "https://kuliner.localhost/p/kontak",
+    "description": "Resep dan cerita kuliner Nusantara.",
+    "favicon": null,
+    "feedUrl": "https://kuliner.localhost/rss.xml",
+    "og": {
+      "description": "Resep dan cerita kuliner Nusantara.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Dapur Nusantara",
+      "title": "Kontak",
+      "type": "website",
+      "url": "https://kuliner.localhost/p/kontak",
+    },
+    "robots": null,
+    "title": "Kontak - Dapur Nusantara",
+  },
+  "status": 200,
+  "vm": {
+    "blocks": [],
+    "title": "Kontak",
+    "view": "page",
+    "viewKey": "contact",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > redirect permalink: kabar-tekno /gadget/ponsel-lipat-makin-murah 1`] = `
+{
+  "kind": "redirect",
+  "location": "/review/ponsel-lipat-makin-murah",
+  "status": 301,
+}
+`;
+
+exports[`snapshot view model per jenis halaman > search: kabar-tekno /search?q=ponsel 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": "https://tekno.localhost/search?q=ponsel",
+    "description": "Berita dan ulasan teknologi.",
+    "favicon": null,
+    "feedUrl": "https://tekno.localhost/rss.xml",
+    "og": {
+      "description": "Berita dan ulasan teknologi.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Kabar Tekno",
+      "title": "Pencarian: ponsel",
+      "type": "website",
+      "url": "https://tekno.localhost/search?q=ponsel",
+    },
+    "robots": "noindex, follow",
+    "title": "Pencarian: ponsel | Kabar Tekno",
+  },
+  "status": 200,
+  "vm": {
+    "action": "/search",
+    "articles": [
+      {
+        "author": {
+          "href": "/author/budi-santoso",
+          "label": "Budi Santoso",
+        },
+        "category": {
+          "href": "/category/review",
+          "label": "Review",
+        },
+        "excerpt": "Harga turun, engsel makin awet. Ini yang perlu dicek sebelum membeli.",
+        "format": "STANDARD",
+        "href": "/review/ponsel-lipat-makin-murah",
+        "image": {
+          "alt": "Ponsel lipat di atas meja",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.62,
+          "focalY": 0.4,
+          "height": 900,
+          "src": "/media/kabar-tekno/2026/11/hp.webp",
+          "width": 1600,
+        },
+        "isFeatured": true,
+        "publishedAt": {
+          "iso": "2026-11-10T01:00:00.000Z",
+          "label": "10 November 2026",
+        },
+        "title": "Ponsel lipat makin murah, layak dibeli?",
+      },
+    ],
+    "pagination": {
+      "nextHref": null,
+      "page": 1,
+      "pages": [],
+      "prevHref": null,
+      "totalPages": 1,
+    },
+    "query": "ponsel",
+    "view": "search",
+  },
+}
+`;
+
+exports[`snapshot view model per jenis halaman > tag: dapur-nusantara /tag/pedas 1`] = `
+{
+  "issues": [],
+  "kind": "render",
+  "seo": {
+    "article": null,
+    "canonical": "https://kuliner.localhost/tag/pedas",
+    "description": "Resep dan cerita kuliner Nusantara.",
+    "favicon": null,
+    "feedUrl": "https://kuliner.localhost/rss.xml",
+    "og": {
+      "description": "Resep dan cerita kuliner Nusantara.",
+      "image": null,
+      "locale": "id_ID",
+      "siteName": "Dapur Nusantara",
+      "title": "Pedas",
+      "type": "website",
+      "url": "https://kuliner.localhost/tag/pedas",
+    },
+    "robots": null,
+    "title": "Pedas - Dapur Nusantara",
+  },
+  "status": 200,
+  "vm": {
+    "articles": [
+      {
+        "author": {
+          "href": "/author/redaksi",
+          "label": "Redaksi Dapur",
+        },
+        "category": {
+          "href": "/category/sumatera",
+          "label": "Sumatera",
+        },
+        "excerpt": "Kunci rendang empuk: api kecil dan sabar.",
+        "format": "STANDARD",
+        "href": "/sumatera/rendang-padang-empuk",
+        "image": {
+          "alt": "Rendang di piring tanah liat",
+          "caption": null,
+          "credit": null,
+          "focalX": 0.45,
+          "focalY": 0.55,
+          "height": 1067,
+          "src": "/media/dapur-nusantara/2026/11/rendang.webp",
+          "width": 1600,
+        },
+        "isFeatured": true,
+        "publishedAt": {
+          "iso": "2026-11-11T00:00:00.000Z",
+          "label": "11 November 2026",
+        },
+        "title": "Rendang Padang yang empuk dalam 4 jam",
+      },
+    ],
+    "name": "Pedas",
+    "pagination": {
+      "nextHref": null,
+      "page": 1,
+      "pages": [],
+      "prevHref": null,
+      "totalPages": 1,
+    },
+    "view": "tag",
+  },
+}
+`;

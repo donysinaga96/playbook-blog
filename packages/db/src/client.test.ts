@@ -22,12 +22,12 @@ describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
     expect(rows[0]?.current_user).toBe('blog_app')
   })
 
-  it('query builder: domain tekno.local.test milik site kabar-tekno', async () => {
+  it('query builder: domain tekno.localhost milik site kabar-tekno', async () => {
     const rows = await db
       .select({ code: sites.code })
       .from(siteDomains)
       .innerJoin(sites, eq(sites.id, siteDomains.siteId))
-      .where(eq(siteDomains.domain, 'tekno.local.test'))
+      .where(eq(siteDomains.domain, 'tekno.localhost'))
     expect(rows).toEqual([{ code: 'kabar-tekno' }])
   })
 

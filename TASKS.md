@@ -9,12 +9,12 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 |---|---|---|
 | M0 — Fondasi | 10 / 10 | ✅ Lulus 17 Nov 2026 — pipeline #3078334327 (commit 9df99b4) |
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
-| M2 — Tampilan pertama | 28 / 30 | ⏳ Sedang dikerjakan |
+| M2 — Tampilan pertama | 30 / 30 | 🟡 Lulus lokal 19 Nov 2026 — menunggu pipeline CI (belum di-commit) |
 | M3 — Template kedua (titik evaluasi) | 0 / 3 | — |
 | M4 — Admin minimal | 0 / 5 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 4 | — |
 
-**Task berikutnya:** merinci dan mengerjakan M2. Task M2–M5 sengaja masih kasar dan dirinci saat milestone sebelumnya selesai.
+**Task berikutnya:** commit M2 dan pastikan pipeline CI hijau (gate M2), lalu merinci M3. Task M3–M5 sengaja masih kasar dan dirinci saat milestone sebelumnya selesai.
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -56,7 +56,7 @@ Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Ur
 
 Commit M1: ee02dea (koneksi DB, drizzle-kit pull, run_all.sh), 1537c45 (Zod block body v1, sites.settings, extractBodyText), fea423a (repository site/konten/menu + test isolasi).
 
-## M2 — Tampilan pertama ⏳
+## M2 — Tampilan pertama 🟡
 
 ### Pemeriksaan poin yang ada (19 Nov 2026)
 
@@ -111,10 +111,12 @@ Usulan A–E disetujui 19 Nov 2026 dan sudah dimasukkan ke rincian di bawah (dit
 - [x] Tambahan dari pengerjaan: kolom `seo` konten (title, description, canonical, og_image_id, robots) menimpa nilai otomatis; pencarian dan 404 `noindex`; tautan RSS dan favicon di `<head>`; repository `listSitemapEntries`; perbaikan pesan log media hilang (posisi block menyesatkan)
 
 **2.5 Test pembukti gate**
-- [ ] [E] Test SSR paralel dua domain: judul, logo, menu, dan kelas root tidak tertukar
-- [ ] [E] Snapshot test view model per jenis halaman
+- [x] [E] Test SSR paralel dua domain: judul, logo, menu, dan kelas root tidak tertukar — `pnpm --filter @framework/web gate` (240 request, 32 paralel, server hasil build), masuk CI job `build`; terbukti gagal saat state global disisipkan
+- [x] [E] Snapshot test view model per jenis halaman — `packages/core/src/views/view-models.snapshot.test.ts` (chrome dua site + 10 jenis halaman/redirect)
 
 **Gate:** dua domain dari satu server tampil berbeda; request paralel tidak saling tertukar.
+Lulus lokal 19 Nov 2026: `pnpm check` (376 test), smoke + gate di build produksi. Menunggu pipeline CI hijau.
+20 Nov 2026: domain dev pindah ke `*.localhost` (tanpa file hosts); diulang setelah `pnpm db:reset`: `pnpm check` (376 test), `pnpm db:test`, smoke dua domain, gate. Hidrasi diperiksa dengan Chromium headless (Playwright) di `pnpm dev`: 11 halaman di tiga domain, semuanya ter-hydrate tanpa peringatan mismatch atau page error.
 
 ## M3 — Template kedua (titik evaluasi)
 

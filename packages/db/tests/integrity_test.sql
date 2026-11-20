@@ -99,9 +99,9 @@ SELECT pg_temp.expect_error('logo site memakai media site lain', '23503', $q$
 
 \echo '--- 2. Keunikan dan format ---'
 SELECT pg_temp.expect_error('domain duplikat', '23505', $q$
-  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'tekno.local.test') $q$);
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'tekno.localhost') $q$);
 SELECT pg_temp.expect_error('domain huruf besar', '23514', $q$
-  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'Tekno.Local.Test') $q$);
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'Tekno.LocalHost') $q$);
 SELECT pg_temp.expect_error('domain dengan protokol', '23514', $q$
   INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'https://x.local.test') $q$);
 SELECT pg_temp.expect_error('domain dengan port', '23514', $q$

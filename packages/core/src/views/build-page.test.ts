@@ -43,7 +43,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
 
   async function build(code: string, url: string): Promise<PageResult> {
     const parsed = new URL(url, 'http://x')
-    const origin = code === 'kabar-tekno' ? 'https://tekno.local.test' : 'https://kuliner.local.test'
+    const origin = code === 'kabar-tekno' ? 'https://tekno.localhost' : 'https://kuliner.localhost'
     const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin }
     return builder.build(request)
   }
@@ -170,32 +170,32 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
     expect(page.seo).toEqual({
       title: 'Ponsel lipat makin murah: layak dibeli? | Kabar Tekno',
       description: 'Checklist sebelum membeli ponsel lipat.',
-      canonical: 'https://tekno.local.test/review/ponsel-lipat-makin-murah',
+      canonical: 'https://tekno.localhost/review/ponsel-lipat-makin-murah',
       robots: null,
       og: {
         type: 'article',
         title: 'Ponsel lipat makin murah: layak dibeli?',
         description: 'Checklist sebelum membeli ponsel lipat.',
-        url: 'https://tekno.local.test/review/ponsel-lipat-makin-murah',
-        image: { url: 'https://tekno.local.test/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat di atas meja', width: 1600, height: 900 },
+        url: 'https://tekno.localhost/review/ponsel-lipat-makin-murah',
+        image: { url: 'https://tekno.localhost/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat di atas meja', width: 1600, height: 900 },
         siteName: 'Kabar Tekno',
         locale: 'id_ID',
       },
       article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'] },
-      feedUrl: 'https://tekno.local.test/rss.xml',
+      feedUrl: 'https://tekno.localhost/rss.xml',
       favicon: null,
     })
   })
 
   it('SEO home, listing, pencarian, 404', async () => {
     const home = (await render('kabar-tekno', '/')).page.seo
-    expect(home).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon', description: 'Berita dan ulasan teknologi.', canonical: 'https://tekno.local.test/', robots: null, og: { type: 'website', title: 'Kabar Tekno', image: null } })
+    expect(home).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon', description: 'Berita dan ulasan teknologi.', canonical: 'https://tekno.localhost/', robots: null, og: { type: 'website', title: 'Kabar Tekno', image: null } })
     const second = (await render('kabar-tekno', '/?page=2')).page.seo
-    expect(second).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon – Halaman 2', canonical: 'https://tekno.local.test/?page=2' })
-    expect((await render('kabar-tekno', '/category/gadget')).page.seo).toMatchObject({ title: 'Gadget | Kabar Tekno', canonical: 'https://tekno.local.test/category/gadget' })
+    expect(second).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon – Halaman 2', canonical: 'https://tekno.localhost/?page=2' })
+    expect((await render('kabar-tekno', '/category/gadget')).page.seo).toMatchObject({ title: 'Gadget | Kabar Tekno', canonical: 'https://tekno.localhost/category/gadget' })
     expect((await render('kabar-tekno', '/search?q=ponsel')).page.seo).toMatchObject({ title: 'Pencarian: ponsel | Kabar Tekno', robots: 'noindex, follow' })
     expect((await render('kabar-tekno', '/tidak/ada')).page.seo).toMatchObject({ title: 'Halaman tidak ditemukan | Kabar Tekno', canonical: null, robots: 'noindex, follow' })
-    expect((await render('dapur-nusantara', '/p/kontak')).page.seo).toMatchObject({ title: 'Kontak - Dapur Nusantara', canonical: 'https://kuliner.local.test/p/kontak' })
+    expect((await render('dapur-nusantara', '/p/kontak')).page.seo).toMatchObject({ title: 'Kontak - Dapur Nusantara', canonical: 'https://kuliner.localhost/p/kontak' })
   })
 
   it('site kedua memakai datanya sendiri', async () => {

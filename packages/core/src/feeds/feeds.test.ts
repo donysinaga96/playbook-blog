@@ -51,34 +51,34 @@ describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role
   }
 
   it('sitemap kabar-tekno: URL absolut di origin primary, tanpa artikel terjadwal/draf, tanpa data site lain', async () => {
-    const xml = await feeds.sitemap(await siteOf('kabar-tekno'), 'https://tekno.local.test')
+    const xml = await feeds.sitemap(await siteOf('kabar-tekno'), 'https://tekno.localhost')
     const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1])
     expect(locs).toEqual([
-      'https://tekno.local.test/',
-      'https://tekno.local.test/kecerdasan-buatan/cara-kerja-model-bahasa',
-      'https://tekno.local.test/review/ponsel-lipat-makin-murah',
-      'https://tekno.local.test/p/tentang-kami',
-      'https://tekno.local.test/category/gadget',
-      'https://tekno.local.test/category/kecerdasan-buatan',
-      'https://tekno.local.test/category/review',
-      'https://tekno.local.test/tag/android',
-      'https://tekno.local.test/author/budi-santoso',
-      'https://tekno.local.test/author/redaksi',
+      'https://tekno.localhost/',
+      'https://tekno.localhost/kecerdasan-buatan/cara-kerja-model-bahasa',
+      'https://tekno.localhost/review/ponsel-lipat-makin-murah',
+      'https://tekno.localhost/p/tentang-kami',
+      'https://tekno.localhost/category/gadget',
+      'https://tekno.localhost/category/kecerdasan-buatan',
+      'https://tekno.localhost/category/review',
+      'https://tekno.localhost/tag/android',
+      'https://tekno.localhost/author/budi-santoso',
+      'https://tekno.localhost/author/redaksi',
     ])
     expect(xml).not.toContain('laptop-terbaik')
     expect(xml).not.toContain('rendang')
   })
 
   it('RSS dapur-nusantara: terbaru dulu, link absolut, penulis', async () => {
-    const xml = await feeds.rss(await siteOf('dapur-nusantara'), 'https://kuliner.local.test')
+    const xml = await feeds.rss(await siteOf('dapur-nusantara'), 'https://kuliner.localhost')
     expect([...xml.matchAll(/<link>([^<]+)<\/link>/g)].map((m) => m[1])).toEqual([
-      'https://kuliner.local.test/',
-      'https://kuliner.local.test/resep/sambal-matah-10-menit',
-      'https://kuliner.local.test/sumatera/rendang-padang-empuk',
+      'https://kuliner.localhost/',
+      'https://kuliner.localhost/resep/sambal-matah-10-menit',
+      'https://kuliner.localhost/sumatera/rendang-padang-empuk',
     ])
     expect(xml).toContain('<title>Dapur Nusantara</title>')
     expect(xml).toContain('<language>id-id</language>')
     expect(xml).toContain('<dc:creator>Redaksi Dapur</dc:creator>')
-    expect(xml).toContain('<atom:link href="https://kuliner.local.test/rss.xml" rel="self" type="application/rss+xml"/>')
+    expect(xml).toContain('<atom:link href="https://kuliner.localhost/rss.xml" rel="self" type="application/rss+xml"/>')
   })
 })

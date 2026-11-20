@@ -7,7 +7,8 @@
 #           PostgreSQL 18 sebagai service
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed
-#           (health 200 + halaman tekno/kuliner dirender)
+#           (health 200 + halaman tekno/kuliner dirender), lalu gate M2:
+#           request SSR paralel ke dua domain tidak saling tertukar
 # =====================================================================
 
 stages:
@@ -106,7 +107,9 @@ build:
     #    (menangkap bug yang hanya muncul di bundle produksi).
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - sh packages/db/scripts/setup.sh
-    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.local.test,kuliner.local.test pnpm --filter @framework/web smoke
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+    # 3. Gate M2: request paralel ke dua domain tidak saling tertukar.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
   artifacts:
     paths:
       - apps/web/.output/

@@ -42,26 +42,26 @@ describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
 
   describe('site: resolver dan theme', () => {
     it('Host -> site, termasuk logo dan settings tervalidasi', async () => {
-      const r = await siteRepo.findByDomain('tekno.local.test')
-      expect(r).toMatchObject({ matchedDomain: 'tekno.local.test', primaryDomain: 'tekno.local.test', isPrimary: true })
+      const r = await siteRepo.findByDomain('tekno.localhost')
+      expect(r).toMatchObject({ matchedDomain: 'tekno.localhost', primaryDomain: 'tekno.localhost', isPrimary: true })
       expect(r?.site).toMatchObject({ id: A, code: 'kabar-tekno', name: 'Kabar Tekno', timezone: 'Asia/Jakarta' })
       expect(r?.site.settings.seo.titleTemplate).toBe('%s | Kabar Tekno')
       expect(r?.site.logo?.storageKey).toBe('kabar-tekno/logo.svg')
     })
 
     it('alias www ditemukan, ditandai bukan primary, dan menyebut domain primary', async () => {
-      const r = await siteRepo.findByDomain('WWW.Tekno.Local.Test:8080')
-      expect(r).toMatchObject({ matchedDomain: 'www.tekno.local.test', primaryDomain: 'tekno.local.test', isPrimary: false })
+      const r = await siteRepo.findByDomain('WWW.Tekno.LocalHost:8080')
+      expect(r).toMatchObject({ matchedDomain: 'www.tekno.localhost', primaryDomain: 'tekno.localhost', isPrimary: false })
       expect(r?.site.id).toBe(A)
     })
 
     it('domain site lain tidak tertukar (logo juga milik site sendiri)', async () => {
-      const r = await siteRepo.findByDomain('kuliner.local.test')
+      const r = await siteRepo.findByDomain('kuliner.localhost')
       expect(r?.site).toMatchObject({ id: B, code: 'dapur-nusantara' })
       expect(r?.site.logo?.storageKey).toBe('dapur-nusantara/logo.svg')
     })
 
-    it.each(['tidak-ada.local.test', '', 'localhost', 'tekno.local.test/x'])('host %j tidak ditemukan', async (host) => {
+    it.each(['tidak-ada.local.test', '', 'localhost', 'tekno.localhost/x'])('host %j tidak ditemukan', async (host) => {
       expect(await siteRepo.findByDomain(host)).toBeNull()
     })
 

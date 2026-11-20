@@ -131,7 +131,8 @@ allowBuilds:
     "db:test": "docker compose --profile test run --rm db-test",
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
-    "db:adminer": "docker compose --profile tools up -d adminer"
+    "db:adminer": "docker compose --profile tools up -d adminer",
+    "tutorial": "node docs/tutorial/build.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -491,9 +492,11 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Melihat query lambat (> 250 ms) | `docker compose logs -f db` |
 | Mematikan (data tetap) | `docker compose down` |
 | Mengulang dari nol (data dev hilang) | `docker compose down -v && docker compose up -d` |
-| Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.local.test:3000 (lihat "Domain site di dev"), cek `/api/health` |
+| Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.localhost:3000 (lihat "Domain site di dev"), cek `/api/health` |
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+| Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
+| Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
 
 ## Aplikasi web
 
@@ -515,26 +518,25 @@ tidak butuh site. Domain dari seed:
 
 | Domain | Site | Perilaku |
 | --- | --- | --- |
-| `tekno.local.test` | Kabar Tekno | Dilayani |
-| `www.tekno.local.test` | Kabar Tekno | 301 ke `tekno.local.test` (alias) |
-| `kuliner.local.test` | Dapur Nusantara | Dilayani |
+| `tekno.localhost` | Kabar Tekno | Dilayani |
+| `www.tekno.localhost` | Kabar Tekno | 301 ke `tekno.localhost` (alias) |
+| `kuliner.localhost` | Dapur Nusantara | Dilayani |
 
-Untuk membukanya di browser, tambahkan baris ini ke `/etc/hosts`. Di WSL dengan browser
-Windows, tambahkan ke `C:\Windows\System32\drivers\etc\hosts` (sebagai Administrator):
+Domain berakhiran `.localhost` selalu mengarah ke komputer sendiri: Chrome, Edge, dan Firefox
+menjawabnya tanpa DNS dan tanpa file hosts, jadi tidak perlu hak Administrator. Setelah
+`pnpm dev`, langsung buka http://tekno.localhost:3000 atau http://kuliner.localhost:3000 (ketik
+lengkap dengan `http://`). Di WSL, browser Windows sampai ke server WSL lewat
+`networkingMode=mirrored` di `.wslconfig`.
 
-```
-127.0.0.1 tekno.local.test www.tekno.local.test kuliner.local.test
-```
-
-Tanpa mengubah file hosts, cukup kirim header Host dengan curl:
+Dari terminal, kirim header Host dengan curl:
 
 ```bash
-curl -H 'Host: kuliner.local.test' http://127.0.0.1:3000/
+curl -H 'Host: kuliner.localhost' http://127.0.0.1:3000/
 ```
 
-Dev server Vite hanya mengizinkan `localhost` dan `*.local.test` (`vite.server.allowedHosts` di
-`nuxt.config.ts`). Host lain mendapat 403 `Blocked request` dari Vite sebelum sampai ke
-middleware; di server produksi, Host lain mendapat 404.
+Dev server Vite secara bawaan hanya mengizinkan `localhost`, subdomain `.localhost`, dan alamat
+IP; Host lain mendapat 403 `Blocked request` sebelum sampai ke middleware. Karena itu domain dev
+memakai `.localhost`. Di server produksi, Host yang tidak terdaftar mendapat 404.
 
 Mode single-site: `SITE_MODE=single` dan `SITE_CODE=<sites.code>`. Domain tetap dicek, jadi
 domain milik site lain di database yang sama dijawab 404. Config yang salah (mis. `SITE_MODE`
@@ -553,13 +555,13 @@ Skema URL ada di [ADR-006](adr/006-skema-url.md); halaman dirender penuh di serv
 
 | Halaman | Contoh |
 | --- | --- |
-| Home | http://tekno.local.test:3000/ |
-| Artikel (`settings.permalink`) | http://tekno.local.test:3000/review/ponsel-lipat-makin-murah |
-| Kategori | http://tekno.local.test:3000/category/gadget |
-| Tag, penulis | http://tekno.local.test:3000/tag/android, http://tekno.local.test:3000/author/budi-santoso |
-| Halaman statis | http://kuliner.local.test:3000/p/kontak |
-| Pencarian | http://tekno.local.test:3000/search?q=ponsel |
-| Redirect lama (tabel `redirects`) | http://tekno.local.test:3000/gadget/ponsel-lipat-murah → 301 |
+| Home | http://tekno.localhost:3000/ |
+| Artikel (`settings.permalink`) | http://tekno.localhost:3000/review/ponsel-lipat-makin-murah |
+| Kategori | http://tekno.localhost:3000/category/gadget |
+| Tag, penulis | http://tekno.localhost:3000/tag/android, http://tekno.localhost:3000/author/budi-santoso |
+| Halaman statis | http://kuliner.localhost:3000/p/kontak |
+| Pencarian | http://tekno.localhost:3000/search?q=ponsel |
+| Redirect lama (tabel `redirects`) | http://tekno.localhost:3000/gadget/ponsel-lipat-murah → 301 |
 
 View model dibangun di `server/middleware/site.ts` lewat `createPageBuilder` (`packages/core`),
 lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicatat di log server:
@@ -576,7 +578,7 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
   `og_image_id`, `robots`) menimpa nilai otomatis; nilai yang tidak valid diabaikan per key.
 - Pencarian dan 404 diberi `noindex, follow`; `robots.txt` juga melarang crawl `/search` dan
   `/api/`.
-- Feed per domain: http://tekno.local.test:3000/sitemap.xml, `/rss.xml` (20 artikel terbaru),
+- Feed per domain: http://tekno.localhost:3000/sitemap.xml, `/rss.xml` (20 artikel terbaru),
   `/robots.txt`. Artikel terjadwal baru muncul setelah `published_at` lewat. Tag dan penulis
   tanpa artikel tampil tidak masuk sitemap.
 - Embed YouTube memakai `youtube-nocookie.com`, Vimeo memakai `dnt=1`. X tampil sebagai tautan
@@ -1507,9 +1509,9 @@ SELECT pg_temp.expect_error('logo site memakai media site lain', '23503', $q$
 
 \echo '--- 2. Keunikan dan format ---'
 SELECT pg_temp.expect_error('domain duplikat', '23505', $q$
-  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'tekno.local.test') $q$);
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'tekno.localhost') $q$);
 SELECT pg_temp.expect_error('domain huruf besar', '23514', $q$
-  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'Tekno.Local.Test') $q$);
+  INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'Tekno.LocalHost') $q$);
 SELECT pg_temp.expect_error('domain dengan protokol', '23514', $q$
   INSERT INTO site_domains (site_id, domain) VALUES ('01930000-0000-7000-8000-000000000102', 'https://x.local.test') $q$);
 SELECT pg_temp.expect_error('domain dengan port', '23514', $q$
@@ -2636,12 +2638,12 @@ describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
     expect(rows[0]?.current_user).toBe('blog_app')
   })
 
-  it('query builder: domain tekno.local.test milik site kabar-tekno', async () => {
+  it('query builder: domain tekno.localhost milik site kabar-tekno', async () => {
     const rows = await db
       .select({ code: sites.code })
       .from(siteDomains)
       .innerJoin(sites, eq(sites.id, siteDomains.siteId))
-      .where(eq(siteDomains.domain, 'tekno.local.test'))
+      .where(eq(siteDomains.domain, 'tekno.localhost'))
     expect(rows).toEqual([{ code: 'kabar-tekno' }])
   })
 
@@ -4259,11 +4261,11 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, normalizePaging, toPage } from './typ
 
 describe('normalizeHost', () => {
   it.each([
-    ['tekno.local.test', 'tekno.local.test'],
-    ['TEKNO.Local.Test', 'tekno.local.test'],
-    ['tekno.local.test:3000', 'tekno.local.test'],
-    ['tekno.local.test.', 'tekno.local.test'],
-    ['  www.tekno.local.test  ', 'www.tekno.local.test'],
+    ['tekno.localhost', 'tekno.localhost'],
+    ['TEKNO.LocalHost', 'tekno.localhost'],
+    ['tekno.localhost:3000', 'tekno.localhost'],
+    ['tekno.localhost.', 'tekno.localhost'],
+    ['  www.tekno.localhost  ', 'www.tekno.localhost'],
   ])('%s -> %s', (input, expected) => {
     expect(normalizeHost(input)).toBe(expected)
   })
@@ -4272,10 +4274,10 @@ describe('normalizeHost', () => {
     '',
     '   ',
     'localhost', // harus punya titik, sama dengan CHECK site_domains_domain_format
-    'tekno.local.test/path',
-    'user@tekno.local.test',
+    'tekno.localhost/path',
+    'user@tekno.localhost',
     'tekno local.test',
-    'http://tekno.local.test',
+    'http://tekno.localhost',
     '-bad.local.test',
     `${'a'.repeat(64)}.test`,
   ])('menolak %j', (input) => {
@@ -4374,26 +4376,26 @@ describe.skipIf(!hasDb)('repository (database dev, role blog_app)', () => {
 
   describe('site: resolver dan theme', () => {
     it('Host -> site, termasuk logo dan settings tervalidasi', async () => {
-      const r = await siteRepo.findByDomain('tekno.local.test')
-      expect(r).toMatchObject({ matchedDomain: 'tekno.local.test', primaryDomain: 'tekno.local.test', isPrimary: true })
+      const r = await siteRepo.findByDomain('tekno.localhost')
+      expect(r).toMatchObject({ matchedDomain: 'tekno.localhost', primaryDomain: 'tekno.localhost', isPrimary: true })
       expect(r?.site).toMatchObject({ id: A, code: 'kabar-tekno', name: 'Kabar Tekno', timezone: 'Asia/Jakarta' })
       expect(r?.site.settings.seo.titleTemplate).toBe('%s | Kabar Tekno')
       expect(r?.site.logo?.storageKey).toBe('kabar-tekno/logo.svg')
     })
 
     it('alias www ditemukan, ditandai bukan primary, dan menyebut domain primary', async () => {
-      const r = await siteRepo.findByDomain('WWW.Tekno.Local.Test:8080')
-      expect(r).toMatchObject({ matchedDomain: 'www.tekno.local.test', primaryDomain: 'tekno.local.test', isPrimary: false })
+      const r = await siteRepo.findByDomain('WWW.Tekno.LocalHost:8080')
+      expect(r).toMatchObject({ matchedDomain: 'www.tekno.localhost', primaryDomain: 'tekno.localhost', isPrimary: false })
       expect(r?.site.id).toBe(A)
     })
 
     it('domain site lain tidak tertukar (logo juga milik site sendiri)', async () => {
-      const r = await siteRepo.findByDomain('kuliner.local.test')
+      const r = await siteRepo.findByDomain('kuliner.localhost')
       expect(r?.site).toMatchObject({ id: B, code: 'dapur-nusantara' })
       expect(r?.site.logo?.storageKey).toBe('dapur-nusantara/logo.svg')
     })
 
-    it.each(['tidak-ada.local.test', '', 'localhost', 'tekno.local.test/x'])('host %j tidak ditemukan', async (host) => {
+    it.each(['tidak-ada.local.test', '', 'localhost', 'tekno.localhost/x'])('host %j tidak ditemukan', async (host) => {
       expect(await siteRepo.findByDomain(host)).toBeNull()
     })
 
@@ -4931,7 +4933,8 @@ it.skipIf(!process.env['CI'])('di CI, DATABASE_URL wajib ada agar test database 
 #           PostgreSQL 18 sebagai service
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed
-#           (health 200 + halaman tekno/kuliner dirender)
+#           (health 200 + halaman tekno/kuliner dirender), lalu gate M2:
+#           request SSR paralel ke dua domain tidak saling tertukar
 # =====================================================================
 
 stages:
@@ -5030,7 +5033,9 @@ build:
     #    (menangkap bug yang hanya muncul di bundle produksi).
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - sh packages/db/scripts/setup.sh
-    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.local.test,kuliner.local.test pnpm --filter @framework/web smoke
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+    # 3. Gate M2: request paralel ke dua domain tidak saling tertukar.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
   artifacts:
     paths:
       - apps/web/.output/
@@ -5112,7 +5117,8 @@ pnpm install
     "preview": "node --env-file-if-exists=../../.env .output/server/index.mjs",
     "postinstall": "nuxt prepare",
     "typecheck": "nuxt typecheck",
-    "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs"
+    "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs",
+    "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs"
   },
   "dependencies": {
     "@framework/core": "workspace:*",
@@ -5131,7 +5137,7 @@ pnpm install
 }
 ```
 
-5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Opsi `vite.server.allowedHosts` dijelaskan di bab "Memilih Site dari Domain Request":
+5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime.:
 
 `apps/web/nuxt.config.ts`
 
@@ -5148,9 +5154,6 @@ export default defineNuxtConfig({
   nitro: {
     externals: { inline: ['@framework/core', '@framework/db'] },
   },
-  // Dev server Vite menolak Host selain localhost (403). Domain site dev
-  // (seed) berakhiran .local.test. Tidak berlaku untuk server produksi.
-  vite: { server: { allowedHosts: ['.local.test'] } },
 })
 ```
 
@@ -5373,6 +5376,8 @@ pnpm typecheck     # server/api/health.get.ts: error TS2322
 
    Pemeriksaan halaman (`SMOKE_HOSTS`) ditambahkan di bab "Membangun Sistem Template", setelah ada halaman yang bisa dirender.
 
+Versi di bawah sudah memakai modul bersama `scripts/lib/built-server.mjs` dari bab "Membuktikan Isolasi Antar-Site".
+
 `apps/web/scripts/smoke-build.mjs`
 
 ```js
@@ -5389,48 +5394,21 @@ pnpm typecheck     # server/api/health.get.ts: error TS2322
 // SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
 // 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
 // muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
 
 const port = process.env.SMOKE_PORT ?? '3999'
 const expected = Number(process.env.EXPECT_STATUS ?? '200')
-const timeoutMs = 30_000
-const entry = fileURLToPath(new URL('../.output/server/index.mjs', import.meta.url))
-const url = `http://127.0.0.1:${port}/api/health`
 const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
 
-const server = spawn(process.execPath, [entry], {
-  env: { ...process.env, PORT: port, HOST: '127.0.0.1' },
-  stdio: ['ignore', 'inherit', 'inherit'],
-})
-
-let exited = false
-let stopping = false
-server.on('exit', (code) => {
-  exited = true
-  if (!stopping) console.error(`[smoke] server berhenti sendiri (exit ${code})`)
-})
-
-async function waitForResponse() {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline && !exited) {
-    try {
-      return await fetch(url)
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
-  }
-  return undefined
-}
-
+const server = await startBuiltServer({ port, label: 'smoke' })
 let failed = true
 try {
-  const response = await waitForResponse()
+  const { response, healthUrl } = server
   if (!response) {
-    console.error(`[smoke] GAGAL: ${url} tidak menjawab dalam ${timeoutMs / 1000} detik`)
+    console.error(`[smoke] GAGAL: ${healthUrl} tidak menjawab`)
   } else {
     const body = await response.text()
-    console.log(`[smoke] ${url} -> ${response.status} ${body}`)
+    console.log(`[smoke] ${healthUrl} -> ${response.status} ${body}`)
     if (response.status !== expected) {
       console.error(`[smoke] GAGAL: status ${response.status}, seharusnya ${expected}`)
     } else if (!body.includes('"status"')) {
@@ -5441,8 +5419,7 @@ try {
     }
   }
 } finally {
-  stopping = true
-  if (!exited) server.kill('SIGTERM')
+  server.stop()
 }
 process.exitCode = failed ? 1 : 0
 
@@ -5450,9 +5427,7 @@ process.exitCode = failed ? 1 : 0
 async function checkPages() {
   let ok = true
   for (const host of pageHosts) {
-    const target = `http://127.0.0.1:${port}/`
-    // fetch() tidak mengizinkan header Host; pakai node:http.
-    const { status, body } = await getWithHost(target, host)
+    const { status, body } = await getWithHost(port, '/', host)
     const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
     console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
     if (status !== 200 || !wrapper) {
@@ -5461,20 +5436,6 @@ async function checkPages() {
     }
   }
   return ok
-}
-
-async function getWithHost(target, host) {
-  const { request } = await import('node:http')
-  return new Promise((resolve, reject) => {
-    const req = request(target, { headers: { host } }, (res) => {
-      let body = ''
-      res.setEncoding('utf8')
-      res.on('data', (chunk) => { body += chunk })
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
-    })
-    req.on('error', reject)
-    req.end()
-  })
 }
 ```
 
@@ -5686,7 +5647,7 @@ describe('parseSiteMode', () => {
 
 7. Uji resolver dalam dua lapis:
    - Unit test dengan repository palsu, untuk semua cabang keputusan: kedua mode, Host huruf besar dan ber-port, alias, alias tanpa primary, Host tak dikenal atau tidak valid, dan domain site lain di mode single.
-   - Test terhadap database seed (dilewati tanpa `DATABASE_URL`), untuk memastikan normalisasi Host dan alias `www.tekno.local.test` bekerja dengan data sungguhan.
+   - Test terhadap database seed (dilewati tanpa `DATABASE_URL`), untuk memastikan normalisasi Host dan alias `www.tekno.localhost` bekerja dengan data sungguhan.
 
 `packages/core/src/site/resolve.test.ts`
 
@@ -5782,22 +5743,22 @@ describe.skipIf(!process.env['DATABASE_URL'])('resolveSiteRequest (database dev,
   afterAll(() => db.$client.end())
 
   it('multi: dua site dari seed', async () => {
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'tekno.local.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'kabar-tekno' } } })
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'kuliner.local.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'dapur-nusantara' } } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'tekno.localhost')).toMatchObject({ kind: 'site', resolved: { site: { code: 'kabar-tekno' } } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'kuliner.localhost')).toMatchObject({ kind: 'site', resolved: { site: { code: 'dapur-nusantara' } } })
   })
 
   it('huruf besar, port, dan titik di ujung', async () => {
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'TEKNO.Local.Test.:3000')).toMatchObject({ kind: 'site', resolved: { matchedDomain: 'tekno.local.test' } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'TEKNO.LocalHost.:3000')).toMatchObject({ kind: 'site', resolved: { matchedDomain: 'tekno.localhost' } })
   })
 
   it('alias www -> redirect 301 ke primary', async () => {
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'www.tekno.local.test')).toMatchObject({ kind: 'redirect', toHost: 'tekno.local.test' })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'www.tekno.localhost')).toMatchObject({ kind: 'redirect', toHost: 'tekno.localhost' })
   })
 
   it('single dapur-nusantara: domain kabar-tekno ditolak', async () => {
     const mode = { mode: 'single', siteCode: 'dapur-nusantara' } as const
-    expect(await resolveSiteRequest(mode, sites, 'kuliner.local.test')).toMatchObject({ kind: 'site' })
-    expect(await resolveSiteRequest(mode, sites, 'tekno.local.test')).toEqual({ kind: 'not-found', reason: 'other-site' })
+    expect(await resolveSiteRequest(mode, sites, 'kuliner.localhost')).toMatchObject({ kind: 'site' })
+    expect(await resolveSiteRequest(mode, sites, 'tekno.localhost')).toEqual({ kind: 'not-found', reason: 'other-site' })
   })
 
   it('Host tak dikenal', async () => {
@@ -5952,11 +5913,7 @@ export default defineEventHandler(async (event) => {
   },
 ```
 
-13. Izinkan domain dev di dev server Vite. Vite menolak Host selain `localhost` dengan 403 `Blocked request`. Domain seed berakhiran `.local.test`, jadi tambahkan ke `nuxt.config.ts`:
-
-```ts
-  vite: { server: { allowedHosts: ['.local.test'] } },
-```
+13. Pahami mengapa domain seed berakhiran `.localhost`. Dev server Vite menolak Host selain `localhost`, subdomain `.localhost`, dan alamat IP dengan 403 `Blocked request`. Browser juga selalu mengarahkan `*.localhost` ke komputer sendiri tanpa DNS. Jadi domain seed `tekno.localhost` dan `kuliner.localhost` bisa langsung dibuka tanpa mengubah `nuxt.config.ts` dan tanpa file hosts, yang di laptop kantor sering tidak bisa diubah karena butuh hak Administrator.
 
 14. Tambahkan `SITE_MODE=multi` ke `.env` (dan `.env.example`), lalu tambahkan juga `SITE_MODE: multi` ke variabel job CI `build`. Tanpa itu, smoke test gagal karena server tidak mau start.
 
@@ -5974,23 +5931,19 @@ SITE_MODE=multi SITE_CODE=kabar-tekno node --env-file=.env apps/web/.output/serv
 ```bash
 PORT=3998 node --env-file=.env apps/web/.output/server/index.mjs
 
-curl -i -H 'Host: tekno.local.test' http://127.0.0.1:3998/            # 200, <h1>Kabar Tekno</h1>
-curl -i -H 'Host: TEKNO.Local.Test:3998' http://127.0.0.1:3998/       # 200, Host dinormalisasi
-curl -i -H 'Host: www.tekno.local.test:3998' http://127.0.0.1:3998/a  # 301 -> http://tekno.local.test:3998/a
+curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 200, <h1>Kabar Tekno</h1>
+curl -i -H 'Host: TEKNO.LocalHost:3998' http://127.0.0.1:3998/       # 200, Host dinormalisasi
+curl -i -H 'Host: www.tekno.localhost:3998' http://127.0.0.1:3998/a  # 301 -> http://tekno.localhost:3998/a
 curl -i -H 'Host: evil.example.com' http://127.0.0.1:3998/            # 404 "Situs tidak ditemukan."
 curl -i -H 'Host: evil.example.com' http://127.0.0.1:3998/api/health  # 200, health tidak butuh site
 
 # Mode single: domain site lain ditolak
 SITE_MODE=single SITE_CODE=dapur-nusantara PORT=3998 node --env-file=.env apps/web/.output/server/index.mjs
-curl -i -H 'Host: kuliner.local.test' http://127.0.0.1:3998/          # 200, <h1>Dapur Nusantara</h1>
-curl -i -H 'Host: tekno.local.test' http://127.0.0.1:3998/            # 404
+curl -i -H 'Host: kuliner.localhost' http://127.0.0.1:3998/          # 200, <h1>Dapur Nusantara</h1>
+curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 ```
 
-17. Untuk membuka site di browser, daftarkan domain seed ke file hosts (`/etc/hosts`, atau `C:\Windows\System32\drivers\etc\hosts` bila memakai browser Windows dengan WSL), lalu buka http://tekno.local.test:3000 setelah `pnpm dev`:
-
-```
-127.0.0.1 tekno.local.test www.tekno.local.test kuliner.local.test
-```
+17. Buka site di browser setelah `pnpm dev`: http://tekno.localhost:3000 dan http://kuliner.localhost:3000. Ketik lengkap dengan `http://`. Bila memakai WSL dengan browser Windows, pastikan `networkingMode=mirrored` ada di `%USERPROFILE%\.wslconfig` agar browser Windows sampai ke server di WSL.
 
 18. Jalankan `pnpm check` dan smoke test build. Semuanya harus hijau.
 
@@ -9371,6 +9324,8 @@ function placeholderSvg(name: string): string {
 
 33. Perluas smoke test build dengan `SMOKE_HOSTS`: untuk setiap domain, halaman `/` harus 200 dan memuat wrapper template. Smoke test lama hanya memanggil `/api/health`, sehingga tidak menangkap bug bundle SSR di langkah 27:
 
+Versi di bawah sudah memakai modul bersama `scripts/lib/built-server.mjs` dari bab "Membuktikan Isolasi Antar-Site".
+
 `apps/web/scripts/smoke-build.mjs`
 
 ```js
@@ -9387,48 +9342,21 @@ function placeholderSvg(name: string): string {
 // SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
 // 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
 // muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
 
 const port = process.env.SMOKE_PORT ?? '3999'
 const expected = Number(process.env.EXPECT_STATUS ?? '200')
-const timeoutMs = 30_000
-const entry = fileURLToPath(new URL('../.output/server/index.mjs', import.meta.url))
-const url = `http://127.0.0.1:${port}/api/health`
 const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
 
-const server = spawn(process.execPath, [entry], {
-  env: { ...process.env, PORT: port, HOST: '127.0.0.1' },
-  stdio: ['ignore', 'inherit', 'inherit'],
-})
-
-let exited = false
-let stopping = false
-server.on('exit', (code) => {
-  exited = true
-  if (!stopping) console.error(`[smoke] server berhenti sendiri (exit ${code})`)
-})
-
-async function waitForResponse() {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline && !exited) {
-    try {
-      return await fetch(url)
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
-  }
-  return undefined
-}
-
+const server = await startBuiltServer({ port, label: 'smoke' })
 let failed = true
 try {
-  const response = await waitForResponse()
+  const { response, healthUrl } = server
   if (!response) {
-    console.error(`[smoke] GAGAL: ${url} tidak menjawab dalam ${timeoutMs / 1000} detik`)
+    console.error(`[smoke] GAGAL: ${healthUrl} tidak menjawab`)
   } else {
     const body = await response.text()
-    console.log(`[smoke] ${url} -> ${response.status} ${body}`)
+    console.log(`[smoke] ${healthUrl} -> ${response.status} ${body}`)
     if (response.status !== expected) {
       console.error(`[smoke] GAGAL: status ${response.status}, seharusnya ${expected}`)
     } else if (!body.includes('"status"')) {
@@ -9439,8 +9367,7 @@ try {
     }
   }
 } finally {
-  stopping = true
-  if (!exited) server.kill('SIGTERM')
+  server.stop()
 }
 process.exitCode = failed ? 1 : 0
 
@@ -9448,9 +9375,7 @@ process.exitCode = failed ? 1 : 0
 async function checkPages() {
   let ok = true
   for (const host of pageHosts) {
-    const target = `http://127.0.0.1:${port}/`
-    // fetch() tidak mengizinkan header Host; pakai node:http.
-    const { status, body } = await getWithHost(target, host)
+    const { status, body } = await getWithHost(port, '/', host)
     const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
     console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
     if (status !== 200 || !wrapper) {
@@ -9460,40 +9385,26 @@ async function checkPages() {
   }
   return ok
 }
-
-async function getWithHost(target, host) {
-  const { request } = await import('node:http')
-  return new Promise((resolve, reject) => {
-    const req = request(target, { headers: { host } }, (res) => {
-      let body = ''
-      res.setEncoding('utf8')
-      res.on('data', (chunk) => { body += chunk })
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
-    })
-    req.on('error', reject)
-    req.end()
-  })
-}
 ```
 
-34. Ubah job CI `build` agar memakai PostgreSQL ber-seed (file lengkap di bab CI). Smoke test dijalankan dua kali: tanpa database (health 503, bukan crash) dan dengan database (health 200 + halaman `tekno.local.test` dan `kuliner.local.test`).
+34. Ubah job CI `build` agar memakai PostgreSQL ber-seed (file lengkap di bab CI). Smoke test dijalankan dua kali: tanpa database (health 503, bukan crash) dan dengan database (health 200 + halaman `tekno.localhost` dan `kuliner.localhost`).
 
 35. Uji di dev dan produksi:
 
 ```bash
 pnpm dev
-curl -s -H 'Host: tekno.local.test' http://127.0.0.1:3000/ | grep -o 'class="tpl[^"]*"'
+curl -s -H 'Host: tekno.localhost' http://127.0.0.1:3000/ | grep -o 'class="tpl[^"]*"'
 # class="tpl tpl-magazine"
-curl -s -H 'Host: kuliner.local.test' http://127.0.0.1:3000/ | grep -o '<style data-hid="theme-tokens">[^<]*'
+curl -s -H 'Host: kuliner.localhost' http://127.0.0.1:3000/ | grep -o '<style data-hid="theme-tokens">[^<]*'
 # .tpl-base{--color-primary:#b3261e;...;--font-heading:"Merriweather";--font-body:"Source Sans 3";...}
 # log server: [theme] site dapur-nusantara: template "news" tidak terdaftar, memakai base
 
-curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: kuliner.local.test' http://127.0.0.1:3000/media/kabar-tekno/logo.svg
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: kuliner.localhost' http://127.0.0.1:3000/media/kabar-tekno/logo.svg
 # 404: media site lain
 
 pnpm build
 ls apps/web/.output/public/_nuxt/*.woff2 | head    # font di-self-host
-SMOKE_HOSTS=tekno.local.test,kuliner.local.test pnpm --filter @framework/web smoke
+SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 ```
 
 36. Jalankan `pnpm check`. Lint, typecheck (root, template, Nuxt), dan semua test harus hijau.
@@ -10494,7 +10405,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
 
   async function build(code: string, url: string): Promise<PageResult> {
     const parsed = new URL(url, 'http://x')
-    const origin = code === 'kabar-tekno' ? 'https://tekno.local.test' : 'https://kuliner.local.test'
+    const origin = code === 'kabar-tekno' ? 'https://tekno.localhost' : 'https://kuliner.localhost'
     const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin }
     return builder.build(request)
   }
@@ -10621,32 +10532,32 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
     expect(page.seo).toEqual({
       title: 'Ponsel lipat makin murah: layak dibeli? | Kabar Tekno',
       description: 'Checklist sebelum membeli ponsel lipat.',
-      canonical: 'https://tekno.local.test/review/ponsel-lipat-makin-murah',
+      canonical: 'https://tekno.localhost/review/ponsel-lipat-makin-murah',
       robots: null,
       og: {
         type: 'article',
         title: 'Ponsel lipat makin murah: layak dibeli?',
         description: 'Checklist sebelum membeli ponsel lipat.',
-        url: 'https://tekno.local.test/review/ponsel-lipat-makin-murah',
-        image: { url: 'https://tekno.local.test/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat di atas meja', width: 1600, height: 900 },
+        url: 'https://tekno.localhost/review/ponsel-lipat-makin-murah',
+        image: { url: 'https://tekno.localhost/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat di atas meja', width: 1600, height: 900 },
         siteName: 'Kabar Tekno',
         locale: 'id_ID',
       },
       article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'] },
-      feedUrl: 'https://tekno.local.test/rss.xml',
+      feedUrl: 'https://tekno.localhost/rss.xml',
       favicon: null,
     })
   })
 
   it('SEO home, listing, pencarian, 404', async () => {
     const home = (await render('kabar-tekno', '/')).page.seo
-    expect(home).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon', description: 'Berita dan ulasan teknologi.', canonical: 'https://tekno.local.test/', robots: null, og: { type: 'website', title: 'Kabar Tekno', image: null } })
+    expect(home).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon', description: 'Berita dan ulasan teknologi.', canonical: 'https://tekno.localhost/', robots: null, og: { type: 'website', title: 'Kabar Tekno', image: null } })
     const second = (await render('kabar-tekno', '/?page=2')).page.seo
-    expect(second).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon – Halaman 2', canonical: 'https://tekno.local.test/?page=2' })
-    expect((await render('kabar-tekno', '/category/gadget')).page.seo).toMatchObject({ title: 'Gadget | Kabar Tekno', canonical: 'https://tekno.local.test/category/gadget' })
+    expect(second).toMatchObject({ title: 'Kabar Tekno – Teknologi tanpa jargon – Halaman 2', canonical: 'https://tekno.localhost/?page=2' })
+    expect((await render('kabar-tekno', '/category/gadget')).page.seo).toMatchObject({ title: 'Gadget | Kabar Tekno', canonical: 'https://tekno.localhost/category/gadget' })
     expect((await render('kabar-tekno', '/search?q=ponsel')).page.seo).toMatchObject({ title: 'Pencarian: ponsel | Kabar Tekno', robots: 'noindex, follow' })
     expect((await render('kabar-tekno', '/tidak/ada')).page.seo).toMatchObject({ title: 'Halaman tidak ditemukan | Kabar Tekno', canonical: null, robots: 'noindex, follow' })
-    expect((await render('dapur-nusantara', '/p/kontak')).page.seo).toMatchObject({ title: 'Kontak - Dapur Nusantara', canonical: 'https://kuliner.local.test/p/kontak' })
+    expect((await render('dapur-nusantara', '/p/kontak')).page.seo).toMatchObject({ title: 'Kontak - Dapur Nusantara', canonical: 'https://kuliner.localhost/p/kontak' })
   })
 
   it('site kedua memakai datanya sendiri', async () => {
@@ -10998,7 +10909,7 @@ pnpm dev
 for p in / /review/ponsel-lipat-makin-murah /gadget/ponsel-lipat-makin-murah /gadget/ponsel-lipat-murah \
          /category/gadget /category/gadget/ /tag/android /author/budi-santoso /p/tentang-kami \
          '/search?q=ponsel' '/?page=9' /tidak/ada; do
-  curl -s -o /dev/null -w "%{http_code} %{redirect_url}  $p\n" -H 'Host: tekno.local.test' "http://127.0.0.1:3000$p"
+  curl -s -o /dev/null -w "%{http_code} %{redirect_url}  $p\n" -H 'Host: tekno.localhost' "http://127.0.0.1:3000$p"
 done
 # 200 untuk halaman yang ada; 301 untuk path non-kanonik, redirect lama, dan slash di ujung;
 # 404 untuk ?page=9 dan /tidak/ada
@@ -11621,35 +11532,35 @@ describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role
   }
 
   it('sitemap kabar-tekno: URL absolut di origin primary, tanpa artikel terjadwal/draf, tanpa data site lain', async () => {
-    const xml = await feeds.sitemap(await siteOf('kabar-tekno'), 'https://tekno.local.test')
+    const xml = await feeds.sitemap(await siteOf('kabar-tekno'), 'https://tekno.localhost')
     const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1])
     expect(locs).toEqual([
-      'https://tekno.local.test/',
-      'https://tekno.local.test/kecerdasan-buatan/cara-kerja-model-bahasa',
-      'https://tekno.local.test/review/ponsel-lipat-makin-murah',
-      'https://tekno.local.test/p/tentang-kami',
-      'https://tekno.local.test/category/gadget',
-      'https://tekno.local.test/category/kecerdasan-buatan',
-      'https://tekno.local.test/category/review',
-      'https://tekno.local.test/tag/android',
-      'https://tekno.local.test/author/budi-santoso',
-      'https://tekno.local.test/author/redaksi',
+      'https://tekno.localhost/',
+      'https://tekno.localhost/kecerdasan-buatan/cara-kerja-model-bahasa',
+      'https://tekno.localhost/review/ponsel-lipat-makin-murah',
+      'https://tekno.localhost/p/tentang-kami',
+      'https://tekno.localhost/category/gadget',
+      'https://tekno.localhost/category/kecerdasan-buatan',
+      'https://tekno.localhost/category/review',
+      'https://tekno.localhost/tag/android',
+      'https://tekno.localhost/author/budi-santoso',
+      'https://tekno.localhost/author/redaksi',
     ])
     expect(xml).not.toContain('laptop-terbaik')
     expect(xml).not.toContain('rendang')
   })
 
   it('RSS dapur-nusantara: terbaru dulu, link absolut, penulis', async () => {
-    const xml = await feeds.rss(await siteOf('dapur-nusantara'), 'https://kuliner.local.test')
+    const xml = await feeds.rss(await siteOf('dapur-nusantara'), 'https://kuliner.localhost')
     expect([...xml.matchAll(/<link>([^<]+)<\/link>/g)].map((m) => m[1])).toEqual([
-      'https://kuliner.local.test/',
-      'https://kuliner.local.test/resep/sambal-matah-10-menit',
-      'https://kuliner.local.test/sumatera/rendang-padang-empuk',
+      'https://kuliner.localhost/',
+      'https://kuliner.localhost/resep/sambal-matah-10-menit',
+      'https://kuliner.localhost/sumatera/rendang-padang-empuk',
     ])
     expect(xml).toContain('<title>Dapur Nusantara</title>')
     expect(xml).toContain('<language>id-id</language>')
     expect(xml).toContain('<dc:creator>Redaksi Dapur</dc:creator>')
-    expect(xml).toContain('<atom:link href="https://kuliner.local.test/rss.xml" rel="self" type="application/rss+xml"/>')
+    expect(xml).toContain('<atom:link href="https://kuliner.localhost/rss.xml" rel="self" type="application/rss+xml"/>')
   })
 })
 ```
@@ -11959,12 +11870,355 @@ export function usePageState() {
 
 ```bash
 pnpm dev
-curl -s -H 'Host: tekno.local.test:3000' http://127.0.0.1:3000/review/ponsel-lipat-makin-murah | grep -o '<link rel="canonical"[^>]*>\|<meta property="og:[^>]*>'
+curl -s -H 'Host: tekno.localhost:3000' http://127.0.0.1:3000/review/ponsel-lipat-makin-murah | grep -o '<link rel="canonical"[^>]*>\|<meta property="og:[^>]*>'
 for f in sitemap.xml rss.xml; do
-  curl -s -H 'Host: tekno.local.test:3000' http://127.0.0.1:3000/$f > /tmp/$f
+  curl -s -H 'Host: tekno.localhost:3000' http://127.0.0.1:3000/$f > /tmp/$f
   python3 -c "import xml.dom.minidom as m; m.parse('/tmp/$f'); print('$f valid')"
 done
-curl -s -H 'Host: kuliner.local.test:3000' http://127.0.0.1:3000/robots.txt
+curl -s -H 'Host: kuliner.localhost:3000' http://127.0.0.1:3000/robots.txt
 ```
 
 15. Di build produksi, pastikan feed dari host tak dikenal dijawab 404, lalu jalankan `pnpm check`.
+
+# Membuktikan Isolasi Antar-Site
+
+1. Pahami apa yang harus dibuktikan. Gate tahap ini: dua domain dari satu server tampil berbeda, dan request paralel tidak saling tertukar. Bug yang dicari adalah state global di SSR: data satu request disimpan di variabel modul, lalu dibaca request lain yang berjalan bersamaan. Bug ini tidak terlihat bila halaman dibuka satu per satu, jadi harus diuji dengan banyak request sekaligus terhadap server hasil build.
+
+2. Pindahkan cara menjalankan server hasil build ke modul bersama, agar smoke test dan test gate memakai kode yang sama:
+
+`apps/web/scripts/lib/built-server.mjs`
+
+```js
+// Menjalankan server hasil build (.output/server/index.mjs) untuk script
+// pemeriksaan (smoke-build, gate-parallel), lalu menghentikannya.
+import { spawn } from 'node:child_process'
+import { request } from 'node:http'
+import { fileURLToPath } from 'node:url'
+
+const entry = fileURLToPath(new URL('../../.output/server/index.mjs', import.meta.url))
+
+/**
+ * Start server di port tertentu dan tunggu sampai /api/health menjawab
+ * (status apa pun). `response` undefined bila tidak menjawab dalam batas waktu
+ * atau server berhenti sendiri.
+ */
+export async function startBuiltServer({ port, label, timeoutMs = 30_000 }) {
+  const server = spawn(process.execPath, [entry], {
+    env: { ...process.env, PORT: port, HOST: '127.0.0.1' },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  })
+  let exited = false
+  let stopping = false
+  server.on('exit', (code) => {
+    exited = true
+    if (!stopping) console.error(`[${label}] server berhenti sendiri (exit ${code})`)
+  })
+
+  const healthUrl = `http://127.0.0.1:${port}/api/health`
+  const deadline = Date.now() + timeoutMs
+  let response
+  while (Date.now() < deadline && !exited) {
+    try {
+      response = await fetch(healthUrl)
+      break
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+
+  return {
+    healthUrl,
+    response,
+    stop() {
+      stopping = true
+      if (!exited) server.kill('SIGTERM')
+    },
+  }
+}
+
+/** GET dengan header Host tertentu; fetch() tidak mengizinkan header Host. */
+export function getWithHost(port, path, host) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, headers: { host } }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+```
+
+`apps/web/scripts/smoke-build.mjs`
+
+```js
+// Smoke test hasil build: jalankan .output/server/index.mjs, panggil
+// /api/health, lalu cocokkan status HTTP dengan yang diharapkan.
+//
+//   node scripts/smoke-build.mjs          -> harus 200 (database hidup)
+//   EXPECT_STATUS=503 node scripts/...    -> database sengaja tidak ada (CI)
+//   SMOKE_HOSTS=a.test,b.test node ...    -> juga render halaman / tiap domain
+//
+// 503 tetap membuktikan bundle bisa start, route ikut ter-build, dan
+// driver pg ikut terbawa: tanpa pg, server crash dan status tidak pernah 503.
+//
+// SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
+// 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
+// muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
+
+const port = process.env.SMOKE_PORT ?? '3999'
+const expected = Number(process.env.EXPECT_STATUS ?? '200')
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+
+const server = await startBuiltServer({ port, label: 'smoke' })
+let failed = true
+try {
+  const { response, healthUrl } = server
+  if (!response) {
+    console.error(`[smoke] GAGAL: ${healthUrl} tidak menjawab`)
+  } else {
+    const body = await response.text()
+    console.log(`[smoke] ${healthUrl} -> ${response.status} ${body}`)
+    if (response.status !== expected) {
+      console.error(`[smoke] GAGAL: status ${response.status}, seharusnya ${expected}`)
+    } else if (!body.includes('"status"')) {
+      console.error('[smoke] GAGAL: body bukan respons health check')
+    } else {
+      failed = !(await checkPages())
+      if (!failed) console.log('[smoke] OK')
+    }
+  }
+} finally {
+  server.stop()
+}
+process.exitCode = failed ? 1 : 0
+
+/** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
+async function checkPages() {
+  let ok = true
+  for (const host of pageHosts) {
+    const { status, body } = await getWithHost(port, '/', host)
+    const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
+    console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
+    if (status !== 200 || !wrapper) {
+      console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    }
+  }
+  return ok
+}
+```
+
+3. Tulis test gate `apps/web/scripts/gate-parallel.mjs`:
+   - Penanda setiap site diambil dari data seed: judul, kelas root template, aturan token CSS, logo, item menu, dan nama site.
+   - Request ke beberapa jenis halaman di kedua domain diacak, lalu dikirim 32 sekaligus (default 240 request).
+   - Setiap respons wajib memuat semua penanda site-nya sendiri dan tidak boleh memuat satu pun penanda site lain, termasuk di payload Nuxt.
+
+`apps/web/scripts/gate-parallel.mjs`
+
+```js
+// Gate M2: "dua domain dari satu server tampil berbeda; request paralel tidak
+// saling tertukar" (ADR-001: tanpa state global di SSR).
+//
+// Menjalankan server hasil build, lalu mengirim banyak request BERSAMAAN ke
+// dua domain seed dalam urutan acak. Setiap respons wajib memuat penanda
+// site-nya sendiri (judul, kelas root template, token CSS, logo, menu) dan
+// tidak boleh memuat satu pun penanda site lain, termasuk di payload Nuxt.
+//
+//   pnpm --filter @framework/web gate        (butuh database ber-seed)
+//   GATE_ROUNDS=50 GATE_CONCURRENCY=64 ...   (default 20 putaran, 32 paralel)
+import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
+
+const port = process.env.GATE_PORT ?? '3997'
+const rounds = Number(process.env.GATE_ROUNDS ?? '20')
+const concurrency = Number(process.env.GATE_CONCURRENCY ?? '32')
+
+/** Penanda per site, dari data seed (packages/db/seed). */
+const SITES = {
+  'tekno.localhost': {
+    title: /<title>[^<]*Kabar Tekno[^<]*<\/title>/,
+    markers: ['class="tpl tpl-magazine"', '.tpl-magazine{--color-primary:#0f62fe', '/media/kabar-tekno/logo.svg', '>Gadget</a>', 'Kabar Tekno'],
+    paths: [['/', 200], ['/review/ponsel-lipat-makin-murah', 200], ['/category/gadget', 200], ['/tag/android', 200], ['/search?q=ponsel', 200], ['/tidak/ada', 404]],
+  },
+  'kuliner.localhost': {
+    title: /<title>[^<]*Dapur Nusantara[^<]*<\/title>/,
+    markers: ['class="tpl tpl-base"', '.tpl-base{--color-primary:#b3261e', '/media/dapur-nusantara/logo.svg', '>Resep</a>', 'Dapur Nusantara'],
+    paths: [['/', 200], ['/sumatera/rendang-padang-empuk', 200], ['/category/resep', 200], ['/p/kontak', 200], ['/search?q=rendang', 200], ['/tidak/ada', 404]],
+  },
+}
+
+/** Penanda site lain yang tidak boleh muncul di respons site ini. */
+function foreignMarkers(host) {
+  return Object.entries(SITES).filter(([h]) => h !== host).flatMap(([, s]) => s.markers)
+}
+
+function shuffle(items) {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[items[i], items[j]] = [items[j], items[i]]
+  }
+  return items
+}
+
+const jobs = shuffle(Array.from({ length: rounds }, () =>
+  Object.entries(SITES).flatMap(([host, site]) => site.paths.map(([path, status]) => ({ host, path, status })))).flat())
+
+const server = await startBuiltServer({ port, label: 'gate' })
+const failures = []
+try {
+  if (server.response?.status !== 200) throw new Error(`server/database tidak siap (${server.healthUrl} -> ${server.response?.status ?? 'tidak menjawab'})`)
+
+  let next = 0
+  async function worker() {
+    while (next < jobs.length) {
+      const job = jobs[next++]
+      const { status, body } = await getWithHost(port, job.path, job.host)
+      const site = SITES[job.host]
+      const problems = []
+      if (status !== job.status) problems.push(`status ${status}, seharusnya ${job.status}`)
+      if (!site.title.test(body)) problems.push('judul bukan milik site ini')
+      for (const marker of site.markers) if (!body.includes(marker)) problems.push(`tanpa penanda sendiri ${JSON.stringify(marker)}`)
+      for (const marker of foreignMarkers(job.host)) if (body.includes(marker)) problems.push(`memuat penanda site lain ${JSON.stringify(marker)}`)
+      if (problems.length) failures.push(`${job.host}${job.path}: ${problems.join('; ')}`)
+    }
+  }
+  const started = Date.now()
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  console.log(`[gate] ${jobs.length} request ke ${Object.keys(SITES).length} domain, ${concurrency} paralel, ${Date.now() - started} ms`)
+} catch (error) {
+  failures.push(String(error))
+} finally {
+  server.stop()
+}
+
+if (failures.length) {
+  console.error(`[gate] GAGAL: ${failures.length} respons bermasalah`)
+  for (const f of failures.slice(0, 10)) console.error(`  - ${f}`)
+  process.exitCode = 1
+} else {
+  console.log('[gate] OK: setiap respons hanya memuat data site-nya sendiri')
+}
+```
+
+4. Tambahkan script `"gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs"` di `apps/web/package.json`, lalu jalankan:
+
+```bash
+pnpm build
+pnpm --filter @framework/web gate
+# [gate] 240 request ke 2 domain, 32 paralel, ... ms
+# [gate] OK: setiap respons hanya memuat data site-nya sendiri
+```
+
+5. Buktikan test ini memang bisa gagal. Sisipkan sementara state global di middleware: simpan halaman yang sudah dibangun di variabel modul, tunggu sebentar, lalu baca kembali. Build ulang dan jalankan gate; hasilnya harus GAGAL dengan respons yang memuat judul, logo, dan menu site lain. Kembalikan file, build ulang, dan pastikan gate hijau lagi.
+
+```ts
+// SEMENTARA, jangan di-commit
+let lastPage: unknown
+// ...
+lastPage = { status: built.status, ...built.page }
+await new Promise((r) => setTimeout(r, 5))
+event.context.page = lastPage as typeof event.context.page
+```
+
+   Pastikan bug yang disisipkan memang memengaruhi isi halaman. Menimpa `event.context.site` setelah halaman dibangun, misalnya, tidak mengubah output dan tidak membuktikan apa-apa.
+
+6. Masukkan gate ke job CI `build`, setelah smoke test dengan database (file lengkap di bab CI).
+
+7. Tambahkan snapshot view model per jenis halaman. View model adalah kontrak publik template, jadi perubahannya harus terlihat sebagai diff file `.snap` saat review:
+   - Chrome kedua site disnapshot sekali; setiap jenis halaman (home, artikel, halaman, kategori, tag, penulis, pencarian, 404, redirect) disnapshot berisi status, `vm`, `seo`, dan `issues`.
+   - Jam dipatok. Kolom `updated_at` seed berisi waktu saat seed dijalankan, jadi diganti penanda tetap agar snapshot sama di setiap mesin dan di CI.
+   - Di CI, Vitest tidak menulis snapshot baru, sehingga snapshot yang hilang atau berbeda membuat job gagal.
+
+`packages/core/src/views/view-models.snapshot.test.ts`
+
+```ts
+// Snapshot view model per jenis halaman (gate M2): view model adalah kontrak
+// publik template (ADR-005), jadi perubahannya harus terlihat di review,
+// bukan terjadi diam-diam. Bila snapshot berubah dengan sengaja:
+//   pnpm vitest run packages/core/src/views -u
+// lalu periksa diff file .snap sebelum commit.
+//
+// Berjalan terhadap database dev yang di-seed (dilewati tanpa DATABASE_URL;
+// di CI DATABASE_URL wajib ada). Jam dipatok. Kolom updated_at seed berisi
+// waktu saat seed dijalankan, jadi diganti penanda tetap sebelum dibandingkan.
+import { createDatabase } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createMediaUrlResolver } from '../media/storage'
+import { createRepositories, type SiteInfo } from '../repositories'
+import { createPageBuilder, type PageResult } from './build-page'
+
+const NOW = new Date('2026-11-19T05:00:00Z')
+const SEED_TIME = '<updated_at seed>'
+
+/** Ganti nilai yang bergantung pada waktu seed dengan penanda tetap. */
+function stable(result: PageResult): unknown {
+  return JSON.parse(JSON.stringify(result), (key, value) => {
+    if (key === 'modifiedTime') return SEED_TIME
+    if (key === 'updatedAt' && value !== null) return SEED_TIME
+    return value
+  })
+}
+
+describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis halaman', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 2, applicationName: 'vitest-snapshot' })
+  const repos = createRepositories(db, { now: () => NOW })
+  const builder = createPageBuilder(repos, { mediaUrl: createMediaUrlResolver(), now: () => NOW })
+  afterAll(() => db.$client.end())
+
+  const origins: Record<string, string> = {
+    'kabar-tekno': 'https://tekno.localhost',
+    'dapur-nusantara': 'https://kuliner.localhost',
+  }
+  const sites = new Map<string, SiteInfo>()
+
+  async function build(code: string, url: string): Promise<PageResult> {
+    let site = sites.get(code)
+    if (!site) {
+      site = (await repos.sites.findByCode(code)) ?? undefined
+      if (!site) throw new Error(`site seed ${code} tidak ada`)
+      sites.set(code, site)
+    }
+    const parsed = new URL(url, 'http://x')
+    return builder.build({ site, pathname: parsed.pathname, searchParams: parsed.searchParams, origin: origins[code] ?? '' })
+  }
+
+  // Chrome (header, menu, footer) sama untuk semua halaman satu site: cukup sekali.
+  it.each(['kabar-tekno', 'dapur-nusantara'])('chrome %s', async (code) => {
+    const result = await build(code, '/')
+    if (result.kind !== 'render') throw new Error('bukan render')
+    expect(stable({ ...result, page: { chrome: result.page.chrome } } as PageResult)).toMatchSnapshot()
+  })
+
+  it.each([
+    ['home', 'kabar-tekno', '/'],
+    ['article', 'kabar-tekno', '/review/ponsel-lipat-makin-murah'],
+    ['article (site kedua)', 'dapur-nusantara', '/sumatera/rendang-padang-empuk'],
+    ['page', 'dapur-nusantara', '/p/kontak'],
+    ['category', 'kabar-tekno', '/category/gadget'],
+    ['tag', 'dapur-nusantara', '/tag/pedas'],
+    ['author', 'kabar-tekno', '/author/budi-santoso'],
+    ['search', 'kabar-tekno', '/search?q=ponsel'],
+    ['not-found', 'kabar-tekno', '/tidak/ada'],
+    ['redirect permalink', 'kabar-tekno', '/gadget/ponsel-lipat-makin-murah'],
+  ])('%s: %s %s', async (_label, code, url) => {
+    const result = await build(code, url)
+    // Chrome sudah disnapshot terpisah; di sini hanya status, vm, seo, issues.
+    const snapshot = result.kind === 'render'
+      ? { kind: result.kind, status: result.status, vm: result.page.vm, seo: result.page.seo, issues: result.issues }
+      : result
+    expect(stable(snapshot as PageResult)).toMatchSnapshot()
+  })
+})
+```
+
+8. Jalankan sekali untuk menulis snapshot, periksa isinya, lalu commit file `packages/core/src/views/__snapshots__/view-models.snapshot.test.ts.snap`. Setelah perubahan view model yang disengaja:
+
+```bash
+pnpm vitest run packages/core/src/views -u
+git diff packages/core/src/views/__snapshots__/
+```
+
+9. Jalankan `pnpm check`, build, smoke, dan gate. Bila semuanya hijau dan pipeline CI hijau, tahap tampilan pertama selesai.

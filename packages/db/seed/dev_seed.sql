@@ -1,8 +1,8 @@
 -- =====================================================================
 -- dev_seed.sql  -  Data contoh untuk development (idempotent)
 -- Dua site dengan topik & template berbeda dari SATU database:
---   kabar-tekno     -> template 'magazine'   (tekno.local.test)
---   dapur-nusantara -> template 'news'       (kuliner.local.test)
+--   kabar-tekno     -> template 'magazine'   (tekno.localhost)
+--   dapur-nusantara -> template 'news'       (kuliner.localhost)
 -- ID tetap (UUIDv7-format) + ON CONFLICT DO NOTHING = aman dijalankan ulang.
 -- =====================================================================
 
@@ -25,9 +25,9 @@ INSERT INTO sites (id, code, name, settings) VALUES
 ON CONFLICT DO NOTHING;
 
 INSERT INTO site_domains (id, site_id, domain, is_primary, verified_at) VALUES
-  ('01930000-0000-7000-8000-000000000111', '01930000-0000-7000-8000-000000000101', 'tekno.local.test',     true,  now()),
-  ('01930000-0000-7000-8000-000000000112', '01930000-0000-7000-8000-000000000101', 'www.tekno.local.test', false, now()),
-  ('01930000-0000-7000-8000-000000000121', '01930000-0000-7000-8000-000000000102', 'kuliner.local.test',   true,  now())
+  ('01930000-0000-7000-8000-000000000111', '01930000-0000-7000-8000-000000000101', 'tekno.localhost',     true,  now()),
+  ('01930000-0000-7000-8000-000000000112', '01930000-0000-7000-8000-000000000101', 'www.tekno.localhost', false, now()),
+  ('01930000-0000-7000-8000-000000000121', '01930000-0000-7000-8000-000000000102', 'kuliner.localhost',   true,  now())
 ON CONFLICT DO NOTHING;
 
 INSERT INTO site_members (site_id, user_id, role) VALUES

@@ -89,22 +89,22 @@ describe.skipIf(!process.env['DATABASE_URL'])('resolveSiteRequest (database dev,
   afterAll(() => db.$client.end())
 
   it('multi: dua site dari seed', async () => {
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'tekno.local.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'kabar-tekno' } } })
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'kuliner.local.test')).toMatchObject({ kind: 'site', resolved: { site: { code: 'dapur-nusantara' } } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'tekno.localhost')).toMatchObject({ kind: 'site', resolved: { site: { code: 'kabar-tekno' } } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'kuliner.localhost')).toMatchObject({ kind: 'site', resolved: { site: { code: 'dapur-nusantara' } } })
   })
 
   it('huruf besar, port, dan titik di ujung', async () => {
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'TEKNO.Local.Test.:3000')).toMatchObject({ kind: 'site', resolved: { matchedDomain: 'tekno.local.test' } })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'TEKNO.LocalHost.:3000')).toMatchObject({ kind: 'site', resolved: { matchedDomain: 'tekno.localhost' } })
   })
 
   it('alias www -> redirect 301 ke primary', async () => {
-    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'www.tekno.local.test')).toMatchObject({ kind: 'redirect', toHost: 'tekno.local.test' })
+    expect(await resolveSiteRequest({ mode: 'multi' }, sites, 'www.tekno.localhost')).toMatchObject({ kind: 'redirect', toHost: 'tekno.localhost' })
   })
 
   it('single dapur-nusantara: domain kabar-tekno ditolak', async () => {
     const mode = { mode: 'single', siteCode: 'dapur-nusantara' } as const
-    expect(await resolveSiteRequest(mode, sites, 'kuliner.local.test')).toMatchObject({ kind: 'site' })
-    expect(await resolveSiteRequest(mode, sites, 'tekno.local.test')).toEqual({ kind: 'not-found', reason: 'other-site' })
+    expect(await resolveSiteRequest(mode, sites, 'kuliner.localhost')).toMatchObject({ kind: 'site' })
+    expect(await resolveSiteRequest(mode, sites, 'tekno.localhost')).toEqual({ kind: 'not-found', reason: 'other-site' })
   })
 
   it('Host tak dikenal', async () => {

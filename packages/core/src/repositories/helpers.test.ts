@@ -5,11 +5,11 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, normalizePaging, toPage } from './typ
 
 describe('normalizeHost', () => {
   it.each([
-    ['tekno.local.test', 'tekno.local.test'],
-    ['TEKNO.Local.Test', 'tekno.local.test'],
-    ['tekno.local.test:3000', 'tekno.local.test'],
-    ['tekno.local.test.', 'tekno.local.test'],
-    ['  www.tekno.local.test  ', 'www.tekno.local.test'],
+    ['tekno.localhost', 'tekno.localhost'],
+    ['TEKNO.LocalHost', 'tekno.localhost'],
+    ['tekno.localhost:3000', 'tekno.localhost'],
+    ['tekno.localhost.', 'tekno.localhost'],
+    ['  www.tekno.localhost  ', 'www.tekno.localhost'],
   ])('%s -> %s', (input, expected) => {
     expect(normalizeHost(input)).toBe(expected)
   })
@@ -18,10 +18,10 @@ describe('normalizeHost', () => {
     '',
     '   ',
     'localhost', // harus punya titik, sama dengan CHECK site_domains_domain_format
-    'tekno.local.test/path',
-    'user@tekno.local.test',
+    'tekno.localhost/path',
+    'user@tekno.localhost',
     'tekno local.test',
-    'http://tekno.local.test',
+    'http://tekno.localhost',
     '-bad.local.test',
     `${'a'.repeat(64)}.test`,
   ])('menolak %j', (input) => {
