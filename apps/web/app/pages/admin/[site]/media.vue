@@ -10,7 +10,6 @@ definePageMeta({ layout: 'admin' })
 const site = useAdminSite()
 const items = ref<Json<MediaListItem>[]>([])
 const total = ref(0)
-const page = ref(1)
 const loading = ref(false)
 const loadError = ref<string | null>(null)
 
@@ -19,9 +18,8 @@ async function loadPage(n: number) {
   loading.value = true
   try {
     const result = await adminApi<Json<Page<MediaListItem>>>(site.value.id, 'media', { query: { page: n } })
-    items.value = n === 1 ? result.items : [...items.value, ...result.items]
+    items.value = n === 1 ? result.items : appendUnique(items.value, result.items)
     total.value = result.total
-    page.value = n
   } catch (e) {
     loadError.value = apiErrorMessage(e)
   } finally {
@@ -180,7 +178,7 @@ const err = (field: string) => fieldError(errors.value, field)
           type="button"
           class="btn btn--small"
           :disabled="loading"
-          @click="loadPage(page + 1)"
+          @click="loadPage(nextMediaPage(items.length))"
         >
           Muat lagi
         </button>

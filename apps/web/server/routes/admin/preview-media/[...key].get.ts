@@ -2,9 +2,9 @@
 // Route publik /media hanya melayani domain site, sedangkan pratinjau ada di
 // host admin. Wajib sesi admin; kode site di awal key harus site milik user.
 import { splitStorageKey } from '@framework/core'
-import { defineEventHandler, getRouterParam, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { defineEventHandler, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { assertAdminRequest, requireAdmin } from '../../../utils/admin'
-import { mediaSecurityHeaders, readMediaFile } from '../../../utils/media'
+import { mediaKeyParam, mediaSecurityHeaders, readMediaFile } from '../../../utils/media'
 
 export default defineEventHandler(async (event) => {
   // Galat dijawab teks polos dengan status yang benar: di build produksi,
@@ -16,9 +16,9 @@ export default defineEventHandler(async (event) => {
   } catch (error) {
     return plain(event, (error as { statusCode?: number }).statusCode ?? 401, 'Tidak diizinkan.')
   }
-  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
-  const segments = splitStorageKey(key)
-  if (!segments || !admin.sites.some((s) => s.code === segments[0])) return plain(event, 404, 'Media tidak ditemukan.')
+  const key = mediaKeyParam(event)
+  const segments = key === null ? null : splitStorageKey(key)
+  if (key === null || !segments || !admin.sites.some((s) => s.code === segments[0])) return plain(event, 404, 'Media tidak ditemukan.')
   const file = await readMediaFile(key)
   if (!file) return plain(event, 404, 'Media tidak ditemukan.')
   mediaSecurityHeaders(event.res.headers)

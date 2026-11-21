@@ -31,11 +31,11 @@ import {
   articles,
   articleTags,
   authors,
+  categories,
   createDatabase,
   databaseUrlFromEnv,
   eq,
   inArray,
-  like,
   media,
   menuItems,
   or,
@@ -155,8 +155,20 @@ const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 1, appl
 
 async function remove(tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) {
   await tx.delete(menuItems).where(eq(menuItems.id, ID.menuItem))
-  // Termasuk redirect yang dibuat editor bila artikel demo diubah slug/kategorinya.
-  await tx.delete(redirects).where(and(eq(redirects.siteId, SITE), or(like(redirects.fromPath, '%saksang%'), like(redirects.toPath, '%saksang%'))))
+  // Redirect demo, plus redirect yang dibuat admin saat artikel demo diubah
+  // slug/kategorinya: rantai diratakan, jadi semuanya menunjuk path artikel
+  // demo saat ini (permalink dapur-nusantara di seed: /:category/:slug).
+  // Redirect lain yang kebetulan memuat kata "saksang" tidak disentuh.
+  const [demo] = await tx
+    .select({ slug: articles.slug, categorySlug: categories.slug })
+    .from(articles)
+    .innerJoin(categories, eq(categories.id, articles.categoryId))
+    .where(eq(articles.id, ID.article))
+  const demoPath = demo ? `/${demo.categorySlug}/${demo.slug}` : null
+  await tx.delete(redirects).where(or(
+    eq(redirects.id, ID.redirect),
+    demoPath ? and(eq(redirects.siteId, SITE), eq(redirects.toPath, demoPath)) : undefined,
+  ))
   await tx.delete(articles).where(eq(articles.id, ID.article)) // article_tags dan revisi ikut terhapus (CASCADE)
   await tx.delete(authors).where(eq(authors.id, ID.author))
   await tx.delete(tags).where(eq(tags.id, ID.tagBatak))

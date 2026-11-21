@@ -1,6 +1,7 @@
 // Storage media di server (M4 4.3): disk lokal di MEDIA_DIR. Dipakai route
 // publik /media (baca) dan API admin (upload, hapus, pratinjau).
 import { createLocalMediaStorage, splitStorageKey, type MediaStorage } from '@framework/core'
+import { getRouterParam, type RequestEvent } from 'nuxt/server'
 
 /** Batas ukuran satu file upload. */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -63,4 +64,17 @@ function placeholderSvg(name: string): string {
     + `<path d="M0 0L1600 900M1600 0L0 900" stroke="#c3c9d1" stroke-width="4"/>`
     + `<text x="800" y="470" font-family="system-ui, sans-serif" font-size="56" fill="#5b6470" text-anchor="middle">${label}</text>`
     + `</svg>`
+}
+
+/**
+ * storage_key dari parameter route `[...key]`, sudah di-decode. null bila
+ * percent-encoding rusak (decodeURIComponent melempar URIError): jawab 404,
+ * bukan 500.
+ */
+export function mediaKeyParam(event: RequestEvent): string | null {
+  try {
+    return decodeURIComponent(getRouterParam(event, 'key') ?? '')
+  } catch {
+    return null
+  }
 }

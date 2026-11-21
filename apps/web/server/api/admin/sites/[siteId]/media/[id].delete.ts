@@ -5,6 +5,12 @@ import { useMediaStorage } from '../../../../../utils/media'
 
 export default defineAdminSiteHandler(async ({ editor, site, event }) => {
   const { storageKey } = await editor.deleteMedia(site.id, param(event, 'id'), String(getQuery(event)['updatedAt'] ?? ''))
-  await useMediaStorage()?.delete(storageKey)
+  // Baris sudah terhapus: galat hapus file hanya dicatat. Melempar di sini
+  // membuat admin melihat galat, lalu 404 saat mencoba lagi.
+  try {
+    await useMediaStorage()?.delete(storageKey)
+  } catch (error) {
+    console.error(`[media] file ${storageKey} gagal dihapus (catatan sudah terhapus):`, error)
+  }
   return { ok: true }
 })

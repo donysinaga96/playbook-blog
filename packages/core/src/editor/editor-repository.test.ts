@@ -253,6 +253,25 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       expect(await editor.deleteMedia(SITE, m.id, u.updatedAt.toISOString())).toEqual({ storageKey: file('a').storageKey })
       expect((await editor.listMedia(SITE, { ids: [m.id] })).items).toEqual([])
     })
+
+    it('hapus menunggu simpan yang sedang memakai media, lalu menolak (code review M4)', async () => {
+      const m = await editor.createMedia(SITE, file('race'), { altText: 'Balapan' }, USER)
+      const a = await editor.createArticle(SITE, article({ slug: `hapus-media-${run}`, featuredMediaId: null }), USER)
+      let deleting: Promise<unknown> | null = null
+      // Tiru transaksi simpan: kunci media (seperti ensureOwned), hapus mulai
+      // dan harus menunggu, baru kemudian artikel memakai media itu.
+      await db.transaction(async (tx) => {
+        await tx.select({ id: media.id }).from(media).where(eq(media.id, m.id)).for('share')
+        deleting = editor.deleteMedia(SITE, m.id, m.updatedAt.toISOString()).then(() => null, (e: unknown) => e)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        await tx.update(articles).set({ featuredMediaId: m.id }).where(eq(articles.id, a.id))
+      })
+      const error = await deleting
+      expect(error).toBeInstanceOf(EditorError)
+      expect((error as unknown as EditorError).kind).toBe('invalid')
+      await db.delete(articles).where(eq(articles.id, a.id))
+      await editor.deleteMedia(SITE, m.id, m.updatedAt.toISOString())
+    })
   })
 
   describe('halaman', () => {

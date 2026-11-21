@@ -1742,7 +1742,7 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 @@include packages/core/src/media/local-storage.test.ts ts@@
 
-5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form.
+5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form. Penguncian baris agar media tidak terhapus di tengah simpan artikel ditambahkan di bab "Menjadwalkan Artikel dan Menutup Admin".
 
 6. Satukan logika baca file di server, dipakai route publik `/media` dan API admin. Header `nosniff` dan CSP `sandbox` dipasang untuk semua file media:
 
@@ -1756,7 +1756,7 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 @@include apps/web/server/api/admin/sites/[siteId]/media/[id]/file.get.ts ts@@
 
-   Route lain: `media/[id].put.ts` (ubah keterangan), `media/[id].delete.ts` (hapus catatan lalu file), `media/[id]/usage.get.ts`. Pratinjau admin butuh route sendiri karena route publik `/media` hanya melayani domain site, sedangkan admin ada di host admin.
+   Route lain: `media/[id].put.ts` (ubah keterangan), `media/[id].delete.ts` (hapus catatan lalu file; galat hapus file hanya dicatat, lihat bab "Menjadwalkan Artikel dan Menutup Admin"), `media/[id]/usage.get.ts`. Pratinjau admin butuh route sendiri karena route publik `/media` hanya melayani domain site, sedangkan admin ada di host admin.
 
 8. Ganti pemilih gambar di admin dengan dialog berisi galeri dan form unggah; gambar yang baru diunggah langsung terpilih:
 
@@ -1835,4 +1835,43 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 @@include apps/web/app/pages/admin/[site]/theme.vue vue@@
 
 10. Uji di gate admin tanpa menyimpan apa pun: deskripsi form ada, draf salah 422, pratinjau memakai draf dan `noindex`, id draf yang tidak dikenal memakai theme aktif, pratinjau dan media pratinjau tanpa sesi 401, dan site publik tidak berubah. Lalu coba di browser: ubah warna aksen, lihat pratinjau, pindah template, pilih "Tanpa section", lihat lebar ponsel, simpan, dan buka site.
+
+# Menjadwalkan Artikel dan Menutup Admin
+
+1. Pahami dulu arti "terjadwal". Tidak ada scheduler atau queue: artikel terjadwal adalah artikel `PUBLISHED` dengan `published_at` di masa depan. Semua query publik (halaman artikel, home, arsip, sitemap, RSS) sudah memfilter `published_at <= now()` dengan jam proses server (`ctx.now()`), dan HTML publik dikirim `no-store`. Artinya artikel tampil pada request pertama setelah waktunya. Feed dikirim dengan `max-age=300`, jadi pembaca feed bisa melihatnya paling lambat lima menit kemudian; bila nanti HTML publik di-cache, toleransinya sebesar TTL cache itu.
+
+2. Jadwalkan dari admin: buka artikel, pilih status Terbit, isi tanggal terbit di masa depan (dalam zona waktu site), dan simpan. Daftar artikel menampilkannya sebagai Terjadwal, dan API mengembalikan `publicPath: null` sampai waktunya tiba.
+
+3. Buktikan dengan gate admin terhadap server hasil build. Gate membuat artikel lewat API admin (tanpa SQL), menjadwalkannya beberapa detik ke depan (`GATE_SCHEDULE_LEAD_MS`, bawaan 6000), lalu memeriksa:
+   - sebelum waktunya: URL artikel 404, dan slug-nya tidak ada di home, `sitemap.xml`, maupun `rss.xml`; pemeriksaan ini sendiri harus selesai sebelum waktunya, kalau tidak gate gagal dengan pesan yang jelas;
+   - request pertama setelah waktunya: halaman artikel tampil, dan artikel ada di home, sitemap, dan RSS; API admin kini memberi `publicPath` yang sama;
+   - di blok `finally`: artikel uji diarsipkan dengan versi terbaru dan URL-nya 404 lagi, juga bila pemeriksaan di tengah melempar galat. API admin tidak menghapus artikel, jadi baris arsipnya tetap ada di database lokal.
+
+   Bagian ini ada di `apps/web/scripts/gate-admin.mjs` (isi lengkapnya di bab "Membangun Login Admin"). Jalankan:
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 53 pemeriksaan admin lulus
+```
+
+4. Kunci media selama simpan berlangsung. Gambar di body dan gambar OG disimpan di JSON tanpa foreign key, jadi database tidak mencegah media dihapus saat artikel yang baru memakainya sedang disimpan. Perbaikannya di repository editor: `ensureOwned` membaca baris media dengan `FOR SHARE` (kunci bertahan sampai transaksi simpan selesai), dan `deleteMedia` berjalan dalam satu transaksi yang dimulai dengan `SELECT ... FOR UPDATE` pada baris media, baru kemudian memeriksa pemakaian (`mediaUsageIn(tx, ...)`) dan menghapus. Hapus yang datang belakangan menunggu simpan selesai lalu melihat pemakaian barunya; simpan yang datang belakangan menunggu hapus selesai lalu ditolak karena medianya sudah tidak ada. Test di `editor-repository.test.ts` meniru simpan yang memegang kunci, memulai hapus, lalu memakai media itu: hapus harus ditolak.
+
+5. Hapus file setelah catatan terhapus tidak boleh menggagalkan request. Bila `rm` gagal (izin, disk), galat dicatat ke log dan API tetap menjawab `{ ok: true }`; tanpa itu admin melihat galat, lalu 404 saat mencoba lagi:
+
+@@include apps/web/server/api/admin/sites/[siteId]/media/[id].delete.ts ts@@
+
+6. Percent-encoding rusak di URL media (`/media/%E0%A4%A.png`) membuat `decodeURIComponent` melempar dan request menjadi 500. `mediaKeyParam` di `apps/web/server/utils/media.ts` menangkapnya dan route `/media` maupun `/admin/preview-media` menjawab 404.
+
+7. Perbaiki "Muat lagi" di galeri media. Unggah menaruh item baru di depan daftar dan hapus membuangnya, sehingga nomor halaman terakhir tidak cocok lagi dengan offset server: ada gambar yang tampil dua kali atau terlewat. Halaman berikutnya dihitung dari jumlah item yang tampil, dan item yang sudah ada dibuang dari hasilnya:
+
+@@include apps/web/app/utils/media-paging.ts ts@@
+
+@@include apps/web/app/utils/media-paging.test.ts ts@@
+
+   Layar Media dan `MediaPicker` memanggil `loadPage(nextMediaPage(items.length))` dan menggabungkan hasil dengan `appendUnique`.
+
+8. Persempit pembersihan konten demo. `demo:saksang --remove` dulu menghapus semua redirect site yang memuat kata "saksang", termasuk redirect buatan editor untuk artikel lain. Sekarang yang dihapus hanya redirect demo (id tetap) dan redirect yang menunjuk path artikel demo saat ini; karena rantai redirect diratakan, itu mencakup semua redirect yang dibuat admin saat slug artikel demo diubah.
+
+9. Tutup dengan pemeriksaan penuh sebelum commit: `pnpm check`, `pnpm build`, smoke, gate isolasi site, dan gate admin. Di CI, job `build` sudah menjalankan gate admin setelah admin dan editor dibuat lewat `pnpm admin:create`, jadi gate "satu artikel dibuat, dijadwalkan, dan tampil tepat waktu tanpa menyentuh database manual" ikut diperiksa di setiap pipeline.
 

@@ -9851,14 +9851,14 @@ export default defineNuxtPlugin(() => {
 //  - Path dicek ketat (splitStorageKey) agar tidak bisa keluar dari MEDIA_DIR.
 //  - Di dev, file yang tidak ada diganti placeholder SVG (utils/media.ts).
 import { splitStorageKey } from '@framework/core'
-import { defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
-import { mediaSecurityHeaders, readMediaFile } from '../../utils/media'
+import { defineEventHandler, setResponseStatus } from 'nuxt/server'
+import { mediaKeyParam, mediaSecurityHeaders, readMediaFile } from '../../utils/media'
 
 export default defineEventHandler(async (event) => {
   const site = event.context.site
-  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
-  const segments = splitStorageKey(key)
-  if (!site || !segments || segments[0] !== site.code) return notFound(event)
+  const key = mediaKeyParam(event)
+  const segments = key === null ? null : splitStorageKey(key)
+  if (!site || key === null || !segments || segments[0] !== site.code) return notFound(event)
 
   const file = await readMediaFile(key)
   if (!file) return notFound(event)
@@ -16450,8 +16450,11 @@ if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 // 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
 // login salah/benar, sesi, logout, dan rate limit login.
 // 4.2: API per site (404 site lain, 422 input salah, 409 versi lama).
-// 4.3: upload media. 4.4: tema dan pratinjau. Alur buat-jadwalkan-tampilkan artikel
-// ditambahkan di 4.6.
+// 4.3: upload media. 4.4: tema dan pratinjau.
+// 4.6 (gate M4): buat artikel lewat API admin, jadwalkan beberapa detik ke
+// depan, pastikan sebelum waktunya tidak ada di URL artikel, home, sitemap,
+// dan RSS, lalu tampil di semuanya tepat setelah waktunya. Artikel uji
+// diarsipkan di akhir (API admin tidak menghapus artikel).
 //
 // Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
 // ADMIN_PASSWORD (password admin yang dibuat lewat `pnpm admin:create`),
@@ -16630,6 +16633,64 @@ try {
   check('media pratinjau tanpa sesi 401', r.status === 401, `${r.status} ${r.body.slice(0, 160)}`)
   r = await admin('/admin/preview-media/kabar-tekno/logo.svg', { cookie: adminCookie })
   check('media pratinjau dengan sesi: diizinkan (file seed tidak ada di build = 404 dari route)', r.status === 200 || (r.status === 404 && r.body.startsWith('Media tidak ditemukan')), `${r.status} ${r.body.slice(0, 160)}`)
+
+  // Gate M4 (4.6): artikel dijadwalkan tampil tepat waktu, tanpa SQL manual.
+  // Jam yang dipakai sama: server memakai jam proses (ctx.now()), bukan jam
+  // database, dan gate berjalan di mesin yang sama.
+  const run = Date.now().toString(36)
+  const slug = `uji-gate-jadwal-${run}`
+  const title = `Uji gate terjadwal ${run}`
+  r = await admin(`/api/admin/sites/${tekno.id}/categories`, { cookie: adminCookie })
+  const category = r.status === 200 ? JSON.parse(r.body).find((c) => c.status === 'ACTIVE') : null
+  check('jadwal: kategori aktif tersedia', Boolean(category), String(r.status))
+  const leadMs = Number(process.env.GATE_SCHEDULE_LEAD_MS ?? 6000)
+  const publishAt = new Date(Date.now() + leadMs)
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, {
+    method: 'POST', cookie: adminCookie,
+    body: { title, slug, excerpt: 'Artikel uji gate M4.', categoryId: category?.id, status: 'PUBLISHED', publishedAt: publishAt.toISOString(), body: { version: 1, blocks: [{ type: 'paragraph', text: 'Artikel ini dibuat gate-admin dan diarsipkan lagi.' }] } },
+  })
+  const scheduled = r.status === 200 ? JSON.parse(r.body) : null
+  check('jadwal: artikel dibuat PUBLISHED bertanggal mendatang, belum punya URL publik', scheduled?.status === 'PUBLISHED' && scheduled.publicPath === null && new Date(scheduled.publishedAt).getTime() === publishAt.getTime(), `${r.status} ${r.body.slice(0, 200)}`)
+  // Permalink kabar-tekno di seed: /:category/:slug.
+  const articlePath = `/${category?.slug}/${slug}`
+  const site = (path) => requestWithHost(port, { path, host: siteHost })
+  const visibleEverywhere = async () => {
+    const [page, home, sitemap, rss] = await Promise.all([site(articlePath), site('/'), site('/sitemap.xml'), site('/rss.xml')])
+    return {
+      page: page.status === 200 && page.body.includes(title),
+      pageStatus: page.status,
+      home: home.status === 200 && home.body.includes(slug),
+      sitemap: sitemap.status === 200 && sitemap.body.includes(`${articlePath}<`),
+      rss: rss.status === 200 && rss.body.includes(slug),
+    }
+  }
+  if (scheduled) {
+    try {
+      const before = await visibleEverywhere()
+      const stillEarly = Date.now() < publishAt.getTime()
+      check('jadwal: pemeriksaan "sebelum" selesai sebelum waktunya (naikkan GATE_SCHEDULE_LEAD_MS bila gagal)', stillEarly, `${publishAt.getTime() - Date.now()} ms tersisa`)
+      check('jadwal: sebelum waktunya URL artikel 404', before.pageStatus === 404, String(before.pageStatus))
+      check('jadwal: sebelum waktunya tidak ada di home, sitemap, RSS', !before.home && !before.sitemap && !before.rss, JSON.stringify(before))
+
+      // Tunggu sampai waktunya, lalu request pertama sesudahnya harus sudah menampilkan.
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, publishAt.getTime() - Date.now()) + 50))
+      const after = await visibleEverywhere()
+      const lateMs = Date.now() - publishAt.getTime()
+      check('jadwal: request pertama setelah waktunya menampilkan artikel', after.page, `${after.pageStatus}, ${lateMs} ms setelah jadwal`)
+      check('jadwal: setelah waktunya ada di home, sitemap, RSS', after.home && after.sitemap && after.rss, JSON.stringify(after))
+      r = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}`, { cookie: adminCookie })
+      const published = r.status === 200 ? JSON.parse(r.body) : null
+      check('jadwal: API admin kini memberi URL publik yang sama', published?.publicPath === articlePath, `${published?.publicPath} vs ${articlePath}`)
+    } finally {
+      // Bersihkan, juga bila pemeriksaan di atas melempar: arsipkan dengan
+      // versi terbaru, artikel hilang lagi dari publik.
+      const latest = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}`, { cookie: adminCookie })
+      const version = latest.status === 200 ? JSON.parse(latest.body).version : scheduled.version
+      r = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}/archive`, { method: 'POST', cookie: adminCookie, body: { version } })
+      const gone = await site(articlePath)
+      check('jadwal: artikel uji diarsipkan, URL 404 lagi', r.status === 200 && gone.status === 404, `${r.status} ${gone.status}`)
+    }
+  }
 
   // User yang hanya anggota satu site tidak bisa membuka site lain.
   r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })
@@ -17236,7 +17297,11 @@ export function createEditorRepository(ctx: RepositoryContext) {
   async function ensureOwned(tx: Db, table: OwnedTable, siteId: SiteId, ids: (string | null)[], field: string, label: string) {
     const wanted = [...new Set(ids.filter((v): v is string => Boolean(v)))]
     if (wanted.length === 0) return
-    const rows = await tx.select({ id: table.id }).from(table).where(and(eq(table.siteId, siteId), inArray(table.id, wanted)))
+    const query = tx.select({ id: table.id }).from(table).where(and(eq(table.siteId, siteId), inArray(table.id, wanted)))
+    // Media dikunci FOR SHARE sampai transaksi simpan selesai: deleteMedia
+    // (FOR UPDATE) menunggu, lalu melihat pemakaian baru, sehingga isi tidak
+    // bisa menunjuk media yang terhapus di tengah simpan. Tabel lain punya FK.
+    const rows = await (table === media ? query.for('share') : query)
     const found = new Set(rows.map((r) => r.id))
     const missing = wanted.filter((v) => !found.has(v))
     if (missing.length) throw invalid([{ field, message: `${label} tidak ditemukan di site ini: ${missing.join(', ')}` }])
@@ -17350,6 +17415,32 @@ export function createEditorRepository(ctx: RepositoryContext) {
   async function articleReservedFirst(tx: Db, siteId: SiteId) {
     const { settings } = await siteSettings(tx, siteId)
     return permalinkFirstToken(settings.permalink) === ':slug'
+  }
+
+  /** Tempat media dipakai (judul/nama), dibaca lewat tx agar ikut transaksi hapus. */
+  async function mediaUsageIn(tx: Db, siteId: SiteId, mediaId: string): Promise<string[]> {
+    const imageBlock = JSON.stringify([{ type: 'image', mediaId }])
+    const [articleRows, pageRows, categoryRows, authorRows, siteRows] = await Promise.all([
+      tx.select({ title: articles.title }).from(articles).where(and(eq(articles.siteId, siteId), or(
+        eq(articles.featuredMediaId, mediaId),
+        sql`${articles.seo}->>'og_image_id' = ${mediaId}`,
+        sql`${articles.body}->'blocks' @> ${imageBlock}::jsonb`,
+      ))).limit(20),
+      tx.select({ title: pages.title }).from(pages).where(and(eq(pages.siteId, siteId), or(
+        sql`${pages.seo}->>'og_image_id' = ${mediaId}`,
+        sql`${pages.body}->'blocks' @> ${imageBlock}::jsonb`,
+      ))).limit(20),
+      tx.select({ name: categories.name }).from(categories).where(and(eq(categories.siteId, siteId), sql`${categories.seo}->>'og_image_id' = ${mediaId}`)).limit(20),
+      tx.select({ name: authors.name }).from(authors).where(and(eq(authors.siteId, siteId), eq(authors.avatarMediaId, mediaId))).limit(20),
+      tx.select({ name: sites.name }).from(sites).where(and(eq(sites.id, siteId), or(eq(sites.logoMediaId, mediaId), eq(sites.faviconMediaId, mediaId)))),
+    ])
+    return [
+      ...articleRows.map((r) => `artikel "${r.title}"`),
+      ...pageRows.map((r) => `halaman "${r.title}"`),
+      ...categoryRows.map((r) => `kategori "${r.name}"`),
+      ...authorRows.map((r) => `avatar penulis ${r.name}`),
+      ...siteRows.map(() => 'logo/favicon site'),
+    ]
   }
 
   // ---------- Halaman, kategori, tag, menu (util kecil) ---------------------
@@ -17531,29 +17622,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
 
     /** Tempat media dipakai; kosong = boleh dihapus. */
     async mediaUsage(siteId: SiteId, id: string): Promise<string[]> {
-      const mediaId = asId(id, 'Media')
-      const imageBlock = JSON.stringify([{ type: 'image', mediaId }])
-      const [articleRows, pageRows, categoryRows, authorRows, siteRows] = await Promise.all([
-        db.select({ title: articles.title }).from(articles).where(and(eq(articles.siteId, siteId), or(
-          eq(articles.featuredMediaId, mediaId),
-          sql`${articles.seo}->>'og_image_id' = ${mediaId}`,
-          sql`${articles.body}->'blocks' @> ${imageBlock}::jsonb`,
-        ))).limit(20),
-        db.select({ title: pages.title }).from(pages).where(and(eq(pages.siteId, siteId), or(
-          sql`${pages.seo}->>'og_image_id' = ${mediaId}`,
-          sql`${pages.body}->'blocks' @> ${imageBlock}::jsonb`,
-        ))).limit(20),
-        db.select({ name: categories.name }).from(categories).where(and(eq(categories.siteId, siteId), sql`${categories.seo}->>'og_image_id' = ${mediaId}`)).limit(20),
-        db.select({ name: authors.name }).from(authors).where(and(eq(authors.siteId, siteId), eq(authors.avatarMediaId, mediaId))).limit(20),
-        db.select({ name: sites.name }).from(sites).where(and(eq(sites.id, siteId), or(eq(sites.logoMediaId, mediaId), eq(sites.faviconMediaId, mediaId)))),
-      ])
-      return [
-        ...articleRows.map((r) => `artikel "${r.title}"`),
-        ...pageRows.map((r) => `halaman "${r.title}"`),
-        ...categoryRows.map((r) => `kategori "${r.name}"`),
-        ...authorRows.map((r) => `avatar penulis ${r.name}`),
-        ...siteRows.map(() => 'logo/favicon site'),
-      ]
+      return mediaUsageIn(db, siteId, asId(id, 'Media'))
     },
 
     /**
@@ -17563,13 +17632,18 @@ export function createEditorRepository(ctx: RepositoryContext) {
     async deleteMedia(siteId: SiteId, id: string, expectedUpdatedAt: string): Promise<{ storageKey: string }> {
       const mediaId = asId(id, 'Media')
       const token = parse(updatedAtSchema, expectedUpdatedAt)
-      const usage = await api.mediaUsage(siteId, mediaId)
-      if (usage.length) throw invalid([{ field: '', message: `media masih dipakai: ${usage.join(', ')}` }])
-      return guardedUpdate(
-        () => db.delete(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning({ storageKey: media.storageKey }),
-        async () => Boolean((await db.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).limit(1))[0]),
-        'Media',
-      )
+      return db.transaction(async (tx) => {
+        // Kunci baris dulu: simpan artikel/halaman yang sedang memakai media
+        // ini (FOR SHARE di ensureOwned) selesai lebih dulu, dan pemeriksaan
+        // pemakaian di bawah melihat hasilnya.
+        const [locked] = await tx.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).for('update')
+        if (!locked) throw notFound('Media')
+        const usage = await mediaUsageIn(tx, siteId, mediaId)
+        if (usage.length) throw invalid([{ field: '', message: `media masih dipakai: ${usage.join(', ')}` }])
+        const [row] = await tx.delete(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning({ storageKey: media.storageKey })
+        if (!row) throw conflict('Media')
+        return row
+      })
     },
 
     // ======================= Artikel =======================
@@ -18195,6 +18269,25 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       expect(await editor.mediaUsage(SITE, m.id)).toEqual([])
       expect(await editor.deleteMedia(SITE, m.id, u.updatedAt.toISOString())).toEqual({ storageKey: file('a').storageKey })
       expect((await editor.listMedia(SITE, { ids: [m.id] })).items).toEqual([])
+    })
+
+    it('hapus menunggu simpan yang sedang memakai media, lalu menolak (code review M4)', async () => {
+      const m = await editor.createMedia(SITE, file('race'), { altText: 'Balapan' }, USER)
+      const a = await editor.createArticle(SITE, article({ slug: `hapus-media-${run}`, featuredMediaId: null }), USER)
+      let deleting: Promise<unknown> | null = null
+      // Tiru transaksi simpan: kunci media (seperti ensureOwned), hapus mulai
+      // dan harus menunggu, baru kemudian artikel memakai media itu.
+      await db.transaction(async (tx) => {
+        await tx.select({ id: media.id }).from(media).where(eq(media.id, m.id)).for('share')
+        deleting = editor.deleteMedia(SITE, m.id, m.updatedAt.toISOString()).then(() => null, (e: unknown) => e)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        await tx.update(articles).set({ featuredMediaId: m.id }).where(eq(articles.id, a.id))
+      })
+      const error = await deleting
+      expect(error).toBeInstanceOf(EditorError)
+      expect((error as unknown as EditorError).kind).toBe('invalid')
+      await db.delete(articles).where(eq(articles.id, a.id))
+      await editor.deleteMedia(SITE, m.id, m.updatedAt.toISOString())
     })
   })
 
@@ -20925,7 +21018,7 @@ describe('storage media lokal', async () => {
 })
 ```
 
-5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form.
+5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form. Penguncian baris agar media tidak terhapus di tengah simpan artikel ditambahkan di bab "Menjadwalkan Artikel dan Menutup Admin".
 
 6. Satukan logika baca file di server, dipakai route publik `/media` dan API admin. Header `nosniff` dan CSP `sandbox` dipasang untuk semua file media:
 
@@ -20935,6 +21028,7 @@ describe('storage media lokal', async () => {
 // Storage media di server (M4 4.3): disk lokal di MEDIA_DIR. Dipakai route
 // publik /media (baca) dan API admin (upload, hapus, pratinjau).
 import { createLocalMediaStorage, splitStorageKey, type MediaStorage } from '@framework/core'
+import { getRouterParam, type RequestEvent } from 'nuxt/server'
 
 /** Batas ukuran satu file upload. */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -20998,6 +21092,19 @@ function placeholderSvg(name: string): string {
     + `<text x="800" y="470" font-family="system-ui, sans-serif" font-size="56" fill="#5b6470" text-anchor="middle">${label}</text>`
     + `</svg>`
 }
+
+/**
+ * storage_key dari parameter route `[...key]`, sudah di-decode. null bila
+ * percent-encoding rusak (decodeURIComponent melempar URIError): jawab 404,
+ * bukan 500.
+ */
+export function mediaKeyParam(event: RequestEvent): string | null {
+  try {
+    return decodeURIComponent(getRouterParam(event, 'key') ?? '')
+  } catch {
+    return null
+  }
+}
 ```
 
 `apps/web/server/routes/media/[...key].get.ts`
@@ -21010,14 +21117,14 @@ function placeholderSvg(name: string): string {
 //  - Path dicek ketat (splitStorageKey) agar tidak bisa keluar dari MEDIA_DIR.
 //  - Di dev, file yang tidak ada diganti placeholder SVG (utils/media.ts).
 import { splitStorageKey } from '@framework/core'
-import { defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
-import { mediaSecurityHeaders, readMediaFile } from '../../utils/media'
+import { defineEventHandler, setResponseStatus } from 'nuxt/server'
+import { mediaKeyParam, mediaSecurityHeaders, readMediaFile } from '../../utils/media'
 
 export default defineEventHandler(async (event) => {
   const site = event.context.site
-  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
-  const segments = splitStorageKey(key)
-  if (!site || !segments || segments[0] !== site.code) return notFound(event)
+  const key = mediaKeyParam(event)
+  const segments = key === null ? null : splitStorageKey(key)
+  if (!site || key === null || !segments || segments[0] !== site.code) return notFound(event)
 
   const file = await readMediaFile(key)
   if (!file) return notFound(event)
@@ -21119,7 +21226,7 @@ export default defineAdminSiteHandler(async ({ editor, site, event }) => {
 })
 ```
 
-   Route lain: `media/[id].put.ts` (ubah keterangan), `media/[id].delete.ts` (hapus catatan lalu file), `media/[id]/usage.get.ts`. Pratinjau admin butuh route sendiri karena route publik `/media` hanya melayani domain site, sedangkan admin ada di host admin.
+   Route lain: `media/[id].put.ts` (ubah keterangan), `media/[id].delete.ts` (hapus catatan lalu file; galat hapus file hanya dicatat, lihat bab "Menjadwalkan Artikel dan Menutup Admin"), `media/[id]/usage.get.ts`. Pratinjau admin butuh route sendiri karena route publik `/media` hanya melayani domain site, sedangkan admin ada di host admin.
 
 8. Ganti pemilih gambar di admin dengan dialog berisi galeri dan form unggah; gambar yang baru diunggah langsung terpilih:
 
@@ -21283,7 +21390,6 @@ const props = withDefaults(defineProps<{ siteId: string; invalid?: boolean; allo
 const model = defineModel<string | null>({ required: true })
 
 const dialog = ref<HTMLDialogElement | null>(null)
-const page = ref(1)
 const items = ref<Json<MediaListItem>[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -21299,9 +21405,8 @@ async function loadPage(n: number) {
   loading.value = true
   try {
     const result = await adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media', { query: { page: n } })
-    items.value = n === 1 ? result.items : [...items.value, ...result.items]
+    items.value = n === 1 ? result.items : appendUnique(items.value, result.items)
     total.value = result.total
-    page.value = n
   } finally {
     loading.value = false
   }
@@ -21431,7 +21536,7 @@ async function uploaded(media: Json<MediaListItem>) {
         type="button"
         class="btn btn--small"
         :disabled="loading"
-        @click="loadPage(page + 1)"
+        @click="loadPage(nextMediaPage(items.length))"
       >
         Muat lagi
       </button>
@@ -21457,7 +21562,6 @@ definePageMeta({ layout: 'admin' })
 const site = useAdminSite()
 const items = ref<Json<MediaListItem>[]>([])
 const total = ref(0)
-const page = ref(1)
 const loading = ref(false)
 const loadError = ref<string | null>(null)
 
@@ -21466,9 +21570,8 @@ async function loadPage(n: number) {
   loading.value = true
   try {
     const result = await adminApi<Json<Page<MediaListItem>>>(site.value.id, 'media', { query: { page: n } })
-    items.value = n === 1 ? result.items : [...items.value, ...result.items]
+    items.value = n === 1 ? result.items : appendUnique(items.value, result.items)
     total.value = result.total
-    page.value = n
   } catch (e) {
     loadError.value = apiErrorMessage(e)
   } finally {
@@ -21627,7 +21730,7 @@ const err = (field: string) => fieldError(errors.value, field)
           type="button"
           class="btn btn--small"
           :disabled="loading"
-          @click="loadPage(page + 1)"
+          @click="loadPage(nextMediaPage(items.length))"
         >
           Muat lagi
         </button>
@@ -22289,9 +22392,9 @@ function plain(event: RequestEvent, status: number, text: string) {
 // Route publik /media hanya melayani domain site, sedangkan pratinjau ada di
 // host admin. Wajib sesi admin; kode site di awal key harus site milik user.
 import { splitStorageKey } from '@framework/core'
-import { defineEventHandler, getRouterParam, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { defineEventHandler, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { assertAdminRequest, requireAdmin } from '../../../utils/admin'
-import { mediaSecurityHeaders, readMediaFile } from '../../../utils/media'
+import { mediaKeyParam, mediaSecurityHeaders, readMediaFile } from '../../../utils/media'
 
 export default defineEventHandler(async (event) => {
   // Galat dijawab teks polos dengan status yang benar: di build produksi,
@@ -22303,9 +22406,9 @@ export default defineEventHandler(async (event) => {
   } catch (error) {
     return plain(event, (error as { statusCode?: number }).statusCode ?? 401, 'Tidak diizinkan.')
   }
-  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
-  const segments = splitStorageKey(key)
-  if (!segments || !admin.sites.some((s) => s.code === segments[0])) return plain(event, 404, 'Media tidak ditemukan.')
+  const key = mediaKeyParam(event)
+  const segments = key === null ? null : splitStorageKey(key)
+  if (key === null || !segments || !admin.sites.some((s) => s.code === segments[0])) return plain(event, 404, 'Media tidak ditemukan.')
   const file = await readMediaFile(key)
   if (!file) return plain(event, 404, 'Media tidak ditemukan.')
   mediaSecurityHeaders(event.res.headers)
@@ -22946,4 +23049,112 @@ const dirty = computed(() => {
 ```
 
 10. Uji di gate admin tanpa menyimpan apa pun: deskripsi form ada, draf salah 422, pratinjau memakai draf dan `noindex`, id draf yang tidak dikenal memakai theme aktif, pratinjau dan media pratinjau tanpa sesi 401, dan site publik tidak berubah. Lalu coba di browser: ubah warna aksen, lihat pratinjau, pindah template, pilih "Tanpa section", lihat lebar ponsel, simpan, dan buka site.
+
+# Menjadwalkan Artikel dan Menutup Admin
+
+1. Pahami dulu arti "terjadwal". Tidak ada scheduler atau queue: artikel terjadwal adalah artikel `PUBLISHED` dengan `published_at` di masa depan. Semua query publik (halaman artikel, home, arsip, sitemap, RSS) sudah memfilter `published_at <= now()` dengan jam proses server (`ctx.now()`), dan HTML publik dikirim `no-store`. Artinya artikel tampil pada request pertama setelah waktunya. Feed dikirim dengan `max-age=300`, jadi pembaca feed bisa melihatnya paling lambat lima menit kemudian; bila nanti HTML publik di-cache, toleransinya sebesar TTL cache itu.
+
+2. Jadwalkan dari admin: buka artikel, pilih status Terbit, isi tanggal terbit di masa depan (dalam zona waktu site), dan simpan. Daftar artikel menampilkannya sebagai Terjadwal, dan API mengembalikan `publicPath: null` sampai waktunya tiba.
+
+3. Buktikan dengan gate admin terhadap server hasil build. Gate membuat artikel lewat API admin (tanpa SQL), menjadwalkannya beberapa detik ke depan (`GATE_SCHEDULE_LEAD_MS`, bawaan 6000), lalu memeriksa:
+   - sebelum waktunya: URL artikel 404, dan slug-nya tidak ada di home, `sitemap.xml`, maupun `rss.xml`; pemeriksaan ini sendiri harus selesai sebelum waktunya, kalau tidak gate gagal dengan pesan yang jelas;
+   - request pertama setelah waktunya: halaman artikel tampil, dan artikel ada di home, sitemap, dan RSS; API admin kini memberi `publicPath` yang sama;
+   - di blok `finally`: artikel uji diarsipkan dengan versi terbaru dan URL-nya 404 lagi, juga bila pemeriksaan di tengah melempar galat. API admin tidak menghapus artikel, jadi baris arsipnya tetap ada di database lokal.
+
+   Bagian ini ada di `apps/web/scripts/gate-admin.mjs` (isi lengkapnya di bab "Membangun Login Admin"). Jalankan:
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 53 pemeriksaan admin lulus
+```
+
+4. Kunci media selama simpan berlangsung. Gambar di body dan gambar OG disimpan di JSON tanpa foreign key, jadi database tidak mencegah media dihapus saat artikel yang baru memakainya sedang disimpan. Perbaikannya di repository editor: `ensureOwned` membaca baris media dengan `FOR SHARE` (kunci bertahan sampai transaksi simpan selesai), dan `deleteMedia` berjalan dalam satu transaksi yang dimulai dengan `SELECT ... FOR UPDATE` pada baris media, baru kemudian memeriksa pemakaian (`mediaUsageIn(tx, ...)`) dan menghapus. Hapus yang datang belakangan menunggu simpan selesai lalu melihat pemakaian barunya; simpan yang datang belakangan menunggu hapus selesai lalu ditolak karena medianya sudah tidak ada. Test di `editor-repository.test.ts` meniru simpan yang memegang kunci, memulai hapus, lalu memakai media itu: hapus harus ditolak.
+
+5. Hapus file setelah catatan terhapus tidak boleh menggagalkan request. Bila `rm` gagal (izin, disk), galat dicatat ke log dan API tetap menjawab `{ ok: true }`; tanpa itu admin melihat galat, lalu 404 saat mencoba lagi:
+
+`apps/web/server/api/admin/sites/[siteId]/media/[id].delete.ts`
+
+```ts
+// DELETE ?updatedAt=: hapus media yang tidak dipakai, beserta file-nya.
+import { getQuery } from 'nuxt/server'
+import { defineAdminSiteHandler, param } from '../../../../../utils/admin-api'
+import { useMediaStorage } from '../../../../../utils/media'
+
+export default defineAdminSiteHandler(async ({ editor, site, event }) => {
+  const { storageKey } = await editor.deleteMedia(site.id, param(event, 'id'), String(getQuery(event)['updatedAt'] ?? ''))
+  // Baris sudah terhapus: galat hapus file hanya dicatat. Melempar di sini
+  // membuat admin melihat galat, lalu 404 saat mencoba lagi.
+  try {
+    await useMediaStorage()?.delete(storageKey)
+  } catch (error) {
+    console.error(`[media] file ${storageKey} gagal dihapus (catatan sudah terhapus):`, error)
+  }
+  return { ok: true }
+})
+```
+
+6. Percent-encoding rusak di URL media (`/media/%E0%A4%A.png`) membuat `decodeURIComponent` melempar dan request menjadi 500. `mediaKeyParam` di `apps/web/server/utils/media.ts` menangkapnya dan route `/media` maupun `/admin/preview-media` menjawab 404.
+
+7. Perbaiki "Muat lagi" di galeri media. Unggah menaruh item baru di depan daftar dan hapus membuangnya, sehingga nomor halaman terakhir tidak cocok lagi dengan offset server: ada gambar yang tampil dua kali atau terlewat. Halaman berikutnya dihitung dari jumlah item yang tampil, dan item yang sudah ada dibuang dari hasilnya:
+
+`apps/web/app/utils/media-paging.ts`
+
+```ts
+// "Muat lagi" di galeri media. Daftar di layar ikut berubah saat unggah
+// (item baru di depan) dan hapus, sehingga nomor halaman terakhir tidak lagi
+// cocok dengan offset server. Halaman berikutnya dihitung dari jumlah item
+// yang tampil (offset <= jumlah itu, jadi tidak ada yang terlewat), dan item
+// yang sudah tampil dibuang dari hasilnya (tidak ada yang dobel).
+export const MEDIA_PAGE_SIZE = 30
+
+export function nextMediaPage(shown: number, pageSize = MEDIA_PAGE_SIZE): number {
+  return Math.floor(shown / pageSize) + 1
+}
+
+export function appendUnique<T extends { id: string }>(list: T[], more: T[]): T[] {
+  const seen = new Set(list.map((x) => x.id))
+  return [...list, ...more.filter((x) => !seen.has(x.id))]
+}
+```
+
+`apps/web/app/utils/media-paging.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { appendUnique, nextMediaPage } from './media-paging'
+
+const ids = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => ({ id: `m${from + i}` }))
+
+describe('paging galeri media', () => {
+  it('tanpa perubahan: halaman berikutnya biasa', () => {
+    expect(nextMediaPage(30)).toBe(2)
+    expect(nextMediaPage(60)).toBe(3)
+  })
+
+  it('setelah unggah: item yang tergeser ke halaman 2 tidak dobel', () => {
+    // Server: m0 (baru) .. m31; layar: m0 + 30 item lama (m1..m30).
+    const server = ids(0, 32)
+    const shown = server.slice(0, 31)
+    const page = nextMediaPage(shown.length)
+    const merged = appendUnique(shown, server.slice((page - 1) * 30, page * 30))
+    expect(merged.map((x) => x.id)).toEqual(server.map((x) => x.id))
+  })
+
+  it('setelah hapus: item yang naik ke halaman 1 tidak terlewat', () => {
+    // Server setelah satu dihapus: m0..m30 (31 item); layar: 29 item pertama.
+    const server = ids(0, 31)
+    const shown = server.slice(0, 29)
+    const page = nextMediaPage(shown.length)
+    const merged = appendUnique(shown, server.slice((page - 1) * 30, page * 30))
+    expect(merged.map((x) => x.id)).toEqual(server.slice(0, 30).map((x) => x.id))
+  })
+})
+```
+
+   Layar Media dan `MediaPicker` memanggil `loadPage(nextMediaPage(items.length))` dan menggabungkan hasil dengan `appendUnique`.
+
+8. Persempit pembersihan konten demo. `demo:saksang --remove` dulu menghapus semua redirect site yang memuat kata "saksang", termasuk redirect buatan editor untuk artikel lain. Sekarang yang dihapus hanya redirect demo (id tetap) dan redirect yang menunjuk path artikel demo saat ini; karena rantai redirect diratakan, itu mencakup semua redirect yang dibuat admin saat slug artikel demo diubah.
+
+9. Tutup dengan pemeriksaan penuh sebelum commit: `pnpm check`, `pnpm build`, smoke, gate isolasi site, dan gate admin. Di CI, job `build` sudah menjalankan gate admin setelah admin dan editor dibuat lewat `pnpm admin:create`, jadi gate "satu artikel dibuat, dijadwalkan, dan tampil tepat waktu tanpa menyentuh database manual" ikut diperiksa di setiap pipeline.
 

@@ -5,14 +5,14 @@
 //  - Path dicek ketat (splitStorageKey) agar tidak bisa keluar dari MEDIA_DIR.
 //  - Di dev, file yang tidak ada diganti placeholder SVG (utils/media.ts).
 import { splitStorageKey } from '@framework/core'
-import { defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
-import { mediaSecurityHeaders, readMediaFile } from '../../utils/media'
+import { defineEventHandler, setResponseStatus } from 'nuxt/server'
+import { mediaKeyParam, mediaSecurityHeaders, readMediaFile } from '../../utils/media'
 
 export default defineEventHandler(async (event) => {
   const site = event.context.site
-  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
-  const segments = splitStorageKey(key)
-  if (!site || !segments || segments[0] !== site.code) return notFound(event)
+  const key = mediaKeyParam(event)
+  const segments = key === null ? null : splitStorageKey(key)
+  if (!site || key === null || !segments || segments[0] !== site.code) return notFound(event)
 
   const file = await readMediaFile(key)
   if (!file) return notFound(event)

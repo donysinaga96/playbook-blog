@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 25 / 27 | — |
+| M4 — Admin minimal | 27 / 27 | ⏳ Lulus lokal 22 Nov 2026; menunggu pipeline |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, 4.2, 4.3, dan 4.4 (22 Nov 2026) selesai; berikutnya 4.6 (gate M4: artikel terjadwal tampil tepat waktu). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, 4.2, 4.3, 4.4, dan 4.6 (22 Nov 2026) selesai; gate M4 lulus lokal, tinggal konfirmasi pipeline. Berikutnya: evaluasi rincian M5 (usulan A–F). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -270,11 +270,18 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - [x] Daftar revisi per artikel — `editor.listRevisions` (4.1); tampilan di 4.2
 
 **4.6 Test pembukti gate dan penutup [F]**
-- [ ] [F] Skrip gate `apps/web/scripts/gate-admin.mjs`, masuk CI job `build`: login → buat artikel → jadwalkan `published_at` beberapa detik ke depan → sebelum waktunya 404 dan tidak ada di home, sitemap, RSS → sesudahnya tampil
-- [ ] Bab tutorial, commit, pipeline hijau, retro mini M4
+- [x] [F] Skrip gate `apps/web/scripts/gate-admin.mjs`, masuk CI job `build`: login → buat artikel → jadwalkan `published_at` beberapa detik ke depan → sebelum waktunya 404 dan tidak ada di home, sitemap, RSS → sesudahnya tampil — `GATE_SCHEDULE_LEAD_MS` (bawaan 6 detik); request pertama setelah jadwal sudah tampil di URL artikel, home, sitemap, RSS; `publicPath` API sama; artikel uji diarsipkan di `finally`. `gate-admin` 53 pemeriksaan
+- [x] Bab tutorial, commit, pipeline hijau, retro mini M4 — bab "Menjadwalkan Artikel dan Menutup Admin"; pipeline menunggu konfirmasi
 - › Skill: `/security-review` dan `/code-review` (level high) untuk seluruh diff M4 sebelum commit
+- Code review (level high, 22 Nov 2026, seluruh diff M4): 6 temuan diperbaiki: media bisa terhapus di tengah simpan artikel yang baru memakainya (kini `FOR SHARE` di `ensureOwned` + `deleteMedia` satu transaksi dengan `FOR UPDATE`; test meniru balapan), "Muat lagi" galeri dobel/terlewat setelah unggah atau hapus (`nextMediaPage` + `appendUnique`), galat hapus file setelah catatan terhapus jadi 500 (kini dicatat saja), percent-encoding rusak di `/media` dan `/admin/preview-media` = 500 (kini 404), artikel uji gate tertinggal terbit bila gate melempar (arsip di `finally`), `demo:saksang --remove` menghapus redirect lain yang memuat "saksang" (kini hanya redirect demo dan yang menunjuk artikel demo).
+- Security review (22 Nov 2026, seluruh diff M4): tidak ada temuan. Catatan tanpa dampak: item menu ROUTE menerima `/\evil.com` (browser membacanya seperti `//evil.com`), tetapi hanya admin site yang bisa mengisinya dan admin memang boleh menambah URL eksternal; pratinjau merender konten site di origin admin, aman selama tidak ada `v-html` di template (jaga bila template baru menambah HTML mentah).
 
 **Gate:** satu artikel dibuat, dijadwalkan, dan tampil tepat waktu tanpa menyentuh database manual.
+
+**Retro mini M4**
+- Lebih lama dari dugaan: keamanan di sekitar admin, bukan CRUD-nya. Path ter-encode yang lolos aturan host, `X-Forwarded-For`, galat di `/admin/**` yang dirender sebagai SPA 404 di build produksi (tidak terlihat di dev), dan draf pratinjau di cookie yang bisa melewati 4 KB semuanya ditemukan review atau gate, bukan test unit. Referensi media di JSON tanpa foreign key butuh penguncian baris manual.
+- Ternyata tidak perlu: scheduler atau queue untuk artikel terjadwal; filter `published_at <= now()` yang sudah ada sejak M2 cukup, dan gate membuktikannya terhadap build. Tabel sesi juga tidak perlu (cookie tersegel, batasnya dicatat di ADR-009).
+- Perlu diubah di roadmap: M5 (cache HTML) harus menetapkan TTL sebagai toleransi "tepat waktu" artikel terjadwal dan menyesuaikan gate ini. Penghapusan EXIF dan pulihkan revisi (usulan E) tetap di backlog. Gate admin kini 53 pemeriksaan dan menulis data (artikel arsip uji) ke database lokal; pertimbangkan site uji khusus bila mulai mengganggu.
 
 ## M5 — Produksi pertama (titik evaluasi)
 

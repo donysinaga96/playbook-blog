@@ -249,7 +249,11 @@ export function createEditorRepository(ctx: RepositoryContext) {
   async function ensureOwned(tx: Db, table: OwnedTable, siteId: SiteId, ids: (string | null)[], field: string, label: string) {
     const wanted = [...new Set(ids.filter((v): v is string => Boolean(v)))]
     if (wanted.length === 0) return
-    const rows = await tx.select({ id: table.id }).from(table).where(and(eq(table.siteId, siteId), inArray(table.id, wanted)))
+    const query = tx.select({ id: table.id }).from(table).where(and(eq(table.siteId, siteId), inArray(table.id, wanted)))
+    // Media dikunci FOR SHARE sampai transaksi simpan selesai: deleteMedia
+    // (FOR UPDATE) menunggu, lalu melihat pemakaian baru, sehingga isi tidak
+    // bisa menunjuk media yang terhapus di tengah simpan. Tabel lain punya FK.
+    const rows = await (table === media ? query.for('share') : query)
     const found = new Set(rows.map((r) => r.id))
     const missing = wanted.filter((v) => !found.has(v))
     if (missing.length) throw invalid([{ field, message: `${label} tidak ditemukan di site ini: ${missing.join(', ')}` }])
@@ -363,6 +367,32 @@ export function createEditorRepository(ctx: RepositoryContext) {
   async function articleReservedFirst(tx: Db, siteId: SiteId) {
     const { settings } = await siteSettings(tx, siteId)
     return permalinkFirstToken(settings.permalink) === ':slug'
+  }
+
+  /** Tempat media dipakai (judul/nama), dibaca lewat tx agar ikut transaksi hapus. */
+  async function mediaUsageIn(tx: Db, siteId: SiteId, mediaId: string): Promise<string[]> {
+    const imageBlock = JSON.stringify([{ type: 'image', mediaId }])
+    const [articleRows, pageRows, categoryRows, authorRows, siteRows] = await Promise.all([
+      tx.select({ title: articles.title }).from(articles).where(and(eq(articles.siteId, siteId), or(
+        eq(articles.featuredMediaId, mediaId),
+        sql`${articles.seo}->>'og_image_id' = ${mediaId}`,
+        sql`${articles.body}->'blocks' @> ${imageBlock}::jsonb`,
+      ))).limit(20),
+      tx.select({ title: pages.title }).from(pages).where(and(eq(pages.siteId, siteId), or(
+        sql`${pages.seo}->>'og_image_id' = ${mediaId}`,
+        sql`${pages.body}->'blocks' @> ${imageBlock}::jsonb`,
+      ))).limit(20),
+      tx.select({ name: categories.name }).from(categories).where(and(eq(categories.siteId, siteId), sql`${categories.seo}->>'og_image_id' = ${mediaId}`)).limit(20),
+      tx.select({ name: authors.name }).from(authors).where(and(eq(authors.siteId, siteId), eq(authors.avatarMediaId, mediaId))).limit(20),
+      tx.select({ name: sites.name }).from(sites).where(and(eq(sites.id, siteId), or(eq(sites.logoMediaId, mediaId), eq(sites.faviconMediaId, mediaId)))),
+    ])
+    return [
+      ...articleRows.map((r) => `artikel "${r.title}"`),
+      ...pageRows.map((r) => `halaman "${r.title}"`),
+      ...categoryRows.map((r) => `kategori "${r.name}"`),
+      ...authorRows.map((r) => `avatar penulis ${r.name}`),
+      ...siteRows.map(() => 'logo/favicon site'),
+    ]
   }
 
   // ---------- Halaman, kategori, tag, menu (util kecil) ---------------------
@@ -544,29 +574,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
 
     /** Tempat media dipakai; kosong = boleh dihapus. */
     async mediaUsage(siteId: SiteId, id: string): Promise<string[]> {
-      const mediaId = asId(id, 'Media')
-      const imageBlock = JSON.stringify([{ type: 'image', mediaId }])
-      const [articleRows, pageRows, categoryRows, authorRows, siteRows] = await Promise.all([
-        db.select({ title: articles.title }).from(articles).where(and(eq(articles.siteId, siteId), or(
-          eq(articles.featuredMediaId, mediaId),
-          sql`${articles.seo}->>'og_image_id' = ${mediaId}`,
-          sql`${articles.body}->'blocks' @> ${imageBlock}::jsonb`,
-        ))).limit(20),
-        db.select({ title: pages.title }).from(pages).where(and(eq(pages.siteId, siteId), or(
-          sql`${pages.seo}->>'og_image_id' = ${mediaId}`,
-          sql`${pages.body}->'blocks' @> ${imageBlock}::jsonb`,
-        ))).limit(20),
-        db.select({ name: categories.name }).from(categories).where(and(eq(categories.siteId, siteId), sql`${categories.seo}->>'og_image_id' = ${mediaId}`)).limit(20),
-        db.select({ name: authors.name }).from(authors).where(and(eq(authors.siteId, siteId), eq(authors.avatarMediaId, mediaId))).limit(20),
-        db.select({ name: sites.name }).from(sites).where(and(eq(sites.id, siteId), or(eq(sites.logoMediaId, mediaId), eq(sites.faviconMediaId, mediaId)))),
-      ])
-      return [
-        ...articleRows.map((r) => `artikel "${r.title}"`),
-        ...pageRows.map((r) => `halaman "${r.title}"`),
-        ...categoryRows.map((r) => `kategori "${r.name}"`),
-        ...authorRows.map((r) => `avatar penulis ${r.name}`),
-        ...siteRows.map(() => 'logo/favicon site'),
-      ]
+      return mediaUsageIn(db, siteId, asId(id, 'Media'))
     },
 
     /**
@@ -576,13 +584,18 @@ export function createEditorRepository(ctx: RepositoryContext) {
     async deleteMedia(siteId: SiteId, id: string, expectedUpdatedAt: string): Promise<{ storageKey: string }> {
       const mediaId = asId(id, 'Media')
       const token = parse(updatedAtSchema, expectedUpdatedAt)
-      const usage = await api.mediaUsage(siteId, mediaId)
-      if (usage.length) throw invalid([{ field: '', message: `media masih dipakai: ${usage.join(', ')}` }])
-      return guardedUpdate(
-        () => db.delete(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning({ storageKey: media.storageKey }),
-        async () => Boolean((await db.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).limit(1))[0]),
-        'Media',
-      )
+      return db.transaction(async (tx) => {
+        // Kunci baris dulu: simpan artikel/halaman yang sedang memakai media
+        // ini (FOR SHARE di ensureOwned) selesai lebih dulu, dan pemeriksaan
+        // pemakaian di bawah melihat hasilnya.
+        const [locked] = await tx.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).for('update')
+        if (!locked) throw notFound('Media')
+        const usage = await mediaUsageIn(tx, siteId, mediaId)
+        if (usage.length) throw invalid([{ field: '', message: `media masih dipakai: ${usage.join(', ')}` }])
+        const [row] = await tx.delete(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning({ storageKey: media.storageKey })
+        if (!row) throw conflict('Media')
+        return row
+      })
     },
 
     // ======================= Artikel =======================

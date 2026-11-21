@@ -3,8 +3,11 @@
 // 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
 // login salah/benar, sesi, logout, dan rate limit login.
 // 4.2: API per site (404 site lain, 422 input salah, 409 versi lama).
-// 4.3: upload media. 4.4: tema dan pratinjau. Alur buat-jadwalkan-tampilkan artikel
-// ditambahkan di 4.6.
+// 4.3: upload media. 4.4: tema dan pratinjau.
+// 4.6 (gate M4): buat artikel lewat API admin, jadwalkan beberapa detik ke
+// depan, pastikan sebelum waktunya tidak ada di URL artikel, home, sitemap,
+// dan RSS, lalu tampil di semuanya tepat setelah waktunya. Artikel uji
+// diarsipkan di akhir (API admin tidak menghapus artikel).
 //
 // Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
 // ADMIN_PASSWORD (password admin yang dibuat lewat `pnpm admin:create`),
@@ -183,6 +186,64 @@ try {
   check('media pratinjau tanpa sesi 401', r.status === 401, `${r.status} ${r.body.slice(0, 160)}`)
   r = await admin('/admin/preview-media/kabar-tekno/logo.svg', { cookie: adminCookie })
   check('media pratinjau dengan sesi: diizinkan (file seed tidak ada di build = 404 dari route)', r.status === 200 || (r.status === 404 && r.body.startsWith('Media tidak ditemukan')), `${r.status} ${r.body.slice(0, 160)}`)
+
+  // Gate M4 (4.6): artikel dijadwalkan tampil tepat waktu, tanpa SQL manual.
+  // Jam yang dipakai sama: server memakai jam proses (ctx.now()), bukan jam
+  // database, dan gate berjalan di mesin yang sama.
+  const run = Date.now().toString(36)
+  const slug = `uji-gate-jadwal-${run}`
+  const title = `Uji gate terjadwal ${run}`
+  r = await admin(`/api/admin/sites/${tekno.id}/categories`, { cookie: adminCookie })
+  const category = r.status === 200 ? JSON.parse(r.body).find((c) => c.status === 'ACTIVE') : null
+  check('jadwal: kategori aktif tersedia', Boolean(category), String(r.status))
+  const leadMs = Number(process.env.GATE_SCHEDULE_LEAD_MS ?? 6000)
+  const publishAt = new Date(Date.now() + leadMs)
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, {
+    method: 'POST', cookie: adminCookie,
+    body: { title, slug, excerpt: 'Artikel uji gate M4.', categoryId: category?.id, status: 'PUBLISHED', publishedAt: publishAt.toISOString(), body: { version: 1, blocks: [{ type: 'paragraph', text: 'Artikel ini dibuat gate-admin dan diarsipkan lagi.' }] } },
+  })
+  const scheduled = r.status === 200 ? JSON.parse(r.body) : null
+  check('jadwal: artikel dibuat PUBLISHED bertanggal mendatang, belum punya URL publik', scheduled?.status === 'PUBLISHED' && scheduled.publicPath === null && new Date(scheduled.publishedAt).getTime() === publishAt.getTime(), `${r.status} ${r.body.slice(0, 200)}`)
+  // Permalink kabar-tekno di seed: /:category/:slug.
+  const articlePath = `/${category?.slug}/${slug}`
+  const site = (path) => requestWithHost(port, { path, host: siteHost })
+  const visibleEverywhere = async () => {
+    const [page, home, sitemap, rss] = await Promise.all([site(articlePath), site('/'), site('/sitemap.xml'), site('/rss.xml')])
+    return {
+      page: page.status === 200 && page.body.includes(title),
+      pageStatus: page.status,
+      home: home.status === 200 && home.body.includes(slug),
+      sitemap: sitemap.status === 200 && sitemap.body.includes(`${articlePath}<`),
+      rss: rss.status === 200 && rss.body.includes(slug),
+    }
+  }
+  if (scheduled) {
+    try {
+      const before = await visibleEverywhere()
+      const stillEarly = Date.now() < publishAt.getTime()
+      check('jadwal: pemeriksaan "sebelum" selesai sebelum waktunya (naikkan GATE_SCHEDULE_LEAD_MS bila gagal)', stillEarly, `${publishAt.getTime() - Date.now()} ms tersisa`)
+      check('jadwal: sebelum waktunya URL artikel 404', before.pageStatus === 404, String(before.pageStatus))
+      check('jadwal: sebelum waktunya tidak ada di home, sitemap, RSS', !before.home && !before.sitemap && !before.rss, JSON.stringify(before))
+
+      // Tunggu sampai waktunya, lalu request pertama sesudahnya harus sudah menampilkan.
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, publishAt.getTime() - Date.now()) + 50))
+      const after = await visibleEverywhere()
+      const lateMs = Date.now() - publishAt.getTime()
+      check('jadwal: request pertama setelah waktunya menampilkan artikel', after.page, `${after.pageStatus}, ${lateMs} ms setelah jadwal`)
+      check('jadwal: setelah waktunya ada di home, sitemap, RSS', after.home && after.sitemap && after.rss, JSON.stringify(after))
+      r = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}`, { cookie: adminCookie })
+      const published = r.status === 200 ? JSON.parse(r.body) : null
+      check('jadwal: API admin kini memberi URL publik yang sama', published?.publicPath === articlePath, `${published?.publicPath} vs ${articlePath}`)
+    } finally {
+      // Bersihkan, juga bila pemeriksaan di atas melempar: arsipkan dengan
+      // versi terbaru, artikel hilang lagi dari publik.
+      const latest = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}`, { cookie: adminCookie })
+      const version = latest.status === 200 ? JSON.parse(latest.body).version : scheduled.version
+      r = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}/archive`, { method: 'POST', cookie: adminCookie, body: { version } })
+      const gone = await site(articlePath)
+      check('jadwal: artikel uji diarsipkan, URL 404 lagi', r.status === 200 && gone.status === 404, `${r.status} ${gone.status}`)
+    }
+  }
 
   // User yang hanya anggota satu site tidak bisa membuka site lain.
   r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })

@@ -12,7 +12,6 @@ const props = withDefaults(defineProps<{ siteId: string; invalid?: boolean; allo
 const model = defineModel<string | null>({ required: true })
 
 const dialog = ref<HTMLDialogElement | null>(null)
-const page = ref(1)
 const items = ref<Json<MediaListItem>[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -28,9 +27,8 @@ async function loadPage(n: number) {
   loading.value = true
   try {
     const result = await adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media', { query: { page: n } })
-    items.value = n === 1 ? result.items : [...items.value, ...result.items]
+    items.value = n === 1 ? result.items : appendUnique(items.value, result.items)
     total.value = result.total
-    page.value = n
   } finally {
     loading.value = false
   }
@@ -160,7 +158,7 @@ async function uploaded(media: Json<MediaListItem>) {
         type="button"
         class="btn btn--small"
         :disabled="loading"
-        @click="loadPage(page + 1)"
+        @click="loadPage(nextMediaPage(items.length))"
       >
         Muat lagi
       </button>
