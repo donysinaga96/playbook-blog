@@ -151,8 +151,12 @@ multi: buka http://admin.localhost:3000/admin; path admin di domain site dijawab
 3. Login gagal lima kali untuk satu email dari satu IP diblokir 15 menit. Restart server
    menghapus hitungan ini. Mengganti password tidak mengakhiri sesi yang sudah ada; ganti
    `ADMIN_SESSION_SECRET` bila password bocor.
-4. Gate admin terhadap server hasil build: `pnpm build`, lalu
-   `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
+4. Gate admin terhadap server hasil build butuh user kedua yang hanya anggota kabar-tekno,
+   dengan password yang sama: `ADMIN_PASSWORD=<password admin> pnpm admin:create --email
+   editor@local.test --name Editor --site kabar-tekno < /dev/null` (sekali saja), lalu
+   `pnpm build` dan `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
+5. Layar admin: Artikel (daftar, editor block, jadwal terbit di zona waktu site), Halaman,
+   Kategori, Tag, Menu. Pemilih gambar menampilkan media yang sudah ada; upload menyusul.
 
 ## Konten contoh
 

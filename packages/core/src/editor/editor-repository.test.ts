@@ -193,6 +193,12 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       }
     })
 
+    it('media berdasarkan id: hanya milik site, id tidak valid diabaikan', async () => {
+      expect((await editor.listMedia(SITE, { ids: [MEDIA] })).items.map((m) => m.id)).toEqual([MEDIA])
+      expect((await editor.listMedia(SITE, { ids: [OTHER_MEDIA, 'bukan-uuid'] })).items).toEqual([])
+      expect((await editor.listMedia(SITE, { ids: [] })).items).toEqual([])
+    })
+
     it('gambar OG halaman dari site lain dilaporkan di seo.og_image_id', async () => {
       await rejects(editor.createPage(SITE, { title: 'x', body: body(), seo: { og_image_id: OTHER_MEDIA } }), 'invalid', 'seo.og_image_id')
     })

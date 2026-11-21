@@ -24,6 +24,9 @@ export interface AdminSite {
   id: string
   code: string
   name: string
+  /** Zona waktu site (IANA), untuk input tanggal terbit di admin. */
+  timezone: string
+  defaultLocale: string
   /** Role keanggotaan; superadmin tanpa keanggotaan = 'SUPERADMIN'. */
   role: 'OWNER' | 'EDITOR' | 'AUTHOR' | 'SUPERADMIN'
 }
@@ -98,7 +101,7 @@ export function createUserRepository(ctx: RepositoryContext) {
       const conditions = [eq(sites.status, 'ACTIVE')]
       if (mode.mode === 'single') conditions.push(eq(sites.code, mode.siteCode))
       const rows = await db
-        .select({ id: sites.id, code: sites.code, name: sites.name })
+        .select({ id: sites.id, code: sites.code, name: sites.name, timezone: sites.timezone, defaultLocale: sites.defaultLocale })
         .from(sites)
         .where(and(...conditions))
         .orderBy(asc(sites.name))

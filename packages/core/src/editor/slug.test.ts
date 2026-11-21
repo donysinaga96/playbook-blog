@@ -33,3 +33,18 @@ describe('slug', () => {
     expect(permalinkFirstToken('/:yyyy/:mm/:slug')).toBe(':yyyy')
   })
 })
+
+describe('pesan validasi form admin', async () => {
+  const { z } = await import('zod')
+  const { editorErrorMap } = await import('./errors')
+  const messages = (schema: import('zod').ZodType, input: unknown) =>
+    schema.safeParse(input, { error: editorErrorMap }).error?.issues.map((i) => i.message) ?? []
+
+  it('kalimat biasa untuk kasus umum, bahasa Indonesia untuk sisanya', () => {
+    expect(messages(z.string().trim().min(1), '  ')).toEqual(['Wajib diisi'])
+    expect(messages(z.string().max(5), 'panjang sekali')).toEqual(['Maksimal 5 karakter'])
+    expect(messages(z.uuid(), '')).toEqual(['Wajib dipilih'])
+    expect(messages(z.uuid(), 'x')).toEqual(['UUID tidak valid'])
+    expect(messages(z.array(z.string()).min(1), [])).toEqual(['Isi minimal satu butir'])
+  })
+})

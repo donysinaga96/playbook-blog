@@ -33,10 +33,11 @@ export default defineConfig(
     rules: { 'no-undef': 'off' },
   },
 
-  // Nama file halaman Nuxt menentukan route (index.vue, login.vue,
-  // [...slug].vue), jadi aturan nama komponen multi-kata tidak berlaku.
+  // Nama file halaman dan layout Nuxt menentukan route/nama layout
+  // (index.vue, login.vue, [...slug].vue, admin.vue), jadi aturan nama
+  // komponen multi-kata tidak berlaku.
   {
-    files: ['apps/web/app/pages/**/*.vue'],
+    files: ['apps/web/app/pages/**/*.vue', 'apps/web/app/layouts/**/*.vue'],
     rules: { 'vue/multi-word-component-names': 'off' },
   },
 

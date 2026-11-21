@@ -395,7 +395,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
    - Hanya konten publik yang keluar: `PUBLISHED` dan `published_at <= now`. Jam bisa disuntik agar test deterministik.
    - Kategori dan penulis `HIDDEN` tidak bisa dibuka dan filternya kosong, tetapi artikel di dalamnya tetap tampil.
    - Menu tidak pernah memuat tautan mati. Repository mengembalikan tujuan (`target`), bukan URL; pola URL urusan lapisan view model.
-2. Tulis tipe bersama: `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
+2. Tulis tipe bersama (batas nomor halaman `MAX_PAGE` ditambahkan di bab "Membangun Layar Admin"): `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
 
 @@include packages/core/src/repositories/types.ts ts@@
 
@@ -1580,7 +1580,7 @@ routeRules: {
 
    Nama file halaman Nuxt menentukan route (`index.vue`, `login.vue`), jadi matikan aturan `vue/multi-word-component-names` untuk `apps/web/app/pages/**` di `eslint.config.js`.
 
-15. Tulis halaman admin minimal. Tampilan lengkap dibuat bersama layar admin. Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
+15. Tulis halaman admin minimal. Tampilan lengkap dibuat di bab "Membangun Layar Admin"; file di bawah sudah versi akhirnya (login bergaya admin, `/admin` mengarahkan ke site pertama, `adminApi` dan pembaca galat field di composable). Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
 
 @@include apps/web/app/composables/useAdmin.ts ts@@
 
@@ -1614,7 +1614,7 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
    - Slug dibuat dari judul bila kosong, unik per site, dan tidak boleh memakai segmen route sistem.
    - Setiap simpan artikel menulis revisi, dan URL publik yang berubah meninggalkan redirect 301.
 
-2. Tulis galat operasi tulis. Lapisan API nanti memetakannya ke 404, 409, dan 422:
+2. Tulis galat operasi tulis. Lapisan API nanti memetakannya ke 404, 409, dan 422 (pesan validasi berbahasa Indonesia, `editorErrorMap`, ditambahkan di bab "Membangun Layar Admin"):
 
 @@include packages/core/src/editor/errors.ts ts@@
 
@@ -1648,4 +1648,77 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 9. Cari sumber kegagalan acak yang lain dengan cara yang sama. `repositories.test.ts` membuat site fixture ACTIVE sementara, sehingga test yang mengasumsikan database hanya berisi data seed (`seed-consistency.test.ts` dan daftar site superadmin di `user-repository.test.ts`) kadang ikut membaca data itu. Batasi keduanya ke dua site seed.
 
 10. Buktikan test penguncian bisa gagal: hapus sementara pengecekan versi dan syarat `version` di UPDATE, lalu jalankan; test "versi lama -> conflict" harus GAGAL. Kembalikan, lalu jalankan `pnpm test` beberapa kali berturut-turut untuk memastikan tidak ada lagi kegagalan acak.
+
+# Membangun Layar Admin
+
+1. Rancang tampilan sebelum menulis komponen. Admin adalah ruang kerja satu pemilik yang menulis, menjadwalkan, dan merapikan artikel di beberapa site, jadi tampilannya tenang, padat, dan mudah dipindai:
+   - Warna: kertas `#f5f6f4`, panel putih, tinta `#1c2023`, garis `#dcdfdb`, aksen hijau tua `#1f5f4a` untuk aksi utama, dan warna sendiri untuk setiap status (draf, ditinjau, terbit, terjadwal, arsip).
+   - Satu keluarga huruf (Inter, di-self-host) dengan angka tabular untuk tanggal; slug memakai huruf monospace karena memang kode.
+   - Rail kiri berisi pemilih site dan navigasi; editor artikel dua kolom: judul dan block di kiri, panel terbit, pengelompokan, gambar, dan SEO di kanan.
+   - Satu hal yang sengaja menonjol: editor block. Selebihnya tabel bergaris tipis, tanpa kartu berbayang, label huruf kapital, atau panah dekoratif.
+
+2. Tambahkan pesan validasi berbahasa Indonesia di core. Zod 4 punya locale `id`, tetapi pesannya masih teknis ("diharapkan string memiliki >=1 karakter"); kasus yang paling sering diganti kalimat biasa, dan peta pesan dipasang per parse, bukan global:
+
+@@include packages/core/src/editor/errors.ts ts@@
+
+3. Lengkapi core untuk form: `listAuthors` dan `listMedia` (dengan filter `ids` untuk media yang sedang terpasang tetapi di luar halaman pertama) di repository editor, zona waktu dan locale site di daftar site admin (`AdminSite`), dan batas nomor halaman di `normalizePaging` agar `?page=1e20` tidak membuat OFFSET melampaui bigint PostgreSQL.
+
+4. Tulis pembungkus route API per site. Satu tempat untuk sesi, akses site, dan pemetaan galat:
+
+@@include apps/web/server/utils/admin-api.ts ts@@
+
+5. Tulis route di `server/api/admin/sites/[siteId]/`. Setiap route hanya meneruskan body ke repository editor, karena validasi ada di core:
+
+@@include apps/web/server/api/admin/sites/[siteId]/articles/index.get.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/articles/[id].put.ts ts@@
+
+   Route lain mengikuti pola yang sama: `articles` (POST, GET satu, arsip, revisi), `pages`, `categories`, `tags` (termasuk DELETE dengan `?updatedAt=`), `menus/[location]` dan item-itemnya, `authors`, `media`.
+
+6. Tanggal terbit diisi dalam zona waktu SITE, bukan zona waktu browser, lalu disimpan sebagai UTC. Hitung selisih zona dengan `Intl.DateTimeFormat`, dua langkah agar tepat di sekitar pergantian DST:
+
+@@include apps/web/app/utils/zoned-time.ts ts@@
+
+@@include apps/web/app/utils/zoned-time.test.ts ts@@
+
+7. Bersihkan isi editor sebelum dikirim. Block kosong dibuang, agar draf berisi judul saja bisa disimpan meski form baru dimulai dengan satu paragraf kosong. SEO tersimpan digabung dengan field yang diedit; tanpa itu, form yang hanya punya sebagian field (halaman, kategori) menghapus canonical, gambar OG, dan robots saat disimpan:
+
+@@include apps/web/app/utils/admin-body.ts ts@@
+
+8. Tulis CSS admin di bawah `.adm`, agar tidak pernah bertabrakan dengan CSS template (`.tpl`) di aplikasi yang sama. Perhatikan dua hal: selector judul editor diperkuat (`.adm input[type='text'].adm-editor__title`) karena gaya umum `.adm input[type='text']` lebih spesifik, dan textarea memakai `field-sizing: content` agar tingginya mengikuti isi:
+
+@@include apps/web/app/assets/admin.css css@@
+
+9. Pakai layout Nuxt untuk kerangka admin. `app.vue` menjadi `<NuxtLayout><NuxtPage /></NuxtLayout>`; halaman publik tidak memakai layout, jadi tetap dirender apa adanya. Logout hanya pindah ke halaman login bila server benar-benar menghapus sesi, agar komputer bersama tidak tertinggal dalam keadaan login. Matikan `vue/multi-word-component-names` juga untuk `app/layouts/**`:
+
+@@include apps/web/app/layouts/admin.vue vue@@
+
+10. Tulis komponen. `MediaSelect` memakai `v-model` lewat computed (dengan `:value`, opsi yang dimuat belakangan tidak ikut terpilih) dan `withDefaults` untuk `allowEmpty` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
+
+@@include apps/web/app/components/admin/StatusBadge.vue vue@@
+
+@@include apps/web/app/components/admin/MediaSelect.vue vue@@
+
+@@include apps/web/app/components/admin/BlockEditor.vue vue@@
+
+11. Tulis halaman. Daftar artikel memakai key `useAsyncData` yang reaktif (site, status, kata kunci yang ditunda 300 ms, halaman), sehingga data diambil ulang tanpa watcher tambahan. Editor artikel mengirim `publishedAt` hanya bila tanggalnya diubah, agar detik yang tersimpan tidak terpotong setiap kali disimpan:
+
+@@include apps/web/app/pages/admin/[site]/articles/index.vue vue@@
+
+@@include apps/web/app/pages/admin/[site]/articles/[id].vue vue@@
+
+   Halaman lain mengikuti pola yang sama: `pages/` (daftar dan editor halaman statis), `categories.vue` (pohon + form; kategori disembunyikan, tidak dihapus), `tags.vue`, dan `menus.vue` (tab lokasi, pohon item, pilihan target sesuai jenis; artikel yang sedang dipakai menu selalu dimuat ke pilihan).
+
+12. Uji API per site di gate admin dengan user kedua yang hanya anggota satu site, dibuat lewat CLI tanpa terminal:
+
+```bash
+ADMIN_PASSWORD=<password> pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 30 pemeriksaan admin lulus
+```
+
+   Tambahkan perintah `admin:create` yang sama ke job CI `build`, sebelum `gate:admin`.
+
+13. Coba alurnya di browser: login di http://admin.localhost:3000/admin, buka artikel, ubah ringkasan dan simpan, tulis artikel baru dengan judul saja (harus tersimpan sebagai draf), tambahkan daftar, lalu periksa kategori, tag, menu, dan halaman. Jalankan juga `browser-check`: halaman publik harus tetap ter-hydrate tanpa mismatch setelah `app.vue` memakai `<NuxtLayout>`.
 

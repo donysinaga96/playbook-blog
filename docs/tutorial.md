@@ -648,8 +648,12 @@ multi: buka http://admin.localhost:3000/admin; path admin di domain site dijawab
 3. Login gagal lima kali untuk satu email dari satu IP diblokir 15 menit. Restart server
    menghapus hitungan ini. Mengganti password tidak mengakhiri sesi yang sudah ada; ganti
    `ADMIN_SESSION_SECRET` bila password bocor.
-4. Gate admin terhadap server hasil build: `pnpm build`, lalu
-   `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
+4. Gate admin terhadap server hasil build butuh user kedua yang hanya anggota kabar-tekno,
+   dengan password yang sama: `ADMIN_PASSWORD=<password admin> pnpm admin:create --email
+   editor@local.test --name Editor --site kabar-tekno < /dev/null` (sekali saja), lalu
+   `pnpm build` dan `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
+5. Layar admin: Artikel (daftar, editor block, jadwal terbit di zona waktu site), Halaman,
+   Kategori, Tag, Menu. Pemilih gambar menampilkan media yang sudah ada; upload menyusul.
 
 ## Konten contoh
 
@@ -1969,10 +1973,11 @@ export default defineConfig(
     rules: { 'no-undef': 'off' },
   },
 
-  // Nama file halaman Nuxt menentukan route (index.vue, login.vue,
-  // [...slug].vue), jadi aturan nama komponen multi-kata tidak berlaku.
+  // Nama file halaman dan layout Nuxt menentukan route/nama layout
+  // (index.vue, login.vue, [...slug].vue, admin.vue), jadi aturan nama
+  // komponen multi-kata tidak berlaku.
   {
-    files: ['apps/web/app/pages/**/*.vue'],
+    files: ['apps/web/app/pages/**/*.vue', 'apps/web/app/layouts/**/*.vue'],
     rules: { 'vue/multi-word-component-names': 'off' },
   },
 
@@ -3329,7 +3334,7 @@ describe.skipIf(!hasDb)('data seed di database dev', () => {
    - Hanya konten publik yang keluar: `PUBLISHED` dan `published_at <= now`. Jam bisa disuntik agar test deterministik.
    - Kategori dan penulis `HIDDEN` tidak bisa dibuka dan filternya kosong, tetapi artikel di dalamnya tetap tampil.
    - Menu tidak pernah memuat tautan mati. Repository mengembalikan tujuan (`target`), bukan URL; pola URL urusan lapisan view model.
-2. Tulis tipe bersama: `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
+2. Tulis tipe bersama (batas nomor halaman `MAX_PAGE` ditambahkan di bab "Membangun Layar Admin"): `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
 
 `packages/core/src/repositories/types.ts`
 
@@ -3372,9 +3377,12 @@ export interface PageQuery {
 
 export const DEFAULT_PAGE_SIZE = 10
 export const MAX_PAGE_SIZE = 50
+/** Nomor halaman terbesar yang diterima; lebih dari itu dianggap halaman terakhir yang mungkin. */
+export const MAX_PAGE = 100_000
 
 export function normalizePaging(query: PageQuery = {}): { page: number; pageSize: number; offset: number } {
-  const page = Number.isInteger(query.page) && (query.page as number) >= 1 ? (query.page as number) : 1
+  // Dibatasi agar OFFSET tidak melampaui bigint PostgreSQL (mis. ?page=1e20).
+  const page = Number.isInteger(query.page) && (query.page as number) >= 1 ? Math.min(query.page as number, MAX_PAGE) : 1
   const rawSize = Number.isInteger(query.pageSize) ? (query.pageSize as number) : DEFAULT_PAGE_SIZE
   const pageSize = Math.min(Math.max(rawSize, 1), MAX_PAGE_SIZE)
   return { page, pageSize, offset: (page - 1) * pageSize }
@@ -4383,7 +4391,7 @@ export * from './editor/slug'
 import { describe, expect, it } from 'vitest'
 import { normalizePath } from './content-repository'
 import { normalizeHost } from './site-repository'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, normalizePaging, toPage } from './types'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE, normalizePaging, toPage } from './types'
 
 describe('normalizeHost', () => {
   it.each([
@@ -4428,6 +4436,11 @@ describe('normalizePath', () => {
 })
 
 describe('normalizePaging', () => {
+  it('nomor halaman raksasa dibatasi (OFFSET tetap dalam jangkauan bigint)', () => {
+    expect(normalizePaging({ page: 1e20 }).page).toBe(MAX_PAGE)
+    expect(normalizePaging({ page: MAX_PAGE + 1, pageSize: 50 }).offset).toBe((MAX_PAGE - 1) * 50)
+  })
+
   it('default: halaman 1, 10 per halaman', () => {
     expect(normalizePaging()).toEqual({ page: 1, pageSize: DEFAULT_PAGE_SIZE, offset: 0 })
   })
@@ -5168,6 +5181,7 @@ build:
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
     # 4. Gate admin (M4): admin pertama dibuat lewat CLI, bukan SQL manual.
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email admin@local.test --reset-password
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate:admin
   artifacts:
     paths:
@@ -5258,6 +5272,7 @@ pnpm install
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.3.0",
     "@framework/core": "workspace:*",
     "@framework/db": "workspace:*",
     "@framework/template-base": "workspace:*",
@@ -15534,6 +15549,9 @@ export interface AdminSite {
   id: string
   code: string
   name: string
+  /** Zona waktu site (IANA), untuk input tanggal terbit di admin. */
+  timezone: string
+  defaultLocale: string
   /** Role keanggotaan; superadmin tanpa keanggotaan = 'SUPERADMIN'. */
   role: 'OWNER' | 'EDITOR' | 'AUTHOR' | 'SUPERADMIN'
 }
@@ -15608,7 +15626,7 @@ export function createUserRepository(ctx: RepositoryContext) {
       const conditions = [eq(sites.status, 'ACTIVE')]
       if (mode.mode === 'single') conditions.push(eq(sites.code, mode.siteCode))
       const rows = await db
-        .select({ id: sites.id, code: sites.code, name: sites.name })
+        .select({ id: sites.id, code: sites.code, name: sites.name, timezone: sites.timezone, defaultLocale: sites.defaultLocale })
         .from(sites)
         .where(and(...conditions))
         .orderBy(asc(sites.name))
@@ -16156,14 +16174,24 @@ routeRules: {
 
    Nama file halaman Nuxt menentukan route (`index.vue`, `login.vue`), jadi matikan aturan `vue/multi-word-component-names` untuk `apps/web/app/pages/**` di `eslint.config.js`.
 
-15. Tulis halaman admin minimal. Tampilan lengkap dibuat bersama layar admin. Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
+15. Tulis halaman admin minimal. Tampilan lengkap dibuat di bab "Membangun Layar Admin"; file di bawah sudah versi akhirnya (login bergaya admin, `/admin` mengarahkan ke site pertama, `adminApi` dan pembaca galat field di composable). Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
 
 `apps/web/app/composables/useAdmin.ts`
 
 ```ts
-// State admin di browser (SPA, ADR-009). Data datang dari /api/admin/*;
-// kode app/ tidak pernah memanggil repository.
-import type { AdminSite, AdminUser } from '@framework/core'
+// State dan akses API admin di browser (SPA, ADR-009). Data datang dari
+// /api/admin/*; kode app/ tidak pernah memanggil repository (hanya tipe
+// dari @framework/core yang di-import).
+import type { AdminSite, AdminUser, FieldIssue } from '@framework/core'
+
+/** Bentuk data setelah lewat JSON: Date menjadi string ISO. */
+export type Json<T> = T extends Date
+  ? string
+  : T extends (infer U)[]
+    ? Json<U>[]
+    : T extends object
+      ? { [K in keyof T]: Json<T[K]> }
+      : T
 
 export interface AdminMe {
   user: AdminUser
@@ -16175,28 +16203,118 @@ export function useAdminMe() {
   return useState<AdminMe | null>('admin-me', () => null)
 }
 
+/** Muat user dan site sekali; tanpa sesi -> halaman login. */
+export async function ensureAdminMe(): Promise<AdminMe | null> {
+  const me = useAdminMe()
+  if (me.value) return me.value
+  try {
+    me.value = await $fetch<AdminMe>('/api/admin/me')
+    return me.value
+  } catch (e) {
+    if (apiStatus(e) === 401) await navigateTo('/admin/login')
+    throw e
+  }
+}
+
+/** Site aktif dari parameter route :site (kode site); null bila tidak dikenal. */
+export function useAdminSite() {
+  const route = useRoute()
+  const me = useAdminMe()
+  return computed(() => me.value?.sites.find((s) => s.code === route.params['site']) ?? null)
+}
+
+/**
+ * $fetch ke /api/admin/sites/:siteId/<path>. 401 (sesi habis atau dicabut)
+ * dari panggilan mana pun -> kembali ke halaman login.
+ */
+export async function adminApi<T>(siteId: string, path: string, options: Parameters<typeof $fetch>[1] = {}): Promise<T> {
+  try {
+    return (await $fetch<T>(`/api/admin/sites/${siteId}/${path.replace(/^\//, '')}`, options as never)) as T
+  } catch (e) {
+    if (apiStatus(e) === 401) {
+      useAdminMe().value = null
+      await navigateTo('/admin/login')
+    }
+    throw e
+  }
+}
+
+interface ApiErrorShape {
+  statusCode?: number
+  statusMessage?: string
+  data?: { statusMessage?: string; message?: string; data?: { kind?: string; issues?: FieldIssue[] } }
+}
+
+export function apiStatus(error: unknown): number | undefined {
+  return (error as ApiErrorShape)?.statusCode
+}
+
 /** Pesan error dari respons API (statusMessage h3) untuk ditampilkan. */
 export function apiErrorMessage(error: unknown, fallback = 'Terjadi kesalahan. Coba lagi.'): string {
-  const e = error as { statusCode?: number; statusMessage?: string; data?: { statusMessage?: string; message?: string } }
+  const e = error as ApiErrorShape
   return e?.data?.statusMessage ?? e?.data?.message ?? e?.statusMessage ?? fallback
+}
+
+/** Galat per field dari respons 422 (EditorError invalid): { 'slug': 'pesan', ... }. */
+export function apiFieldErrors(error: unknown): Record<string, string> {
+  const issues = (error as ApiErrorShape)?.data?.data?.issues ?? []
+  const out: Record<string, string> = {}
+  for (const issue of issues) out[issue.field] ??= issue.message
+  return out
+}
+
+/** Galat field: cocok persis atau awalan (mis. 'body.blocks.2.text' untuk 'body'). */
+export function fieldError(errors: Record<string, string>, field: string): string | null {
+  if (errors[field]) return errors[field] ?? null
+  const key = Object.keys(errors).find((k) => k.startsWith(`${field}.`))
+  return key ? (errors[key] ?? null) : null
+}
+
+export const STATUS_LABELS: Record<string, string> = {
+  DRAFT: 'Draf',
+  REVIEW: 'Perlu ditinjau',
+  PUBLISHED: 'Terbit',
+  ARCHIVED: 'Arsip',
+  ACTIVE: 'Tampil',
+  HIDDEN: 'Disembunyikan',
+}
+
+/** Status tampilan: PUBLISHED dengan tanggal di masa depan = terjadwal. */
+export function displayStatus(status: string, publishedAt: string | null): { key: string; label: string } {
+  if (status === 'PUBLISHED' && publishedAt && new Date(publishedAt) > new Date()) return { key: 'scheduled', label: 'Terjadwal' }
+  return { key: status.toLowerCase(), label: STATUS_LABELS[status] ?? status }
+}
+
+/** Tanggal untuk daftar, di zona waktu site. */
+export function formatSiteDate(iso: string | null, site: Pick<AdminSite, 'timezone' | 'defaultLocale'>): string {
+  if (!iso) return '-'
+  return new Intl.DateTimeFormat(site.defaultLocale, { timeZone: site.timezone, day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
 }
 ```
 
 `apps/web/app/pages/admin/login.vue`
 
 ```vue
-<!-- Login admin (ADR-009). Tampilan lengkap admin dikerjakan di 4.2. -->
+<!-- Login admin (ADR-009). -->
 <script setup lang="ts">
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/600.css'
+import '../../assets/admin.css'
+
 const email = ref('')
 const password = ref('')
 const error = ref<string | null>(null)
 const busy = ref(false)
+const me = useAdminMe()
+
+useHead({ title: 'Masuk ke admin', htmlAttrs: { lang: 'id' } })
 
 async function submit() {
   busy.value = true
   error.value = null
   try {
     await $fetch('/api/admin/login', { method: 'POST', body: { email: email.value, password: password.value } })
+    me.value = null
     await navigateTo('/admin')
   } catch (e) {
     error.value = apiErrorMessage(e)
@@ -16207,104 +16325,76 @@ async function submit() {
 </script>
 
 <template>
-  <main class="admin-login">
-    <h1>Masuk ke admin</h1>
-    <form @submit.prevent="submit">
-      <label>
-        Email
-        <input
-          v-model="email"
-          type="email"
-          name="email"
-          autocomplete="username"
-          required
+  <div class="adm">
+    <main class="adm-login">
+      <form @submit.prevent="submit">
+        <div>
+          <h1>Masuk ke admin</h1>
+          <p class="muted">
+            Kelola artikel, halaman, dan menu semua site Anda.
+          </p>
+        </div>
+        <label class="field">
+          <span>Email</span>
+          <input
+            v-model="email"
+            type="email"
+            name="email"
+            autocomplete="username"
+            required
+          >
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input
+            v-model="password"
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            required
+          >
+        </label>
+        <p
+          v-if="error"
+          class="field__error"
+          role="alert"
         >
-      </label>
-      <label>
-        Password
-        <input
-          v-model="password"
-          type="password"
-          name="password"
-          autocomplete="current-password"
-          required
+          {{ error }}
+        </p>
+        <button
+          type="submit"
+          class="btn btn--primary"
+          :disabled="busy"
         >
-      </label>
-      <p
-        v-if="error"
-        role="alert"
-      >
-        {{ error }}
-      </p>
-      <button
-        type="submit"
-        :disabled="busy"
-      >
-        Masuk
-      </button>
-    </form>
-  </main>
+          {{ busy ? 'Memeriksa…' : 'Masuk' }}
+        </button>
+      </form>
+    </main>
+  </div>
 </template>
 ```
 
 `apps/web/app/pages/admin/index.vue`
 
 ```vue
-<!-- Beranda admin: user login dan site yang bisa dikelola (ADR-009). -->
+<!-- /admin: arahkan ke artikel site pertama yang boleh dikelola. -->
 <script setup lang="ts">
-const me = useAdminMe()
 const error = ref<string | null>(null)
-
-onMounted(async () => {
-  try {
-    me.value = await $fetch<AdminMe>('/api/admin/me')
-  } catch (e) {
-    if ((e as { statusCode?: number }).statusCode === 401) return navigateTo('/admin/login')
-    error.value = apiErrorMessage(e)
-  }
+const me = await ensureAdminMe().catch((e: unknown) => {
+  if (apiStatus(e) !== 401) error.value = apiErrorMessage(e)
+  return null
 })
-
-async function logout() {
-  try {
-    await $fetch('/api/admin/logout', { method: 'POST' })
-    me.value = null
-    await navigateTo('/admin/login')
-  } catch (e) {
-    error.value = `Gagal keluar: ${apiErrorMessage(e)}`
-  }
-}
+const first = me?.sites[0]
+if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 </script>
 
 <template>
-  <main class="admin-home">
-    <p
-      v-if="error"
-      role="alert"
-    >
-      {{ error }}
-    </p>
-    <template v-else-if="me">
-      <h1>Halo, {{ me.user.displayName }}</h1>
-      <h2>Site</h2>
-      <ul>
-        <li
-          v-for="site in me.sites"
-          :key="site.id"
-        >
-          {{ site.name }} ({{ site.code }})
-        </li>
-      </ul>
-      <button
-        type="button"
-        @click="logout"
-      >
-        Keluar
-      </button>
-    </template>
-    <p v-else>
-      Memuat…
-    </p>
-  </main>
+  <p v-if="error">
+    {{ error }}
+  </p>
+  <p v-else-if="!first">
+    Tidak ada site yang bisa dikelola.
+  </p>
 </template>
 ```
 
@@ -16316,12 +16406,15 @@ async function logout() {
 // Gate admin (ADR-009, usulan M4-F) terhadap server hasil build.
 //
 // 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
-// login salah/benar, sesi, logout, dan rate limit login. Alur buat-jadwalkan-tampilkan artikel
+// login salah/benar, sesi, logout, dan rate limit login.
+// 4.2: API per site (404 site lain, 422 input salah, 409 versi lama). Alur buat-jadwalkan-tampilkan artikel
 // ditambahkan di 4.6.
 //
 // Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
 // ADMIN_PASSWORD (password admin yang dibuat lewat `pnpm admin:create`),
-// ADMIN_EMAIL (default admin@local.test).
+// ADMIN_EMAIL (default admin@local.test), dan user editor@local.test yang
+// hanya anggota kabar-tekno, dengan password yang sama:
+//   ADMIN_PASSWORD=... pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
 //
 //   pnpm build && pnpm --filter @framework/web gate:admin
 import { requestWithHost, startBuiltServer } from './lib/built-server.mjs'
@@ -16331,6 +16424,8 @@ const adminHost = process.env.ADMIN_HOST
 const email = process.env.ADMIN_EMAIL ?? 'admin@local.test'
 const password = process.env.ADMIN_PASSWORD
 const siteHost = process.env.GATE_SITE_HOST ?? 'tekno.localhost'
+/** User anggota kabar-tekno saja, password sama (ADMIN_PASSWORD); dibuat lewat admin:create. */
+const editorEmail = process.env.GATE_EDITOR_EMAIL ?? 'editor@local.test'
 
 if (!adminHost || !password || !process.env.ADMIN_SESSION_SECRET) {
   console.error('[gate-admin] ADMIN_HOST, ADMIN_SESSION_SECRET, dan ADMIN_PASSWORD wajib diisi')
@@ -16417,6 +16512,38 @@ try {
   const cleared = sessionCookie(r)
   check('logout menghapus cookie', r.status === 200 && cleared !== null && /max-age=0|expires=thu, 01 jan 1970/i.test(cleared.raw), cleared?.raw)
 
+  // API per site (4.2). Tidak menulis apa pun: input salah ditolak sebelum
+  // disimpan, dan versi yang dikirim sengaja salah.
+  r = await admin('/api/admin/login', { method: 'POST', body: { email, password } })
+  const adminCookie = sessionCookie(r)?.header
+  const sites = JSON.parse(r.body).sites
+  const tekno = sites.find((s) => s.code === 'kabar-tekno')
+  const kuliner = sites.find((s) => s.code === 'dapur-nusantara')
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, { cookie: adminCookie })
+  const teknoArticles = JSON.parse(r.body)
+  check('daftar artikel site 200', r.status === 200 && teknoArticles.items.length > 0, String(r.status))
+  const sample = teknoArticles.items[0]
+  r = await admin(`/api/admin/sites/${kuliner.id}/articles/${sample.id}`, { cookie: adminCookie })
+  check('artikel site A lewat URL site B 404', r.status === 404, String(r.status))
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, { method: 'POST', cookie: adminCookie, body: { title: '', body: { version: 1, blocks: [] }, categoryId: '' } })
+  const invalid = r.status === 422 ? JSON.parse(r.body) : null
+  check('input salah 422 dengan issue per field', r.status === 422 && invalid?.data?.issues?.some((i) => i.field === 'title'), String(r.status))
+  r = await admin(`/api/admin/sites/${tekno.id}/articles/${sample.id}`, { cookie: adminCookie })
+  const full = JSON.parse(r.body)
+  r = await admin(`/api/admin/sites/${tekno.id}/articles/${sample.id}`, { method: 'PUT', cookie: adminCookie, body: { article: { title: full.title, body: full.body, categoryId: full.categoryId }, version: full.version + 1000 } })
+  check('simpan dengan versi lama 409', r.status === 409, String(r.status))
+  r = await admin(`/api/admin/sites/00000000-0000-7000-8000-000000000000/articles`, { cookie: adminCookie })
+  check('site tidak dikenal 404', r.status === 404, String(r.status))
+
+  // User yang hanya anggota satu site tidak bisa membuka site lain.
+  r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })
+  const editorCookie = sessionCookie(r)?.header
+  check('login editor (anggota satu site)', r.status === 200 && Boolean(editorCookie), `${r.status}: buat dulu dengan pnpm admin:create --email ${editorEmail} --name Editor --site kabar-tekno`)
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, { cookie: editorCookie })
+  check('editor: site sendiri 200', r.status === 200, String(r.status))
+  r = await admin(`/api/admin/sites/${kuliner.id}/articles`, { cookie: editorCookie })
+  check('editor: site lain 404', r.status === 404, String(r.status))
+
   // Rate limit: 5 kegagalan per IP + email -> 429 dengan Retry-After.
   const victim = `gate-${Date.now()}@local.test`
   for (let i = 0; i < 5; i++) await admin('/api/admin/login', { method: 'POST', body: { email: victim, password: 'salah-salah-salah' } })
@@ -16465,11 +16592,13 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
    - Slug dibuat dari judul bila kosong, unik per site, dan tidak boleh memakai segmen route sistem.
    - Setiap simpan artikel menulis revisi, dan URL publik yang berubah meninggalkan redirect 301.
 
-2. Tulis galat operasi tulis. Lapisan API nanti memetakannya ke 404, 409, dan 422:
+2. Tulis galat operasi tulis. Lapisan API nanti memetakannya ke 404, 409, dan 422 (pesan validasi berbahasa Indonesia, `editorErrorMap`, ditambahkan di bab "Membangun Layar Admin"):
 
 `packages/core/src/editor/errors.ts`
 
 ```ts
+import { z } from 'zod'
+
 // Galat operasi tulis admin (M4). Lapisan API memetakannya ke status HTTP:
 //   not-found -> 404   (termasuk data site lain: keberadaannya tidak dibocorkan)
 //   conflict  -> 409   (versi berbeda: data sudah diubah orang/tab lain)
@@ -16498,6 +16627,21 @@ export const conflict = (what: string) =>
   new EditorError('conflict', `${what} sudah diubah di tempat lain; muat ulang lalu simpan lagi`)
 export const invalid = (issues: FieldIssue[]) =>
   new EditorError('invalid', issues.map((i) => (i.field ? `${i.field}: ${i.message}` : i.message)).join('; '), issues)
+
+const indonesian = z.locales.id().localeError
+
+/**
+ * Pesan validasi untuk form admin: kasus yang paling sering dengan kalimat
+ * biasa, sisanya locale Indonesia bawaan Zod. Dipakai per parse (bukan
+ * konfigurasi global Zod).
+ */
+export const editorErrorMap: z.core.$ZodErrorMap = (issue) => {
+  if (issue.code === 'too_small' && issue.origin === 'string' && Number(issue.minimum) === 1) return 'Wajib diisi'
+  if (issue.code === 'too_big' && issue.origin === 'string') return `Maksimal ${String(issue.maximum)} karakter`
+  if (issue.code === 'too_small' && issue.origin === 'array' && Number(issue.minimum) === 1) return 'Isi minimal satu butir'
+  if (issue.code === 'invalid_format' && issue.format === 'uuid' && issue.input === '') return 'Wajib dipilih'
+  return indonesian(issue)
+}
 ```
 
 3. Tulis util slug. Huruf beraksen diubah ke huruf dasarnya, hasilnya selalu cocok dengan CHECK `*_slug_format` di database:
@@ -16583,6 +16727,21 @@ describe('slug', () => {
     expect(isReservedFirstSegment('resep')).toBe(false)
     expect(permalinkFirstToken('/:category/:slug')).toBe(':category')
     expect(permalinkFirstToken('/:yyyy/:mm/:slug')).toBe(':yyyy')
+  })
+})
+
+describe('pesan validasi form admin', async () => {
+  const { z } = await import('zod')
+  const { editorErrorMap } = await import('./errors')
+  const messages = (schema: import('zod').ZodType, input: unknown) =>
+    schema.safeParse(input, { error: editorErrorMap }).error?.issues.map((i) => i.message) ?? []
+
+  it('kalimat biasa untuk kasus umum, bahasa Indonesia untuk sisanya', () => {
+    expect(messages(z.string().trim().min(1), '  ')).toEqual(['Wajib diisi'])
+    expect(messages(z.string().max(5), 'panjang sekali')).toEqual(['Maksimal 5 karakter'])
+    expect(messages(z.uuid(), '')).toEqual(['Wajib dipilih'])
+    expect(messages(z.uuid(), 'x')).toEqual(['UUID tidak valid'])
+    expect(messages(z.array(z.string()).min(1), [])).toEqual(['Isi minimal satu butir'])
   })
 })
 ```
@@ -16765,7 +16924,7 @@ import { parseSiteSettings } from '../site/settings'
 import { createUrlBuilder } from '../views/urls'
 import type { Page, RepositoryContext, SiteId, SiteScoped } from '../repositories/types'
 import { normalizePaging, toPage } from '../repositories/types'
-import { conflict, EditorError, invalid, notFound, type FieldIssue } from './errors'
+import { conflict, EditorError, editorErrorMap, invalid, notFound, type FieldIssue } from './errors'
 import {
   articleInputSchema,
   categoryInputSchema,
@@ -16832,6 +16991,16 @@ export interface ArticleRecord {
   publicPath: string | null
 }
 
+export interface MediaListItem {
+  id: string
+  storageKey: string
+  mimeType: string
+  width: number | null
+  height: number | null
+  altText: string | null
+  createdAt: Date
+}
+
 export interface RevisionItem {
   revisionNo: number
   changeNote: string | null
@@ -16894,7 +17063,7 @@ export interface MenuRecord {
 
 /** Validasi Zod -> EditorError('invalid') dengan issue per field. */
 function parse<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
-  const result = schema.safeParse(raw)
+  const result = schema.safeParse(raw, { error: editorErrorMap })
   if (result.success) return result.data
   throw invalid(result.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })))
 }
@@ -17109,6 +17278,32 @@ export function createEditorRepository(ctx: RepositoryContext) {
   }
 
   const api = {
+    // ======================= Pilihan untuk form =======================
+
+    /** Penulis untuk pilihan di form artikel (termasuk HIDDEN, ditandai). */
+    async listAuthors(siteId: SiteId): Promise<{ id: string; name: string; status: string }[]> {
+      return db.select({ id: authors.id, name: authors.name, status: authors.status }).from(authors).where(eq(authors.siteId, siteId)).orderBy(asc(authors.name))
+    },
+
+    /**
+     * Media site, terbaru dulu, untuk pemilih gambar (upload menyusul di 4.3).
+     * `ids`: hanya media itu (mis. yang sedang terpasang tetapi di luar halaman pertama).
+     */
+    async listMedia(siteId: SiteId, query: { page?: number; pageSize?: number; ids?: string[] } = {}): Promise<Page<MediaListItem>> {
+      const paging = normalizePaging({ page: query.page, pageSize: query.pageSize ?? 30 })
+      const ids = (query.ids ?? []).filter((v) => UUID.test(v)).slice(0, 50)
+      const where = query.ids ? and(eq(media.siteId, siteId), inArray(media.id, ids.length ? ids : ['00000000-0000-0000-0000-000000000000'])) : eq(media.siteId, siteId)
+      const [total] = await db.select({ n: count() }).from(media).where(where)
+      const rows = await db
+        .select({ id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height, altText: media.altText, createdAt: media.createdAt })
+        .from(media)
+        .where(where)
+        .orderBy(desc(media.createdAt), desc(media.id))
+        .limit(paging.pageSize)
+        .offset(paging.offset)
+      return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
     // ======================= Artikel =======================
 
     async listArticles(siteId: SiteId, query: AdminArticleQuery = {}): Promise<Page<ArticleListItem>> {
@@ -17667,6 +17862,12 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       }
     })
 
+    it('media berdasarkan id: hanya milik site, id tidak valid diabaikan', async () => {
+      expect((await editor.listMedia(SITE, { ids: [MEDIA] })).items.map((m) => m.id)).toEqual([MEDIA])
+      expect((await editor.listMedia(SITE, { ids: [OTHER_MEDIA, 'bukan-uuid'] })).items).toEqual([])
+      expect((await editor.listMedia(SITE, { ids: [] })).items).toEqual([])
+    })
+
     it('gambar OG halaman dari site lain dilaporkan di seo.og_image_id', async () => {
       await rejects(editor.createPage(SITE, { title: 'x', body: body(), seo: { og_image_id: OTHER_MEDIA } }), 'invalid', 'seo.og_image_id')
     })
@@ -17739,4 +17940,2185 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
 9. Cari sumber kegagalan acak yang lain dengan cara yang sama. `repositories.test.ts` membuat site fixture ACTIVE sementara, sehingga test yang mengasumsikan database hanya berisi data seed (`seed-consistency.test.ts` dan daftar site superadmin di `user-repository.test.ts`) kadang ikut membaca data itu. Batasi keduanya ke dua site seed.
 
 10. Buktikan test penguncian bisa gagal: hapus sementara pengecekan versi dan syarat `version` di UPDATE, lalu jalankan; test "versi lama -> conflict" harus GAGAL. Kembalikan, lalu jalankan `pnpm test` beberapa kali berturut-turut untuk memastikan tidak ada lagi kegagalan acak.
+
+# Membangun Layar Admin
+
+1. Rancang tampilan sebelum menulis komponen. Admin adalah ruang kerja satu pemilik yang menulis, menjadwalkan, dan merapikan artikel di beberapa site, jadi tampilannya tenang, padat, dan mudah dipindai:
+   - Warna: kertas `#f5f6f4`, panel putih, tinta `#1c2023`, garis `#dcdfdb`, aksen hijau tua `#1f5f4a` untuk aksi utama, dan warna sendiri untuk setiap status (draf, ditinjau, terbit, terjadwal, arsip).
+   - Satu keluarga huruf (Inter, di-self-host) dengan angka tabular untuk tanggal; slug memakai huruf monospace karena memang kode.
+   - Rail kiri berisi pemilih site dan navigasi; editor artikel dua kolom: judul dan block di kiri, panel terbit, pengelompokan, gambar, dan SEO di kanan.
+   - Satu hal yang sengaja menonjol: editor block. Selebihnya tabel bergaris tipis, tanpa kartu berbayang, label huruf kapital, atau panah dekoratif.
+
+2. Tambahkan pesan validasi berbahasa Indonesia di core. Zod 4 punya locale `id`, tetapi pesannya masih teknis ("diharapkan string memiliki >=1 karakter"); kasus yang paling sering diganti kalimat biasa, dan peta pesan dipasang per parse, bukan global:
+
+`packages/core/src/editor/errors.ts`
+
+```ts
+import { z } from 'zod'
+
+// Galat operasi tulis admin (M4). Lapisan API memetakannya ke status HTTP:
+//   not-found -> 404   (termasuk data site lain: keberadaannya tidak dibocorkan)
+//   conflict  -> 409   (versi berbeda: data sudah diubah orang/tab lain)
+//   invalid   -> 422   (input tidak lolos aturan; `issues` per field)
+export type EditorErrorKind = 'not-found' | 'conflict' | 'invalid'
+
+export interface FieldIssue {
+  /** Path field, mis. 'slug', 'body.blocks.3.text'. '' = seluruh input. */
+  field: string
+  message: string
+}
+
+export class EditorError extends Error {
+  override name = 'EditorError'
+  constructor(
+    readonly kind: EditorErrorKind,
+    message: string,
+    readonly issues: FieldIssue[] = [],
+  ) {
+    super(message)
+  }
+}
+
+export const notFound = (what: string) => new EditorError('not-found', `${what} tidak ditemukan`)
+export const conflict = (what: string) =>
+  new EditorError('conflict', `${what} sudah diubah di tempat lain; muat ulang lalu simpan lagi`)
+export const invalid = (issues: FieldIssue[]) =>
+  new EditorError('invalid', issues.map((i) => (i.field ? `${i.field}: ${i.message}` : i.message)).join('; '), issues)
+
+const indonesian = z.locales.id().localeError
+
+/**
+ * Pesan validasi untuk form admin: kasus yang paling sering dengan kalimat
+ * biasa, sisanya locale Indonesia bawaan Zod. Dipakai per parse (bukan
+ * konfigurasi global Zod).
+ */
+export const editorErrorMap: z.core.$ZodErrorMap = (issue) => {
+  if (issue.code === 'too_small' && issue.origin === 'string' && Number(issue.minimum) === 1) return 'Wajib diisi'
+  if (issue.code === 'too_big' && issue.origin === 'string') return `Maksimal ${String(issue.maximum)} karakter`
+  if (issue.code === 'too_small' && issue.origin === 'array' && Number(issue.minimum) === 1) return 'Isi minimal satu butir'
+  if (issue.code === 'invalid_format' && issue.format === 'uuid' && issue.input === '') return 'Wajib dipilih'
+  return indonesian(issue)
+}
+```
+
+3. Lengkapi core untuk form: `listAuthors` dan `listMedia` (dengan filter `ids` untuk media yang sedang terpasang tetapi di luar halaman pertama) di repository editor, zona waktu dan locale site di daftar site admin (`AdminSite`), dan batas nomor halaman di `normalizePaging` agar `?page=1e20` tidak membuat OFFSET melampaui bigint PostgreSQL.
+
+4. Tulis pembungkus route API per site. Satu tempat untuk sesi, akses site, dan pemetaan galat:
+
+`apps/web/server/utils/admin-api.ts`
+
+```ts
+// Pembungkus route API admin per site (ADR-009, M4 4.2):
+//   /api/admin/sites/:siteId/...
+// requireAdmin (sesi + user ACTIVE), requireSite (site milik user; selain
+// itu 404), lalu galat editor dipetakan ke HTTP:
+//   EditorError not-found -> 404, conflict -> 409, invalid -> 422 (+ issues)
+import { EditorError, type AdminSite, type EditorRepository } from '@framework/core'
+import { createError, defineEventHandler, getRouterParam, type RequestEvent } from 'nuxt/server'
+import { requireAdmin, requireSite, type AdminContext } from './admin'
+import { useRepositories } from './database'
+
+export interface AdminSiteContext {
+  event: RequestEvent
+  admin: AdminContext
+  site: AdminSite
+  editor: EditorRepository
+}
+
+const STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const
+
+export function defineAdminSiteHandler<T>(handler: (ctx: AdminSiteContext) => Promise<T>) {
+  return defineEventHandler(async (event) => {
+    const admin = await requireAdmin(event)
+    const site = requireSite(admin, getRouterParam(event, 'siteId'))
+    try {
+      return await handler({ event, admin, site, editor: useRepositories().editor })
+    } catch (error) {
+      if (error instanceof EditorError) {
+        throw createError({ statusCode: STATUS[error.kind], statusMessage: error.message, data: { kind: error.kind, issues: error.issues } })
+      }
+      throw error
+    }
+  })
+}
+
+/** Parameter route wajib (mis. :id); kosong = 404. */
+export function param(event: RequestEvent, name: string): string {
+  const value = getRouterParam(event, name)
+  if (!value) throw createError({ statusCode: 404, statusMessage: 'Tidak ditemukan' })
+  return value
+}
+```
+
+5. Tulis route di `server/api/admin/sites/[siteId]/`. Setiap route hanya meneruskan body ke repository editor, karena validasi ada di core:
+
+`apps/web/server/api/admin/sites/[siteId]/articles/index.get.ts`
+
+```ts
+// GET ?page=&status=&q=: daftar artikel admin (termasuk draf dan arsip).
+import { getQuery } from 'nuxt/server'
+import { defineAdminSiteHandler } from '../../../../../utils/admin-api'
+
+export default defineAdminSiteHandler(({ editor, site, event }) => {
+  const q = getQuery(event)
+  return editor.listArticles(site.id, {
+    page: Number(q['page']) || 1,
+    status: typeof q['status'] === 'string' && q['status'] ? q['status'] : undefined,
+    q: typeof q['q'] === 'string' ? q['q'] : undefined,
+  })
+})
+```
+
+`apps/web/server/api/admin/sites/[siteId]/articles/[id].put.ts`
+
+```ts
+// PUT { article, version, changeNote? }: simpan seluruh isi artikel.
+// version = versi yang dibaca saat form dibuka; berbeda -> 409.
+import { readBody } from 'nuxt/server'
+import { defineAdminSiteHandler, param } from '../../../../../utils/admin-api'
+
+export default defineAdminSiteHandler(async ({ editor, site, admin, event }) => {
+  const body = (await readBody(event)) as { article?: unknown; version?: number; changeNote?: string } | null
+  return editor.updateArticle(site.id, param(event, 'id'), body?.article, Number(body?.version), admin.user.id, body?.changeNote)
+})
+```
+
+   Route lain mengikuti pola yang sama: `articles` (POST, GET satu, arsip, revisi), `pages`, `categories`, `tags` (termasuk DELETE dengan `?updatedAt=`), `menus/[location]` dan item-itemnya, `authors`, `media`.
+
+6. Tanggal terbit diisi dalam zona waktu SITE, bukan zona waktu browser, lalu disimpan sebagai UTC. Hitung selisih zona dengan `Intl.DateTimeFormat`, dua langkah agar tepat di sekitar pergantian DST:
+
+`apps/web/app/utils/zoned-time.ts`
+
+```ts
+// Tanggal terbit di admin diisi dalam zona waktu SITE (bukan zona waktu
+// browser), lalu disimpan sebagai UTC (ISO 8601). Input <input
+// type="datetime-local"> memakai bentuk 'YYYY-MM-DDTHH:mm' tanpa zona.
+
+function partsIn(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date)
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0)
+  return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute'), second: get('second') }
+}
+
+/** Selisih (ms) zona waktu terhadap UTC pada saat tertentu. */
+function offsetMs(date: Date, timeZone: string): number {
+  const p = partsIn(date, timeZone)
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(date.getTime() / 1000) * 1000
+}
+
+/** ISO (UTC) -> 'YYYY-MM-DDTHH:mm' di zona waktu site; '' bila kosong. */
+export function isoToZonedInput(iso: string | null | undefined, timeZone: string): string {
+  if (!iso) return ''
+  const p = partsIn(new Date(iso), timeZone)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`
+}
+
+/** 'YYYY-MM-DDTHH:mm' di zona waktu site -> ISO UTC; null bila kosong atau tidak valid. */
+export function zonedInputToIso(value: string, timeZone: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value)
+  if (!m) return null
+  const asUtc = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]))
+  // Dua langkah agar tepat di sekitar pergantian DST (zona tanpa DST cukup satu).
+  let guess = asUtc - offsetMs(new Date(asUtc), timeZone)
+  guess = asUtc - offsetMs(new Date(guess), timeZone)
+  return new Date(guess).toISOString()
+}
+
+/** Label singkat zona waktu, mis. 'WIB' untuk Asia/Jakarta. */
+export function zoneLabel(timeZone: string, locale = 'id-ID'): string {
+  return new Intl.DateTimeFormat(locale, { timeZone, timeZoneName: 'short' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value ?? timeZone
+}
+```
+
+`apps/web/app/utils/zoned-time.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { isoToZonedInput, zonedInputToIso, zoneLabel } from './zoned-time'
+
+describe('tanggal di zona waktu site', () => {
+  it('Asia/Jakarta (UTC+7): input lokal <-> UTC', () => {
+    expect(zonedInputToIso('2026-11-22T07:30', 'Asia/Jakarta')).toBe('2026-11-22T00:30:00.000Z')
+    expect(isoToZonedInput('2026-11-22T00:30:00.000Z', 'Asia/Jakarta')).toBe('2026-11-22T07:30')
+  })
+
+  it('melewati pergantian hari', () => {
+    expect(zonedInputToIso('2026-11-22T03:00', 'Asia/Jayapura')).toBe('2026-11-21T18:00:00.000Z')
+  })
+
+  it('zona dengan DST (Eropa) tetap tepat di kedua musim', () => {
+    expect(zonedInputToIso('2026-07-01T12:00', 'Europe/Amsterdam')).toBe('2026-07-01T10:00:00.000Z')
+    expect(zonedInputToIso('2026-12-01T12:00', 'Europe/Amsterdam')).toBe('2026-12-01T11:00:00.000Z')
+  })
+
+  it('kosong atau tidak valid', () => {
+    expect(isoToZonedInput(null, 'Asia/Jakarta')).toBe('')
+    expect(zonedInputToIso('', 'Asia/Jakarta')).toBeNull()
+    expect(zonedInputToIso('22/11/2026', 'Asia/Jakarta')).toBeNull()
+  })
+
+  it('label zona', () => {
+    expect(zoneLabel('Asia/Jakarta')).toBe('WIB')
+  })
+})
+```
+
+7. Bersihkan isi editor sebelum dikirim. Block kosong dibuang, agar draf berisi judul saja bisa disimpan meski form baru dimulai dengan satu paragraf kosong. SEO tersimpan digabung dengan field yang diedit; tanpa itu, form yang hanya punya sebagian field (halaman, kategori) menghapus canonical, gambar OG, dan robots saat disimpan:
+
+`apps/web/app/utils/admin-body.ts`
+
+```ts
+// Membersihkan isi editor sebelum dikirim: block yang masih kosong dibuang
+// (mis. paragraf bawaan form baru, agar draf berisi judul saja bisa
+// disimpan), teks dipangkas, keterangan/sumber kosong dihilangkan. Validasi
+// akhir tetap di server (skema block v1).
+import type { Block } from '@framework/core'
+
+export function cleanBlocks(blocks: Block[]): Block[] {
+  return blocks.map(cleanBlock).filter((b) => !isEmptyBlock(b))
+}
+
+function isEmptyBlock(b: Block): boolean {
+  switch (b.type) {
+    case 'paragraph':
+    case 'heading':
+    case 'quote':
+      return b.text === ''
+    case 'image':
+      return b.mediaId === ''
+    case 'list':
+      return b.items.length === 0
+    case 'embed':
+      return b.url === ''
+  }
+}
+
+function cleanBlock(b: Block): Block {
+  switch (b.type) {
+    case 'paragraph':
+    case 'heading':
+      return { ...b, text: b.text.trim() }
+    case 'quote':
+      return { type: 'quote', text: b.text.trim(), ...(b.cite?.trim() ? { cite: b.cite.trim() } : {}) }
+    case 'image':
+      return { type: 'image', mediaId: b.mediaId, ...(b.caption?.trim() ? { caption: b.caption.trim() } : {}) }
+    case 'list':
+      return { ...b, items: b.items.map((i) => i.trim()).filter(Boolean) }
+    case 'embed':
+      return { ...b, url: b.url.trim() }
+  }
+}
+
+/**
+ * SEO yang dikirim: nilai tersimpan dipertahankan, field yang ada di form
+ * (`edited`) menimpa atau, bila dikosongkan, menghapusnya. Tanpa ini, form
+ * yang hanya punya sebagian field (halaman, kategori) menghapus sisanya
+ * (canonical, gambar OG, robots) saat disimpan.
+ */
+export function mergeSeo(stored: Record<string, unknown>, edited: Record<string, string | null | undefined>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...stored }
+  for (const [key, value] of Object.entries(edited)) {
+    const v = value?.trim()
+    if (v) out[key] = v
+    else delete out[key]
+  }
+  return out
+}
+
+/** Field SEO kosong tidak dikirim (skema menolak string kosong). */
+export function cleanSeo(seo: Record<string, string | null | undefined>): Record<string, string> {
+  return Object.fromEntries(Object.entries(seo).flatMap(([k, v]) => (v && v.trim() ? [[k, v.trim()]] : [])))
+}
+```
+
+8. Tulis CSS admin di bawah `.adm`, agar tidak pernah bertabrakan dengan CSS template (`.tpl`) di aplikasi yang sama. Perhatikan dua hal: selector judul editor diperkuat (`.adm input[type='text'].adm-editor__title`) karena gaya umum `.adm input[type='text']` lebih spesifik, dan textarea memakai `field-sizing: content` agar tingginya mengikuti isi:
+
+`apps/web/app/assets/admin.css`
+
+```css
+/*
+ * Admin (ADR-009). Ruang kerja satu pemilik: tenang, padat, mudah dipindai.
+ * Satu keluarga huruf (Inter), angka tabular untuk tanggal dan versi, slug
+ * dalam huruf monospace karena memang kode. Yang sengaja menonjol hanya
+ * editor block; selebihnya garis tipis dan tabel, tanpa kartu berbayang.
+ *
+ * Semua aturan di bawah .adm agar tidak pernah bertabrakan dengan CSS
+ * template (.tpl) di aplikasi yang sama.
+ */
+
+.adm {
+  --paper: #f5f6f4;
+  --panel: #ffffff;
+  --ink: #1c2023;
+  --ink-2: #4b5258;
+  --ink-3: #7a8187;
+  --line: #dcdfdb;
+  --line-strong: #b9beb8;
+  --accent: #1f5f4a;
+  --accent-ink: #ffffff;
+  --accent-soft: #e4efe9;
+  --danger: #a3271f;
+  --danger-soft: #fbeae8;
+  --warn: #8a5a00;
+  --focus: #2f6fd1;
+  --radius: 6px;
+  --mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.adm *,
+.adm *::before,
+.adm *::after {
+  box-sizing: border-box;
+}
+
+.adm a {
+  color: var(--accent);
+}
+
+.adm :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.adm h1,
+.adm h2,
+.adm h3 {
+  margin: 0;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.adm h1 {
+  font-size: 1.375rem;
+  font-weight: 650;
+}
+
+.adm h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.adm .mono {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.adm .muted {
+  color: var(--ink-3);
+}
+
+/* ---------- Kerangka: rail kiri + isi ------------------------------- */
+
+.adm-shell {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  min-height: 100vh;
+}
+
+.adm-rail {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  height: 100vh;
+  padding: 1.25rem 1rem;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.adm-rail__site label {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.adm-rail__site select {
+  width: 100%;
+  font-weight: 600;
+}
+
+.adm-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.adm-nav a {
+  padding: 0.4rem 0.625rem;
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.adm-nav a:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.adm-nav a.router-link-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.adm-rail__user {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+
+.adm-main {
+  min-width: 0;
+  padding: 1.5rem 2rem 4rem;
+}
+
+.adm-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.adm-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+@media (max-width: 52rem) {
+  .adm-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .adm-rail {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .adm-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .adm-rail__user {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .adm-main {
+    padding: 1rem;
+  }
+}
+
+/* ---------- Kontrol form ------------------------------------------- */
+
+.adm input[type='text'],
+.adm input[type='email'],
+.adm input[type='password'],
+.adm input[type='url'],
+.adm input[type='number'],
+.adm input[type='search'],
+.adm input[type='datetime-local'],
+.adm select,
+.adm textarea {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.adm textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+  /* Tinggi mengikuti isi (Chromium 123+); browser lain tetap bisa ditarik. */
+  field-sizing: content;
+}
+
+.adm input[aria-invalid='true'],
+.adm select[aria-invalid='true'],
+.adm textarea[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.adm .field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.adm .field > span:first-child {
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.adm .field__hint {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.adm .field__error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+
+.adm .check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.adm .stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.adm .row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+}
+
+/* ---------- Tombol -------------------------------------------------- */
+
+.adm .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.45rem 0.875rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.adm .btn:hover {
+  border-color: var(--ink-3);
+}
+
+.adm .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.adm .btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.adm .btn--primary:hover {
+  border-color: #174a39;
+  background: #174a39;
+}
+
+.adm .btn--danger {
+  color: var(--danger);
+}
+
+.adm .btn--small {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.adm .btn--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* ---------- Pesan --------------------------------------------------- */
+
+.adm .notice {
+  margin-bottom: 1rem;
+  padding: 0.625rem 0.875rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.adm .notice--error {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* ---------- Tabel --------------------------------------------------- */
+
+.adm .table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.adm .table th,
+.adm .table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.adm .table th {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.adm .table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Ponsel: kolom pelengkap disembunyikan; tabel lain bisa digulir menyamping. */
+@media (max-width: 40rem) {
+  .adm .hide-sm {
+    display: none;
+  }
+}
+
+.adm .table-scroll {
+  overflow-x: auto;
+}
+
+.adm .table .nowrap {
+  white-space: nowrap;
+}
+
+.adm .table__title {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.adm .table__title:hover {
+  text-decoration: underline;
+}
+
+.adm .filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.adm .filters input[type='search'] {
+  max-width: 20rem;
+}
+
+.adm .filters select {
+  width: auto;
+}
+
+.adm .pager {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+/* ---------- Status -------------------------------------------------- */
+
+.adm .status {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.adm .status--draft { background: #eceeec; color: #4b5258; }
+.adm .status--review { background: #fbf0d9; color: var(--warn); }
+.adm .status--published { background: var(--accent-soft); color: var(--accent); }
+.adm .status--scheduled { background: #e3ecfb; color: #1d4ed8; }
+.adm .status--archived { background: #f1f2f1; color: #8a8f93; }
+.adm .status--active { background: var(--accent-soft); color: var(--accent); }
+.adm .status--hidden { background: #f1f2f1; color: #8a8f93; }
+
+/* ---------- Editor: kolom utama + panel kanan ---------------------- */
+
+.adm-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 68rem) {
+  .adm-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Selector diperkuat agar menang atas gaya umum .adm input[type='text']. */
+.adm input[type='text'].adm-editor__title {
+  width: 100%;
+  padding: 0.25rem 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.75rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.adm input[type='text'].adm-editor__title:focus-visible {
+  outline: none;
+  border-bottom-color: var(--focus);
+}
+
+.adm-panel {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.adm-panel + .adm-panel {
+  margin-top: 1rem;
+}
+
+.adm-panel h2 {
+  font-size: 0.875rem;
+}
+
+.adm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.75rem;
+  max-height: 10rem;
+  overflow: auto;
+}
+
+/* ---------- Editor block: bagian yang sengaja menonjol ------------- */
+
+.adm-blocks {
+  display: grid;
+  gap: 0;
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.adm-block {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  border-bottom: 1px solid var(--line);
+}
+
+.adm-block__gutter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.75rem 0.75rem 0.75rem 0;
+  border-right: 2px solid var(--line);
+}
+
+.adm-block:focus-within .adm-block__gutter {
+  border-right-color: var(--accent);
+}
+
+.adm-block__type {
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.adm-block__tools {
+  display: flex;
+  gap: 0.125rem;
+  opacity: 0.55;
+}
+
+.adm-block:hover .adm-block__tools,
+.adm-block:focus-within .adm-block__tools {
+  opacity: 1;
+}
+
+.adm-block__tools button {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.adm-block__tools button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.adm-block__tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.adm-block__body {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem 0 0.75rem 1rem;
+}
+
+.adm-block__body textarea.is-paragraph {
+  min-height: 4.5rem;
+  border-color: transparent;
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.adm-block__body textarea.is-paragraph:hover,
+.adm-block__body textarea.is-paragraph:focus {
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.adm-block__body input.is-heading {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.adm-block__inline {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.adm-blocks__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.875rem 0;
+}
+
+.adm-blocks__add span {
+  margin-right: 0.25rem;
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.adm-blocks__empty {
+  padding: 1.25rem 0;
+  color: var(--ink-3);
+}
+
+/* ---------- Pohon (kategori, menu) --------------------------------- */
+
+.adm-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 68rem) {
+  .adm-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.adm .indent-1 { padding-left: 1.5rem; }
+.adm .indent-2 { padding-left: 3rem; }
+.adm .indent-3 { padding-left: 4.5rem; }
+
+.adm .is-selected td {
+  background: var(--accent-soft);
+}
+
+/* ---------- Login --------------------------------------------------- */
+
+.adm-login {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.adm-login form {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+  max-width: 22rem;
+}
+
+.adm-login h1 {
+  margin-bottom: 0.25rem;
+}
+
+.adm-login .btn {
+  justify-content: center;
+}
+```
+
+9. Pakai layout Nuxt untuk kerangka admin. `app.vue` menjadi `<NuxtLayout><NuxtPage /></NuxtLayout>`; halaman publik tidak memakai layout, jadi tetap dirender apa adanya. Logout hanya pindah ke halaman login bila server benar-benar menghapus sesi, agar komputer bersama tidak tertinggal dalam keadaan login. Matikan `vue/multi-word-component-names` juga untuk `app/layouts/**`:
+
+`apps/web/app/layouts/admin.vue`
+
+```vue
+<!--
+  Kerangka admin (ADR-009): rail kiri berisi pemilih site, navigasi, dan
+  user; isi halaman di kanan. Hanya dipakai halaman /admin/:site/... (SPA).
+-->
+<script setup lang="ts">
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '../assets/admin.css'
+
+const me = useAdminMe()
+const site = useAdminSite()
+const route = useRoute()
+const error = ref<string | null>(null)
+
+await ensureAdminMe().catch((e) => {
+  error.value = apiErrorMessage(e)
+})
+
+const nav = [
+  { to: 'articles', label: 'Artikel' },
+  { to: 'pages', label: 'Halaman' },
+  { to: 'categories', label: 'Kategori' },
+  { to: 'tags', label: 'Tag' },
+  { to: 'menus', label: 'Menu' },
+]
+
+/** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */
+function switchSite(code: string) {
+  const section = String(route.path.split('/')[3] ?? 'articles')
+  const keep = nav.some((n) => n.to === section) ? section : 'articles'
+  return navigateTo(`/admin/${code}/${keep}`)
+}
+
+/** Pindah ke login hanya bila server benar-benar menghapus sesi. */
+async function logout() {
+  try {
+    await $fetch('/api/admin/logout', { method: 'POST' })
+  } catch (e) {
+    error.value = `Gagal keluar: ${apiErrorMessage(e)}. Sesi masih aktif; coba lagi.`
+    return
+  }
+  me.value = null
+  await navigateTo('/admin/login')
+}
+
+useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), htmlAttrs: { lang: 'id' } })
+</script>
+
+<template>
+  <div class="adm">
+    <p
+      v-if="error"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+    <div
+      v-else-if="me"
+      class="adm-shell"
+    >
+      <aside class="adm-rail">
+        <div class="adm-rail__site">
+          <label for="pilih-site">Site</label>
+          <select
+            id="pilih-site"
+            :value="site?.code ?? ''"
+            @change="switchSite(($event.target as HTMLSelectElement).value)"
+          >
+            <option
+              v-for="s in me.sites"
+              :key="s.id"
+              :value="s.code"
+            >
+              {{ s.name }}
+            </option>
+          </select>
+        </div>
+        <nav
+          class="adm-nav"
+          aria-label="Admin"
+        >
+          <NuxtLink
+            v-for="item in nav"
+            :key="item.to"
+            :to="site ? `/admin/${site.code}/${item.to}` : '/admin'"
+          >
+            {{ item.label }}
+          </NuxtLink>
+        </nav>
+        <div class="adm-rail__user">
+          <div>{{ me.user.displayName }}</div>
+          <div class="muted">
+            {{ me.user.email }}
+          </div>
+          <button
+            type="button"
+            class="btn btn--ghost btn--small"
+            @click="logout"
+          >
+            Keluar
+          </button>
+        </div>
+      </aside>
+      <main class="adm-main">
+        <p
+          v-if="!site"
+          class="notice notice--error"
+        >
+          Site tidak ditemukan atau Anda tidak punya akses.
+        </p>
+        <slot v-else />
+      </main>
+    </div>
+  </div>
+</template>
+```
+
+10. Tulis komponen. `MediaSelect` memakai `v-model` lewat computed (dengan `:value`, opsi yang dimuat belakangan tidak ikut terpilih) dan `withDefaults` untuk `allowEmpty` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
+
+`apps/web/app/components/admin/StatusBadge.vue`
+
+```vue
+<!-- Status konten; PUBLISHED dengan tanggal di masa depan tampil "Terjadwal". -->
+<script setup lang="ts">
+const props = defineProps<{ status: string; publishedAt?: string | null }>()
+const shown = computed(() => displayStatus(props.status, props.publishedAt ?? null))
+</script>
+
+<template>
+  <span
+    class="status"
+    :class="`status--${shown.key}`"
+  >{{ shown.label }}</span>
+</template>
+```
+
+`apps/web/app/components/admin/MediaSelect.vue`
+
+```vue
+<!--
+  Pilih media milik site (daftar terbaru). Upload dan pratinjau gambar
+  ditambahkan di 4.3; sampai saat itu media dikenali dari nama file dan alt.
+-->
+<script setup lang="ts">
+import type { MediaListItem, Page } from '@framework/core'
+
+// allowEmpty default true: prop boolean yang tidak dikirim dianggap false oleh Vue.
+const props = withDefaults(defineProps<{ siteId: string; id?: string; invalid?: boolean; allowEmpty?: boolean }>(), { id: undefined, invalid: false, allowEmpty: true })
+const model = defineModel<string | null>({ required: true })
+
+const { data } = useAsyncData(`media-${props.siteId}`, () => adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media'), { server: false })
+
+// Media yang sedang terpasang tetapi di luar halaman pertama tetap harus
+// muncul sebagai pilihan; tanpa ini select tampil "Tanpa gambar".
+const missing = computed(() => (model.value && data.value && !data.value.items.some((m) => m.id === model.value) ? model.value : null))
+const { data: extra } = useAsyncData(
+  () => `media-${props.siteId}-${missing.value ?? ''}`,
+  () => (missing.value ? adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media', { query: { ids: missing.value } }) : Promise.resolve(null)),
+  { server: false },
+)
+const options = computed(() => [...(extra.value?.items ?? []), ...(data.value?.items ?? [])])
+
+// v-model lewat computed: dengan :value, pilihan yang dimuat belakangan tidak
+// ikut terpilih (select dirender sebelum opsinya ada).
+const selected = computed({
+  get: () => model.value ?? '',
+  set: (value: string) => {
+    model.value = value || null
+  },
+})
+
+const label = (m: Json<MediaListItem>) => {
+  const file = m.storageKey.split('/').at(-1) ?? m.storageKey
+  const size = m.width && m.height ? ` (${m.width}×${m.height})` : ''
+  return `${file}${size}${m.altText ? ` · ${m.altText}` : ''}`
+}
+</script>
+
+<template>
+  <select
+    :id="id"
+    v-model="selected"
+    :aria-invalid="invalid || undefined"
+  >
+    <option
+      v-if="allowEmpty"
+      value=""
+    >
+      Tanpa gambar
+    </option>
+    <option
+      v-for="m in options"
+      :key="m.id"
+      :value="m.id"
+    >
+      {{ label(m) }}
+    </option>
+  </select>
+</template>
+```
+
+`apps/web/app/components/admin/BlockEditor.vue`
+
+```vue
+<!--
+  Editor block v1 (usulan M4-C): paragraf, judul, gambar, kutipan, daftar,
+  sematan. Setiap block satu baris: parit kiri berisi jenis dan alat (naik,
+  turun, hapus), isian di kanan. Validasi akhir tetap di server; galat per
+  block ditampilkan dari field 'body.blocks.<n>...'.
+-->
+<script setup lang="ts">
+import type { Block } from '@framework/core'
+
+const props = defineProps<{ siteId: string; errors?: Record<string, string> }>()
+const blocks = defineModel<Block[]>({ required: true })
+
+const TYPES: { type: Block['type']; label: string }[] = [
+  { type: 'paragraph', label: 'Paragraf' },
+  { type: 'heading', label: 'Judul' },
+  { type: 'image', label: 'Gambar' },
+  { type: 'quote', label: 'Kutipan' },
+  { type: 'list', label: 'Daftar' },
+  { type: 'embed', label: 'Sematan' },
+]
+const labelOf = (type: string) => TYPES.find((t) => t.type === type)?.label ?? type
+
+function emptyBlock(type: Block['type']): Block {
+  switch (type) {
+    case 'paragraph': return { type, text: '' }
+    case 'heading': return { type, level: 2, text: '' }
+    case 'image': return { type, mediaId: '' }
+    case 'quote': return { type, text: '' }
+    case 'list': return { type, style: 'bullet', items: [''] }
+    case 'embed': return { type, provider: 'youtube', url: '' }
+  }
+}
+
+function add(type: Block['type']) {
+  blocks.value = [...blocks.value, emptyBlock(type)]
+}
+
+function move(index: number, delta: number) {
+  const next = [...blocks.value]
+  const [item] = next.splice(index, 1)
+  if (!item) return
+  next.splice(index + delta, 0, item)
+  blocks.value = next
+}
+
+function remove(index: number) {
+  blocks.value = blocks.value.filter((_, i) => i !== index)
+}
+
+function update(index: number, patch: Partial<Block>) {
+  blocks.value = blocks.value.map((b, i) => (i === index ? ({ ...b, ...patch } as Block) : b))
+}
+
+/** Daftar diedit sebagai teks, satu butir per baris. */
+const listText = (b: Block) => (b.type === 'list' ? b.items.join('\n') : '')
+
+const err = (index: number) => (props.errors ? fieldError(props.errors, `body.blocks.${index}`) : null)
+
+const EMBED_HINT: Record<string, string> = {
+  youtube: 'Tautan YouTube, mis. https://www.youtube.com/watch?v=…',
+  vimeo: 'Tautan Vimeo, mis. https://vimeo.com/123456789',
+  x: 'Tautan postingan X; tampil sebagai tautan (tanpa skrip X).',
+}
+</script>
+
+<template>
+  <div class="adm-blocks">
+    <p
+      v-if="blocks.length === 0"
+      class="adm-blocks__empty"
+    >
+      Isi artikel masih kosong. Tambahkan paragraf pertama di bawah.
+    </p>
+    <div
+      v-for="(block, index) in blocks"
+      :key="index"
+      class="adm-block"
+    >
+      <div class="adm-block__gutter">
+        <span class="adm-block__type">{{ labelOf(block.type) }}</span>
+        <div class="adm-block__tools">
+          <button
+            type="button"
+            :disabled="index === 0"
+            :aria-label="`Naikkan ${labelOf(block.type).toLowerCase()} ke-${index + 1}`"
+            @click="move(index, -1)"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            :disabled="index === blocks.length - 1"
+            :aria-label="`Turunkan ${labelOf(block.type).toLowerCase()} ke-${index + 1}`"
+            @click="move(index, 1)"
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            :aria-label="`Hapus ${labelOf(block.type).toLowerCase()} ke-${index + 1}`"
+            @click="remove(index)"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <div class="adm-block__body">
+        <textarea
+          v-if="block.type === 'paragraph'"
+          class="is-paragraph"
+          :value="block.text"
+          aria-label="Teks paragraf"
+          placeholder="Tulis paragraf…"
+          @input="update(index, { text: ($event.target as HTMLTextAreaElement).value })"
+        />
+
+        <div
+          v-else-if="block.type === 'heading'"
+          class="adm-block__inline"
+        >
+          <select
+            :value="block.level"
+            aria-label="Tingkat judul"
+            @change="update(index, { level: Number(($event.target as HTMLSelectElement).value) as 2 | 3 | 4 })"
+          >
+            <option :value="2">
+              Judul bagian
+            </option>
+            <option :value="3">
+              Sub-judul
+            </option>
+            <option :value="4">
+              Sub-sub-judul
+            </option>
+          </select>
+          <input
+            type="text"
+            class="is-heading"
+            :value="block.text"
+            aria-label="Teks judul"
+            placeholder="Judul bagian"
+            @input="update(index, { text: ($event.target as HTMLInputElement).value })"
+          >
+        </div>
+
+        <template v-else-if="block.type === 'image'">
+          <AdminMediaSelect
+            :site-id="siteId"
+            :model-value="block.mediaId || null"
+            :allow-empty="false"
+            aria-label="Gambar"
+            @update:model-value="update(index, { mediaId: $event ?? '' })"
+          />
+          <input
+            type="text"
+            :value="block.caption ?? ''"
+            aria-label="Keterangan gambar"
+            placeholder="Keterangan (opsional)"
+            @input="update(index, { caption: ($event.target as HTMLInputElement).value || undefined })"
+          >
+        </template>
+
+        <template v-else-if="block.type === 'quote'">
+          <textarea
+            :value="block.text"
+            aria-label="Teks kutipan"
+            placeholder="Kutipan"
+            @input="update(index, { text: ($event.target as HTMLTextAreaElement).value })"
+          />
+          <input
+            type="text"
+            :value="block.cite ?? ''"
+            aria-label="Sumber kutipan"
+            placeholder="Sumber (opsional)"
+            @input="update(index, { cite: ($event.target as HTMLInputElement).value || undefined })"
+          >
+        </template>
+
+        <template v-else-if="block.type === 'list'">
+          <select
+            :value="block.style"
+            aria-label="Jenis daftar"
+            @change="update(index, { style: ($event.target as HTMLSelectElement).value as 'bullet' | 'numbered' })"
+          >
+            <option value="bullet">
+              Berbutir
+            </option>
+            <option value="numbered">
+              Bernomor (langkah)
+            </option>
+          </select>
+          <textarea
+            :value="listText(block)"
+            aria-label="Isi daftar, satu butir per baris"
+            placeholder="Satu butir per baris"
+            @input="update(index, { items: ($event.target as HTMLTextAreaElement).value.split('\n') })"
+          />
+        </template>
+
+        <div
+          v-else-if="block.type === 'embed'"
+          class="adm-block__inline"
+        >
+          <select
+            :value="block.provider"
+            aria-label="Penyedia"
+            @change="update(index, { provider: ($event.target as HTMLSelectElement).value as 'youtube' | 'vimeo' | 'x' })"
+          >
+            <option value="youtube">
+              YouTube
+            </option>
+            <option value="vimeo">
+              Vimeo
+            </option>
+            <option value="x">
+              X
+            </option>
+          </select>
+          <input
+            type="url"
+            :value="block.url"
+            aria-label="Tautan sematan"
+            :placeholder="EMBED_HINT[block.provider]"
+            @input="update(index, { url: ($event.target as HTMLInputElement).value })"
+          >
+        </div>
+
+        <p
+          v-if="err(index)"
+          class="field__error"
+        >
+          {{ err(index) }}
+        </p>
+      </div>
+    </div>
+
+    <div class="adm-blocks__add">
+      <span>Tambah</span>
+      <button
+        v-for="t in TYPES"
+        :key="t.type"
+        type="button"
+        class="btn btn--small"
+        @click="add(t.type)"
+      >
+        {{ t.label }}
+      </button>
+    </div>
+  </div>
+</template>
+```
+
+11. Tulis halaman. Daftar artikel memakai key `useAsyncData` yang reaktif (site, status, kata kunci yang ditunda 300 ms, halaman), sehingga data diambil ulang tanpa watcher tambahan. Editor artikel mengirim `publishedAt` hanya bila tanggalnya diubah, agar detik yang tersimpan tidak terpotong setiap kali disimpan:
+
+`apps/web/app/pages/admin/[site]/articles/index.vue`
+
+```vue
+<!-- Daftar artikel admin: semua status, cari judul, terbaru diubah dulu. -->
+<script setup lang="ts">
+import type { AdminArticleQuery, ArticleListItem, Page } from '@framework/core'
+
+definePageMeta({ layout: 'admin' })
+
+const site = useAdminSite()
+const route = useRoute()
+const router = useRouter()
+
+const status = ref(String(route.query['status'] ?? ''))
+const q = ref(String(route.query['q'] ?? ''))
+const page = ref(Number(route.query['page']) || 1)
+
+/** Kata kunci yang dipakai query: ditunda 300 ms setelah berhenti mengetik. */
+const search = ref(q.value)
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(q, (value) => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    page.value = 1
+    search.value = value
+  }, 300)
+})
+
+// Key reaktif: berubah (site, status, kata kunci, halaman) -> data diambil ulang.
+const { data, error, pending } = await useAsyncData(
+  () => `articles-${site.value?.id}-${status.value}-${search.value}-${page.value}`,
+  () => {
+    if (!site.value) return Promise.resolve(null)
+    const query: AdminArticleQuery = { page: page.value, status: status.value || undefined, q: search.value || undefined }
+    return adminApi<Json<Page<ArticleListItem>>>(site.value.id, 'articles', { query })
+  },
+  { server: false },
+)
+
+watch([status, search, page], () => router.replace({ query: { ...(status.value && { status: status.value }), ...(search.value && { q: search.value }), ...(page.value > 1 && { page: page.value }) } }))
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Artikel</h1>
+      <div class="adm-head__actions">
+        <NuxtLink
+          v-if="site"
+          class="btn btn--primary"
+          :to="`/admin/${site.code}/articles/new`"
+        >
+          Tulis artikel
+        </NuxtLink>
+      </div>
+    </header>
+
+    <div class="filters">
+      <input
+        v-model="q"
+        type="search"
+        placeholder="Cari judul"
+        aria-label="Cari judul"
+      >
+      <select
+        v-model="status"
+        aria-label="Status"
+        @change="page = 1"
+      >
+        <option value="">
+          Semua status
+        </option>
+        <option
+          v-for="s in ['DRAFT', 'REVIEW', 'PUBLISHED', 'ARCHIVED']"
+          :key="s"
+          :value="s"
+        >
+          {{ STATUS_LABELS[s] }}
+        </option>
+      </select>
+    </div>
+
+    <p
+      v-if="error"
+      class="notice notice--error"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <p
+      v-else-if="pending && !data"
+      class="muted"
+    >
+      Memuat artikel…
+    </p>
+    <template v-else-if="data && site">
+      <table
+        v-if="data.items.length"
+        class="table"
+      >
+        <thead>
+          <tr>
+            <th>Judul</th>
+            <th>Status</th>
+            <th class="hide-sm">
+              Kategori
+            </th>
+            <th class="hide-sm">
+              Terbit
+            </th>
+            <th>Diubah</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="a in data.items"
+            :key="a.id"
+          >
+            <td>
+              <NuxtLink
+                class="table__title"
+                :to="`/admin/${site.code}/articles/${a.id}`"
+              >
+                {{ a.title }}
+              </NuxtLink>
+              <div class="mono muted">
+                {{ a.slug }}
+              </div>
+            </td>
+            <td>
+              <AdminStatusBadge
+                :status="a.status"
+                :published-at="a.publishedAt"
+              />
+            </td>
+            <td class="hide-sm">
+              {{ a.category.name }}
+            </td>
+            <td class="nowrap hide-sm">
+              {{ formatSiteDate(a.publishedAt, site) }}
+            </td>
+            <td class="nowrap">
+              {{ formatSiteDate(a.updatedAt, site) }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p
+        v-else
+        class="muted"
+      >
+        {{ q || status ? 'Tidak ada artikel yang cocok dengan filter ini.' : 'Belum ada artikel. Mulai dengan Tulis artikel.' }}
+      </p>
+      <nav
+        v-if="data.totalPages > 1"
+        class="pager"
+        aria-label="Halaman daftar"
+      >
+        <button
+          type="button"
+          class="btn btn--small"
+          :disabled="page <= 1"
+          @click="page--"
+        >
+          Sebelumnya
+        </button>
+        <span class="muted">Halaman {{ data.page }} dari {{ data.totalPages }} ({{ data.total }} artikel)</span>
+        <button
+          type="button"
+          class="btn btn--small"
+          :disabled="page >= data.totalPages"
+          @click="page++"
+        >
+          Berikutnya
+        </button>
+      </nav>
+    </template>
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/[site]/articles/[id].vue`
+
+```vue
+<!--
+  Editor artikel (M4 4.2). /admin/:site/articles/new = artikel baru.
+  Kolom utama: judul, ringkasan, editor block. Panel kanan: terbit (status,
+  tanggal di zona waktu site), pengelompokan (kategori, tag, penulis,
+  format), gambar utama, SEO. Simpan mengirim versi yang dibaca saat form
+  dibuka; versi berbeda (diubah di tab lain) -> 409 dan diminta muat ulang.
+-->
+<script setup lang="ts">
+import type { ArticleRecord, Block, CategoryRecord, RevisionItem, TagRecord } from '@framework/core'
+
+definePageMeta({ layout: 'admin' })
+
+const site = useAdminSite()
+const route = useRoute()
+const isNew = computed(() => route.params['id'] === 'new')
+const siteId = computed(() => site.value?.id ?? '')
+
+interface Form {
+  title: string
+  slug: string
+  excerpt: string
+  blocks: Block[]
+  categoryId: string
+  authorId: string
+  featuredMediaId: string | null
+  format: string
+  status: string
+  isFeatured: boolean
+  publishedLocal: string
+  tagIds: string[]
+  seo: { title: string; description: string; og_image_id: string | null; canonical: string; robots: string }
+  changeNote: string
+}
+
+const emptyForm = (): Form => ({
+  title: '', slug: '', excerpt: '', blocks: [{ type: 'paragraph', text: '' }], categoryId: '', authorId: '',
+  featuredMediaId: null, format: 'STANDARD', status: 'DRAFT', isFeatured: false, publishedLocal: '', tagIds: [],
+  seo: { title: '', description: '', og_image_id: null, canonical: '', robots: '' }, changeNote: '',
+})
+
+const form = reactive<Form>(emptyForm())
+const article = ref<Json<ArticleRecord> | null>(null)
+const errors = ref<Record<string, string>>({})
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const conflict = ref(false)
+const busy = ref(false)
+const saved = ref('')
+/** Tanggal terbit seperti saat dimuat; tidak diubah = tidak dikirim. */
+const loadedPublished = ref('')
+
+const { data: options } = await useAsyncData(
+  () => `article-options-${siteId.value}`,
+  async () => {
+    if (!siteId.value) return null
+    const [categories, tags, authors] = await Promise.all([
+      adminApi<Json<CategoryRecord>[]>(siteId.value, 'categories'),
+      adminApi<Json<TagRecord>[]>(siteId.value, 'tags'),
+      adminApi<{ id: string; name: string; status: string }[]>(siteId.value, 'authors'),
+    ])
+    return { categories, tags, authors }
+  },
+  { server: false },
+)
+
+/** Kategori berurutan sebagai pohon: induk lalu anak-anaknya, dengan kedalaman. */
+const categoryTree = computed(() => {
+  const all = options.value?.categories ?? []
+  const out: { id: string; name: string; depth: number; hidden: boolean }[] = []
+  const walk = (parent: string | null, depth: number) => {
+    for (const c of all.filter((x) => x.parentId === parent)) {
+      out.push({ id: c.id, name: c.name, depth, hidden: c.status === 'HIDDEN' })
+      walk(c.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return out
+})
+
+function fill(a: Json<ArticleRecord>) {
+  article.value = a
+  const tz = site.value?.timezone ?? 'UTC'
+  Object.assign(form, {
+    title: a.title, slug: a.slug, excerpt: a.excerpt ?? '', blocks: structuredClone(a.body.blocks), categoryId: a.categoryId,
+    authorId: a.authorId ?? '', featuredMediaId: a.featuredMediaId, format: a.format, status: a.status, isFeatured: a.isFeatured,
+    publishedLocal: isoToZonedInput(a.publishedAt, tz), tagIds: [...a.tagIds],
+    seo: { title: a.seo.title ?? '', description: a.seo.description ?? '', og_image_id: a.seo.og_image_id ?? null, canonical: a.seo.canonical ?? '', robots: a.seo.robots ?? '' },
+    changeNote: '',
+  })
+  loadedPublished.value = form.publishedLocal
+  saved.value = snapshot()
+}
+
+async function load() {
+  conflict.value = false
+  errors.value = {}
+  if (isNew.value || !siteId.value) {
+    Object.assign(form, emptyForm())
+    saved.value = snapshot()
+    return
+  }
+  try {
+    fill(await adminApi<Json<ArticleRecord>>(siteId.value, `articles/${String(route.params['id'])}`))
+  } catch (e) {
+    message.value = { kind: 'error', text: apiErrorMessage(e) }
+  }
+}
+
+const { data: revisions, refresh: refreshRevisions } = await useAsyncData(
+  () => `revisions-${siteId.value}-${String(route.params['id'])}`,
+  () => (isNew.value || !siteId.value ? Promise.resolve([]) : adminApi<Json<RevisionItem>[]>(siteId.value, `articles/${String(route.params['id'])}/revisions`)),
+  { server: false },
+)
+
+onMounted(load)
+watch(() => route.params['id'], load)
+
+const snapshot = () => JSON.stringify({ ...form, changeNote: '' })
+const dirty = computed(() => snapshot() !== saved.value)
+
+function payload() {
+  const tz = site.value?.timezone ?? 'UTC'
+  return {
+    title: form.title,
+    slug: form.slug.trim() || undefined,
+    excerpt: form.excerpt.trim() || null,
+    body: { version: 1, blocks: cleanBlocks(form.blocks) },
+    categoryId: form.categoryId,
+    authorId: form.authorId || null,
+    featuredMediaId: form.featuredMediaId,
+    format: form.format,
+    status: form.status,
+    isFeatured: form.isFeatured,
+    // Tidak diubah = tidak dikirim (detik tersimpan tetap utuh); dikosongkan
+    // = null (Terbit tanpa tanggal = sekarang).
+    publishedAt: !isNew.value && form.publishedLocal === loadedPublished.value
+      ? undefined
+      : form.publishedLocal ? zonedInputToIso(form.publishedLocal, tz) : null,
+    tagIds: form.tagIds,
+    seo: mergeSeo(article.value?.seo ?? {}, form.seo),
+    attributes: article.value?.attributes ?? {},
+  }
+}
+
+async function save() {
+  if (!site.value) return
+  busy.value = true
+  errors.value = {}
+  message.value = null
+  try {
+    if (isNew.value) {
+      const created = await adminApi<Json<ArticleRecord>>(site.value.id, 'articles', { method: 'POST', body: payload() })
+      fill(created)
+      message.value = { kind: 'ok', text: 'Artikel dibuat.' }
+      await navigateTo(`/admin/${site.value.code}/articles/${created.id}`, { replace: true })
+    } else if (article.value) {
+      const updated = await adminApi<Json<ArticleRecord>>(site.value.id, `articles/${article.value.id}`, {
+        method: 'PUT',
+        body: { article: payload(), version: article.value.version, changeNote: form.changeNote || undefined },
+      })
+      fill(updated)
+      message.value = { kind: 'ok', text: savedText(updated) }
+      void refreshRevisions()
+    }
+  } catch (e) {
+    if (apiStatus(e) === 409) conflict.value = true
+    errors.value = apiFieldErrors(e)
+    message.value = { kind: 'error', text: apiStatus(e) === 422 ? 'Periksa kembali isian yang ditandai.' : apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+function savedText(a: Json<ArticleRecord>) {
+  const shown = displayStatus(a.status, a.publishedAt)
+  if (shown.key === 'scheduled' && site.value) return `Disimpan. Terjadwal terbit ${formatSiteDate(a.publishedAt, site.value)}.`
+  if (shown.key === 'published') return 'Disimpan dan tampil di site.'
+  return 'Disimpan.'
+}
+
+async function archive() {
+  if (!site.value || !article.value) return
+  if (!confirm('Arsipkan artikel ini? Artikel tidak lagi tampil di site.')) return
+  busy.value = true
+  try {
+    fill(await adminApi<Json<ArticleRecord>>(site.value.id, `articles/${article.value.id}/archive`, { method: 'POST', body: { version: article.value.version } }))
+    message.value = { kind: 'ok', text: 'Artikel diarsipkan.' }
+    void refreshRevisions()
+  } catch (e) {
+    if (apiStatus(e) === 409) conflict.value = true
+    message.value = { kind: 'error', text: apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+function toggleTag(id: string, on: boolean) {
+  form.tagIds = on ? [...form.tagIds, id] : form.tagIds.filter((t) => t !== id)
+}
+
+const err = (field: string) => fieldError(errors.value, field)
+const zone = computed(() => (site.value ? zoneLabel(site.value.timezone) : ''))
+const scheduledHint = computed(() => {
+  if (form.status !== 'PUBLISHED') return 'Tanggal dipakai saat status Terbit.'
+  if (!form.publishedLocal) return 'Kosong: terbit saat disimpan.'
+  const iso = zonedInputToIso(form.publishedLocal, site.value?.timezone ?? 'UTC')
+  return iso && new Date(iso) > new Date() ? 'Tanggal mendatang: artikel dijadwalkan.' : 'Tanggal sudah lewat: langsung tampil.'
+})
+
+onBeforeRouteLeave(() => {
+  if (dirty.value && !confirm('Ada perubahan yang belum disimpan. Tinggalkan halaman?')) return false
+})
+</script>
+
+<template>
+  <form
+    v-if="site"
+    @submit.prevent="save"
+  >
+    <header class="adm-head">
+      <NuxtLink :to="`/admin/${site.code}/articles`">
+        Artikel
+      </NuxtLink>
+      <span class="muted">/</span>
+      <h1>{{ isNew ? 'Artikel baru' : form.title || 'Tanpa judul' }}</h1>
+      <AdminStatusBadge
+        v-if="article"
+        :status="article.status"
+        :published-at="article.publishedAt"
+      />
+      <div class="adm-head__actions">
+        <span
+          v-if="dirty"
+          class="muted"
+        >Belum disimpan</span>
+        <button
+          v-if="article && article.status !== 'ARCHIVED'"
+          type="button"
+          class="btn btn--danger"
+          :disabled="busy"
+          @click="archive"
+        >
+          Arsipkan
+        </button>
+        <button
+          type="submit"
+          class="btn btn--primary"
+          :disabled="busy"
+        >
+          {{ busy ? 'Menyimpan…' : 'Simpan' }}
+        </button>
+      </div>
+    </header>
+
+    <p
+      v-if="conflict"
+      class="notice notice--error"
+      role="alert"
+    >
+      Artikel ini sudah diubah di tempat lain sejak Anda membukanya.
+      <button
+        type="button"
+        class="btn btn--small"
+        @click="load"
+      >
+        Muat versi terbaru
+      </button>
+      <span class="muted">(perubahan Anda di form ini akan hilang)</span>
+    </p>
+    <p
+      v-else-if="message"
+      class="notice"
+      :class="{ 'notice--error': message.kind === 'error' }"
+      role="status"
+    >
+      {{ message.text }}
+    </p>
+
+    <div class="adm-editor">
+      <div>
+        <input
+          v-model="form.title"
+          class="adm-editor__title"
+          type="text"
+          placeholder="Judul artikel"
+          aria-label="Judul"
+          :aria-invalid="!!err('title') || undefined"
+        >
+        <p
+          v-if="err('title')"
+          class="field__error"
+        >
+          {{ err('title') }}
+        </p>
+        <label
+          class="field"
+          style="margin-top: 1rem"
+        >
+          <span>Ringkasan</span>
+          <textarea
+            v-model="form.excerpt"
+            rows="2"
+            maxlength="1000"
+            placeholder="Satu atau dua kalimat untuk kartu artikel dan deskripsi bawaan"
+            :aria-invalid="!!err('excerpt') || undefined"
+          />
+          <span
+            v-if="err('excerpt')"
+            class="field__error"
+          >{{ err('excerpt') }}</span>
+        </label>
+        <AdminBlockEditor
+          v-model="form.blocks"
+          :site-id="site.id"
+          :errors="errors"
+        />
+        <p
+          v-if="err('body') && !Object.keys(errors).some((k) => k.startsWith('body.blocks'))"
+          class="field__error"
+        >
+          {{ err('body') }}
+        </p>
+      </div>
+
+      <aside>
+        <section class="adm-panel">
+          <h2>Terbit</h2>
+          <label class="field">
+            <span>Status</span>
+            <select v-model="form.status">
+              <option value="DRAFT">Draf</option>
+              <option value="REVIEW">Perlu ditinjau</option>
+              <option value="PUBLISHED">Terbit</option>
+              <option
+                v-if="form.status === 'ARCHIVED'"
+                value="ARCHIVED"
+              >
+                Arsip
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Tanggal terbit ({{ zone }})</span>
+            <input
+              v-model="form.publishedLocal"
+              type="datetime-local"
+              :aria-invalid="!!err('publishedAt') || undefined"
+            >
+            <span
+              v-if="err('publishedAt')"
+              class="field__error"
+            >{{ err('publishedAt') }}</span>
+            <span
+              v-else
+              class="field__hint"
+            >{{ scheduledHint }}</span>
+          </label>
+          <label class="field">
+            <span>Slug</span>
+            <input
+              v-model="form.slug"
+              type="text"
+              class="mono"
+              :placeholder="isNew ? 'dibuat dari judul' : ''"
+              :aria-invalid="!!err('slug') || undefined"
+            >
+            <span
+              v-if="err('slug')"
+              class="field__error"
+            >{{ err('slug') }}</span>
+            <span
+              v-else-if="article?.publicPath"
+              class="field__hint mono"
+            >{{ article.publicPath }}</span>
+            <span
+              v-else
+              class="field__hint"
+            >Mengganti slug artikel yang sudah tampil membuat pengalihan dari alamat lama.</span>
+          </label>
+          <label
+            v-if="!isNew"
+            class="field"
+          >
+            <span>Catatan perubahan</span>
+            <input
+              v-model="form.changeNote"
+              type="text"
+              placeholder="Opsional, masuk ke riwayat revisi"
+            >
+          </label>
+        </section>
+
+        <section class="adm-panel">
+          <h2>Pengelompokan</h2>
+          <label class="field">
+            <span>Kategori</span>
+            <select
+              v-model="form.categoryId"
+              :aria-invalid="!!err('categoryId') || undefined"
+            >
+              <option
+                value=""
+                disabled
+              >
+                Pilih kategori
+              </option>
+              <option
+                v-for="c in categoryTree"
+                :key="c.id"
+                :value="c.id"
+              >
+                {{ '— '.repeat(c.depth) }}{{ c.name }}{{ c.hidden ? ' (disembunyikan)' : '' }}
+              </option>
+            </select>
+            <span
+              v-if="err('categoryId')"
+              class="field__error"
+            >{{ err('categoryId') }}</span>
+          </label>
+          <div class="field">
+            <span>Tag</span>
+            <div
+              v-if="options?.tags.length"
+              class="adm-chips"
+            >
+              <label
+                v-for="t in options.tags"
+                :key="t.id"
+                class="check"
+              >
+                <input
+                  type="checkbox"
+                  :checked="form.tagIds.includes(t.id)"
+                  @change="toggleTag(t.id, ($event.target as HTMLInputElement).checked)"
+                >
+                {{ t.name }}
+              </label>
+            </div>
+            <span
+              v-else
+              class="field__hint"
+            >Belum ada tag. Buat di menu Tag.</span>
+            <span
+              v-if="err('tagIds')"
+              class="field__error"
+            >{{ err('tagIds') }}</span>
+          </div>
+          <label class="field">
+            <span>Penulis</span>
+            <select v-model="form.authorId">
+              <option value="">Tanpa penulis</option>
+              <option
+                v-for="a in options?.authors ?? []"
+                :key="a.id"
+                :value="a.id"
+              >
+                {{ a.name }}{{ a.status === 'HIDDEN' ? ' (disembunyikan)' : '' }}
+              </option>
+            </select>
+            <span
+              v-if="err('authorId')"
+              class="field__error"
+            >{{ err('authorId') }}</span>
+          </label>
+          <div class="row">
+            <label class="field">
+              <span>Format</span>
+              <select v-model="form.format">
+                <option value="STANDARD">Standar</option>
+                <option value="LISTICLE">Daftar</option>
+                <option value="GALLERY">Galeri</option>
+                <option value="VIDEO">Video</option>
+              </select>
+            </label>
+          </div>
+          <label class="check">
+            <input
+              v-model="form.isFeatured"
+              type="checkbox"
+            >
+            Pilihan redaksi
+          </label>
+        </section>
+
+        <section class="adm-panel">
+          <h2>Gambar utama</h2>
+          <AdminMediaSelect
+            v-model="form.featuredMediaId"
+            :site-id="site.id"
+            :invalid="!!err('featuredMediaId')"
+            aria-label="Gambar utama"
+          />
+          <span
+            v-if="err('featuredMediaId')"
+            class="field__error"
+          >{{ err('featuredMediaId') }}</span>
+        </section>
+
+        <section class="adm-panel">
+          <h2>SEO</h2>
+          <label class="field">
+            <span>Judul di mesin pencari</span>
+            <input
+              v-model="form.seo.title"
+              type="text"
+              :placeholder="form.title"
+              :aria-invalid="!!err('seo.title') || undefined"
+            >
+          </label>
+          <label class="field">
+            <span>Deskripsi</span>
+            <textarea
+              v-model="form.seo.description"
+              rows="3"
+              :placeholder="form.excerpt || 'Bawaan: ringkasan artikel'"
+              :aria-invalid="!!err('seo.description') || undefined"
+            />
+            <span class="field__hint">{{ form.seo.description.length }}/320 karakter</span>
+          </label>
+          <label class="field">
+            <span>Gambar saat dibagikan</span>
+            <AdminMediaSelect
+              v-model="form.seo.og_image_id"
+              :site-id="site.id"
+              :invalid="!!err('seo.og_image_id')"
+            />
+            <span class="field__hint">Kosong: memakai gambar utama.</span>
+          </label>
+          <label class="field">
+            <span>Indeks mesin pencari</span>
+            <select v-model="form.seo.robots">
+              <option value="">Boleh diindeks</option>
+              <option value="noindex">Jangan diindeks</option>
+              <option value="noindex, follow">Jangan diindeks, tautan boleh diikuti</option>
+              <option value="noindex, nofollow">Jangan diindeks dan jangan ikuti tautan</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>URL kanonik</span>
+            <input
+              v-model="form.seo.canonical"
+              type="text"
+              placeholder="Kosong: alamat artikel ini"
+              :aria-invalid="!!err('seo.canonical') || undefined"
+            >
+            <span
+              v-if="err('seo')"
+              class="field__error"
+            >{{ err('seo') }}</span>
+          </label>
+        </section>
+
+        <section
+          v-if="revisions?.length"
+          class="adm-panel"
+        >
+          <h2>Riwayat</h2>
+          <ol
+            class="muted"
+            style="margin: 0; padding-left: 1.25rem"
+          >
+            <li
+              v-for="r in revisions"
+              :key="r.revisionNo"
+            >
+              Versi {{ r.revisionNo }}, {{ formatSiteDate(r.createdAt, site) }}<span v-if="r.changeNote">: {{ r.changeNote }}</span>
+            </li>
+          </ol>
+        </section>
+      </aside>
+    </div>
+  </form>
+</template>
+```
+
+   Halaman lain mengikuti pola yang sama: `pages/` (daftar dan editor halaman statis), `categories.vue` (pohon + form; kategori disembunyikan, tidak dihapus), `tags.vue`, dan `menus.vue` (tab lokasi, pohon item, pilihan target sesuai jenis; artikel yang sedang dipakai menu selalu dimuat ke pilihan).
+
+12. Uji API per site di gate admin dengan user kedua yang hanya anggota satu site, dibuat lewat CLI tanpa terminal:
+
+```bash
+ADMIN_PASSWORD=<password> pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 30 pemeriksaan admin lulus
+```
+
+   Tambahkan perintah `admin:create` yang sama ke job CI `build`, sebelum `gate:admin`.
+
+13. Coba alurnya di browser: login di http://admin.localhost:3000/admin, buka artikel, ubah ringkasan dan simpan, tulis artikel baru dengan judul saja (harus tersimpan sebagai draf), tambahkan daftar, lalu periksa kategori, tag, menu, dan halaman. Jalankan juga `browser-check`: halaman publik harus tetap ter-hydrate tanpa mismatch setelah `app.vue` memakai `<NuxtLayout>`.
 

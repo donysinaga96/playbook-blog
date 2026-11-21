@@ -36,9 +36,12 @@ export interface PageQuery {
 
 export const DEFAULT_PAGE_SIZE = 10
 export const MAX_PAGE_SIZE = 50
+/** Nomor halaman terbesar yang diterima; lebih dari itu dianggap halaman terakhir yang mungkin. */
+export const MAX_PAGE = 100_000
 
 export function normalizePaging(query: PageQuery = {}): { page: number; pageSize: number; offset: number } {
-  const page = Number.isInteger(query.page) && (query.page as number) >= 1 ? (query.page as number) : 1
+  // Dibatasi agar OFFSET tidak melampaui bigint PostgreSQL (mis. ?page=1e20).
+  const page = Number.isInteger(query.page) && (query.page as number) >= 1 ? Math.min(query.page as number, MAX_PAGE) : 1
   const rawSize = Number.isInteger(query.pageSize) ? (query.pageSize as number) : DEFAULT_PAGE_SIZE
   const pageSize = Math.min(Math.max(rawSize, 1), MAX_PAGE_SIZE)
   return { page, pageSize, offset: (page - 1) * pageSize }

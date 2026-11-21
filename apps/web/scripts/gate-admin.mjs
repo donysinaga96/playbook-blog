@@ -1,12 +1,15 @@
 // Gate admin (ADR-009, usulan M4-F) terhadap server hasil build.
 //
 // 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
-// login salah/benar, sesi, logout, dan rate limit login. Alur buat-jadwalkan-tampilkan artikel
+// login salah/benar, sesi, logout, dan rate limit login.
+// 4.2: API per site (404 site lain, 422 input salah, 409 versi lama). Alur buat-jadwalkan-tampilkan artikel
 // ditambahkan di 4.6.
 //
 // Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
 // ADMIN_PASSWORD (password admin yang dibuat lewat `pnpm admin:create`),
-// ADMIN_EMAIL (default admin@local.test).
+// ADMIN_EMAIL (default admin@local.test), dan user editor@local.test yang
+// hanya anggota kabar-tekno, dengan password yang sama:
+//   ADMIN_PASSWORD=... pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
 //
 //   pnpm build && pnpm --filter @framework/web gate:admin
 import { requestWithHost, startBuiltServer } from './lib/built-server.mjs'
@@ -16,6 +19,8 @@ const adminHost = process.env.ADMIN_HOST
 const email = process.env.ADMIN_EMAIL ?? 'admin@local.test'
 const password = process.env.ADMIN_PASSWORD
 const siteHost = process.env.GATE_SITE_HOST ?? 'tekno.localhost'
+/** User anggota kabar-tekno saja, password sama (ADMIN_PASSWORD); dibuat lewat admin:create. */
+const editorEmail = process.env.GATE_EDITOR_EMAIL ?? 'editor@local.test'
 
 if (!adminHost || !password || !process.env.ADMIN_SESSION_SECRET) {
   console.error('[gate-admin] ADMIN_HOST, ADMIN_SESSION_SECRET, dan ADMIN_PASSWORD wajib diisi')
@@ -101,6 +106,38 @@ try {
   r = await admin('/api/admin/logout', { method: 'POST', cookie: cookie?.header })
   const cleared = sessionCookie(r)
   check('logout menghapus cookie', r.status === 200 && cleared !== null && /max-age=0|expires=thu, 01 jan 1970/i.test(cleared.raw), cleared?.raw)
+
+  // API per site (4.2). Tidak menulis apa pun: input salah ditolak sebelum
+  // disimpan, dan versi yang dikirim sengaja salah.
+  r = await admin('/api/admin/login', { method: 'POST', body: { email, password } })
+  const adminCookie = sessionCookie(r)?.header
+  const sites = JSON.parse(r.body).sites
+  const tekno = sites.find((s) => s.code === 'kabar-tekno')
+  const kuliner = sites.find((s) => s.code === 'dapur-nusantara')
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, { cookie: adminCookie })
+  const teknoArticles = JSON.parse(r.body)
+  check('daftar artikel site 200', r.status === 200 && teknoArticles.items.length > 0, String(r.status))
+  const sample = teknoArticles.items[0]
+  r = await admin(`/api/admin/sites/${kuliner.id}/articles/${sample.id}`, { cookie: adminCookie })
+  check('artikel site A lewat URL site B 404', r.status === 404, String(r.status))
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, { method: 'POST', cookie: adminCookie, body: { title: '', body: { version: 1, blocks: [] }, categoryId: '' } })
+  const invalid = r.status === 422 ? JSON.parse(r.body) : null
+  check('input salah 422 dengan issue per field', r.status === 422 && invalid?.data?.issues?.some((i) => i.field === 'title'), String(r.status))
+  r = await admin(`/api/admin/sites/${tekno.id}/articles/${sample.id}`, { cookie: adminCookie })
+  const full = JSON.parse(r.body)
+  r = await admin(`/api/admin/sites/${tekno.id}/articles/${sample.id}`, { method: 'PUT', cookie: adminCookie, body: { article: { title: full.title, body: full.body, categoryId: full.categoryId }, version: full.version + 1000 } })
+  check('simpan dengan versi lama 409', r.status === 409, String(r.status))
+  r = await admin(`/api/admin/sites/00000000-0000-7000-8000-000000000000/articles`, { cookie: adminCookie })
+  check('site tidak dikenal 404', r.status === 404, String(r.status))
+
+  // User yang hanya anggota satu site tidak bisa membuka site lain.
+  r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })
+  const editorCookie = sessionCookie(r)?.header
+  check('login editor (anggota satu site)', r.status === 200 && Boolean(editorCookie), `${r.status}: buat dulu dengan pnpm admin:create --email ${editorEmail} --name Editor --site kabar-tekno`)
+  r = await admin(`/api/admin/sites/${tekno.id}/articles`, { cookie: editorCookie })
+  check('editor: site sendiri 200', r.status === 200, String(r.status))
+  r = await admin(`/api/admin/sites/${kuliner.id}/articles`, { cookie: editorCookie })
+  check('editor: site lain 404', r.status === 404, String(r.status))
 
   // Rate limit: 5 kegagalan per IP + email -> 429 dengan Retry-After.
   const victim = `gate-${Date.now()}@local.test`

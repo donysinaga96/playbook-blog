@@ -116,6 +116,7 @@ build:
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
     # 4. Gate admin (M4): admin pertama dibuat lewat CLI, bukan SQL manual.
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email admin@local.test --reset-password
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate:admin
   artifacts:
     paths:

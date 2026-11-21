@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { normalizePath } from './content-repository'
 import { normalizeHost } from './site-repository'
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, normalizePaging, toPage } from './types'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE, MAX_PAGE_SIZE, normalizePaging, toPage } from './types'
 
 describe('normalizeHost', () => {
   it.each([
@@ -46,6 +46,11 @@ describe('normalizePath', () => {
 })
 
 describe('normalizePaging', () => {
+  it('nomor halaman raksasa dibatasi (OFFSET tetap dalam jangkauan bigint)', () => {
+    expect(normalizePaging({ page: 1e20 }).page).toBe(MAX_PAGE)
+    expect(normalizePaging({ page: MAX_PAGE + 1, pageSize: 50 }).offset).toBe((MAX_PAGE - 1) * 50)
+  })
+
   it('default: halaman 1, 10 per halaman', () => {
     expect(normalizePaging()).toEqual({ page: 1, pageSize: DEFAULT_PAGE_SIZE, offset: 0 })
   })

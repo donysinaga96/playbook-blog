@@ -1,0 +1,642 @@
+/*
+ * Admin (ADR-009). Ruang kerja satu pemilik: tenang, padat, mudah dipindai.
+ * Satu keluarga huruf (Inter), angka tabular untuk tanggal dan versi, slug
+ * dalam huruf monospace karena memang kode. Yang sengaja menonjol hanya
+ * editor block; selebihnya garis tipis dan tabel, tanpa kartu berbayang.
+ *
+ * Semua aturan di bawah .adm agar tidak pernah bertabrakan dengan CSS
+ * template (.tpl) di aplikasi yang sama.
+ */
+
+.adm {
+  --paper: #f5f6f4;
+  --panel: #ffffff;
+  --ink: #1c2023;
+  --ink-2: #4b5258;
+  --ink-3: #7a8187;
+  --line: #dcdfdb;
+  --line-strong: #b9beb8;
+  --accent: #1f5f4a;
+  --accent-ink: #ffffff;
+  --accent-soft: #e4efe9;
+  --danger: #a3271f;
+  --danger-soft: #fbeae8;
+  --warn: #8a5a00;
+  --focus: #2f6fd1;
+  --radius: 6px;
+  --mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.adm *,
+.adm *::before,
+.adm *::after {
+  box-sizing: border-box;
+}
+
+.adm a {
+  color: var(--accent);
+}
+
+.adm :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.adm h1,
+.adm h2,
+.adm h3 {
+  margin: 0;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.adm h1 {
+  font-size: 1.375rem;
+  font-weight: 650;
+}
+
+.adm h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.adm .mono {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.adm .muted {
+  color: var(--ink-3);
+}
+
+/* ---------- Kerangka: rail kiri + isi ------------------------------- */
+
+.adm-shell {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  min-height: 100vh;
+}
+
+.adm-rail {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  height: 100vh;
+  padding: 1.25rem 1rem;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.adm-rail__site label {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.adm-rail__site select {
+  width: 100%;
+  font-weight: 600;
+}
+
+.adm-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.adm-nav a {
+  padding: 0.4rem 0.625rem;
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.adm-nav a:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.adm-nav a.router-link-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.adm-rail__user {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+
+.adm-main {
+  min-width: 0;
+  padding: 1.5rem 2rem 4rem;
+}
+
+.adm-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.adm-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+@media (max-width: 52rem) {
+  .adm-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .adm-rail {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .adm-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .adm-rail__user {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .adm-main {
+    padding: 1rem;
+  }
+}
+
+/* ---------- Kontrol form ------------------------------------------- */
+
+.adm input[type='text'],
+.adm input[type='email'],
+.adm input[type='password'],
+.adm input[type='url'],
+.adm input[type='number'],
+.adm input[type='search'],
+.adm input[type='datetime-local'],
+.adm select,
+.adm textarea {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.adm textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+  /* Tinggi mengikuti isi (Chromium 123+); browser lain tetap bisa ditarik. */
+  field-sizing: content;
+}
+
+.adm input[aria-invalid='true'],
+.adm select[aria-invalid='true'],
+.adm textarea[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.adm .field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.adm .field > span:first-child {
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.adm .field__hint {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.adm .field__error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+
+.adm .check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.adm .stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.adm .row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+}
+
+/* ---------- Tombol -------------------------------------------------- */
+
+.adm .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.45rem 0.875rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.adm .btn:hover {
+  border-color: var(--ink-3);
+}
+
+.adm .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.adm .btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.adm .btn--primary:hover {
+  border-color: #174a39;
+  background: #174a39;
+}
+
+.adm .btn--danger {
+  color: var(--danger);
+}
+
+.adm .btn--small {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.adm .btn--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* ---------- Pesan --------------------------------------------------- */
+
+.adm .notice {
+  margin-bottom: 1rem;
+  padding: 0.625rem 0.875rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.adm .notice--error {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* ---------- Tabel --------------------------------------------------- */
+
+.adm .table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.adm .table th,
+.adm .table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.adm .table th {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.adm .table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Ponsel: kolom pelengkap disembunyikan; tabel lain bisa digulir menyamping. */
+@media (max-width: 40rem) {
+  .adm .hide-sm {
+    display: none;
+  }
+}
+
+.adm .table-scroll {
+  overflow-x: auto;
+}
+
+.adm .table .nowrap {
+  white-space: nowrap;
+}
+
+.adm .table__title {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.adm .table__title:hover {
+  text-decoration: underline;
+}
+
+.adm .filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.adm .filters input[type='search'] {
+  max-width: 20rem;
+}
+
+.adm .filters select {
+  width: auto;
+}
+
+.adm .pager {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+/* ---------- Status -------------------------------------------------- */
+
+.adm .status {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.adm .status--draft { background: #eceeec; color: #4b5258; }
+.adm .status--review { background: #fbf0d9; color: var(--warn); }
+.adm .status--published { background: var(--accent-soft); color: var(--accent); }
+.adm .status--scheduled { background: #e3ecfb; color: #1d4ed8; }
+.adm .status--archived { background: #f1f2f1; color: #8a8f93; }
+.adm .status--active { background: var(--accent-soft); color: var(--accent); }
+.adm .status--hidden { background: #f1f2f1; color: #8a8f93; }
+
+/* ---------- Editor: kolom utama + panel kanan ---------------------- */
+
+.adm-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 68rem) {
+  .adm-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Selector diperkuat agar menang atas gaya umum .adm input[type='text']. */
+.adm input[type='text'].adm-editor__title {
+  width: 100%;
+  padding: 0.25rem 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.75rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.adm input[type='text'].adm-editor__title:focus-visible {
+  outline: none;
+  border-bottom-color: var(--focus);
+}
+
+.adm-panel {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.adm-panel + .adm-panel {
+  margin-top: 1rem;
+}
+
+.adm-panel h2 {
+  font-size: 0.875rem;
+}
+
+.adm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.75rem;
+  max-height: 10rem;
+  overflow: auto;
+}
+
+/* ---------- Editor block: bagian yang sengaja menonjol ------------- */
+
+.adm-blocks {
+  display: grid;
+  gap: 0;
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.adm-block {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  border-bottom: 1px solid var(--line);
+}
+
+.adm-block__gutter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.75rem 0.75rem 0.75rem 0;
+  border-right: 2px solid var(--line);
+}
+
+.adm-block:focus-within .adm-block__gutter {
+  border-right-color: var(--accent);
+}
+
+.adm-block__type {
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.adm-block__tools {
+  display: flex;
+  gap: 0.125rem;
+  opacity: 0.55;
+}
+
+.adm-block:hover .adm-block__tools,
+.adm-block:focus-within .adm-block__tools {
+  opacity: 1;
+}
+
+.adm-block__tools button {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.adm-block__tools button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.adm-block__tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.adm-block__body {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem 0 0.75rem 1rem;
+}
+
+.adm-block__body textarea.is-paragraph {
+  min-height: 4.5rem;
+  border-color: transparent;
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.adm-block__body textarea.is-paragraph:hover,
+.adm-block__body textarea.is-paragraph:focus {
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.adm-block__body input.is-heading {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.adm-block__inline {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.adm-blocks__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.875rem 0;
+}
+
+.adm-blocks__add span {
+  margin-right: 0.25rem;
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.adm-blocks__empty {
+  padding: 1.25rem 0;
+  color: var(--ink-3);
+}
+
+/* ---------- Pohon (kategori, menu) --------------------------------- */
+
+.adm-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 68rem) {
+  .adm-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.adm .indent-1 { padding-left: 1.5rem; }
+.adm .indent-2 { padding-left: 3rem; }
+.adm .indent-3 { padding-left: 4.5rem; }
+
+.adm .is-selected td {
+  background: var(--accent-soft);
+}
+
+/* ---------- Login --------------------------------------------------- */
+
+.adm-login {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.adm-login form {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+  max-width: 22rem;
+}
+
+.adm-login h1 {
+  margin-bottom: 0.25rem;
+}
+
+.adm-login .btn {
+  justify-content: center;
+}

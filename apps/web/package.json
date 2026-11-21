@@ -18,6 +18,7 @@
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.3.0",
     "@framework/core": "workspace:*",
     "@framework/db": "workspace:*",
     "@framework/template-base": "workspace:*",

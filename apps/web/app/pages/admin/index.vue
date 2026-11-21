@@ -1,56 +1,19 @@
-<!-- Beranda admin: user login dan site yang bisa dikelola (ADR-009). -->
+<!-- /admin: arahkan ke artikel site pertama yang boleh dikelola. -->
 <script setup lang="ts">
-const me = useAdminMe()
 const error = ref<string | null>(null)
-
-onMounted(async () => {
-  try {
-    me.value = await $fetch<AdminMe>('/api/admin/me')
-  } catch (e) {
-    if ((e as { statusCode?: number }).statusCode === 401) return navigateTo('/admin/login')
-    error.value = apiErrorMessage(e)
-  }
+const me = await ensureAdminMe().catch((e: unknown) => {
+  if (apiStatus(e) !== 401) error.value = apiErrorMessage(e)
+  return null
 })
-
-async function logout() {
-  try {
-    await $fetch('/api/admin/logout', { method: 'POST' })
-    me.value = null
-    await navigateTo('/admin/login')
-  } catch (e) {
-    error.value = `Gagal keluar: ${apiErrorMessage(e)}`
-  }
-}
+const first = me?.sites[0]
+if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 </script>
 
 <template>
-  <main class="admin-home">
-    <p
-      v-if="error"
-      role="alert"
-    >
-      {{ error }}
-    </p>
-    <template v-else-if="me">
-      <h1>Halo, {{ me.user.displayName }}</h1>
-      <h2>Site</h2>
-      <ul>
-        <li
-          v-for="site in me.sites"
-          :key="site.id"
-        >
-          {{ site.name }} ({{ site.code }})
-        </li>
-      </ul>
-      <button
-        type="button"
-        @click="logout"
-      >
-        Keluar
-      </button>
-    </template>
-    <p v-else>
-      Memuat…
-    </p>
-  </main>
+  <p v-if="error">
+    {{ error }}
+  </p>
+  <p v-else-if="!first">
+    Tidak ada site yang bisa dikelola.
+  </p>
 </template>

@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 16 / 27 | — |
+| M4 — Admin minimal | 19 / 27 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), dan 4.1 + sebagian 4.5 (22 Nov 2026) selesai; berikutnya 4.2 (layar admin). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, dan 4.2 (22 Nov 2026) selesai; berikutnya 4.3 (media). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -244,10 +244,11 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - Code review (level high, 22 Nov 2026): 8 temuan diperbaiki: tanggal terbit tidak bisa dikosongkan (tidak dikirim vs null), arsip memvalidasi ulang isi lama, simpan paralel slug sama = error 500, X-Forwarded-For paling kiri bisa dipalsukan (kini paling kanan), user tanpa site tetap punya sesi, field galat gambar OG halaman, komentar sesi login, pembersihan redirect `demo:saksang`. Ikut diperbaiki: sumber test acak sejak M2 (test berbasis seed membaca site fixture sementara dari test lain).
 
 **4.2 Layar admin [A] [C]**
-- [ ] Layout admin, daftar + form untuk artikel, halaman, kategori, tag, menu (tree)
-- [ ] [C] Block editor 6 tipe block v1: tambah, ubah urutan, hapus; validasi di server tetap jadi sumber kebenaran
-- [ ] Status `DRAFT`/`REVIEW`/`PUBLISHED`/`ARCHIVED`; tanggal terbit diisi dalam `site.timezone`, disimpan UTC
+- [x] Layout admin, daftar + form untuk artikel, halaman, kategori, tag, menu (tree) — layout Nuxt `admin`, API per site `/api/admin/sites/:siteId/...` (404/409/422), layar Artikel, Halaman, Kategori (pohon), Tag, Menu (pohon per lokasi)
+- [x] [C] Block editor 6 tipe block v1: tambah, ubah urutan, hapus; validasi di server tetap jadi sumber kebenaran — `components/admin/BlockEditor.vue`; block kosong dibuang sebelum dikirim
+- [x] Status `DRAFT`/`REVIEW`/`PUBLISHED`/`ARCHIVED`; tanggal terbit diisi dalam `site.timezone`, disimpan UTC — `utils/zoned-time.ts` (diuji termasuk zona ber-DST); status Terjadwal ditampilkan untuk PUBLISHED bertanggal mendatang
 - › Skill: `frontend-design:frontend-design` untuk UI admin (layout, form, block editor); `/run` untuk mencoba alurnya di browser
+- Code review (level high, 22 Nov 2026, diff 4.2): 10 temuan diperbaiki: simpan halaman/kategori menghapus SEO yang tidak ada di form, logout gagal tetap pindah ke login, target menu artikel di luar 20 terbaru, draf judul saja ditolak (paragraf kosong), detik tanggal terbit terpotong setiap simpan, gambar terpasang di luar 30 media terbaru tampil kosong, galat server di /admin tampil "tidak ada site", galat field ringkasan/tanggal/penulis/tag tidak ditandai, sesi habis tidak kembali ke login, `?page` raksasa = 500. Pesan validasi kini berbahasa Indonesia. Uji browser (Playwright): login, ubah dan simpan, draf judul saja, logout; `gate-admin` 30 pemeriksaan (termasuk user anggota satu site: site lain 404).
 
 **4.3 Media**
 - [ ] Storage adapter sisi tulis (disk lokal, `MEDIA_DIR`); `storage_key` dibuat server

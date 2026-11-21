@@ -45,7 +45,7 @@ import { parseSiteSettings } from '../site/settings'
 import { createUrlBuilder } from '../views/urls'
 import type { Page, RepositoryContext, SiteId, SiteScoped } from '../repositories/types'
 import { normalizePaging, toPage } from '../repositories/types'
-import { conflict, EditorError, invalid, notFound, type FieldIssue } from './errors'
+import { conflict, EditorError, editorErrorMap, invalid, notFound, type FieldIssue } from './errors'
 import {
   articleInputSchema,
   categoryInputSchema,
@@ -112,6 +112,16 @@ export interface ArticleRecord {
   publicPath: string | null
 }
 
+export interface MediaListItem {
+  id: string
+  storageKey: string
+  mimeType: string
+  width: number | null
+  height: number | null
+  altText: string | null
+  createdAt: Date
+}
+
 export interface RevisionItem {
   revisionNo: number
   changeNote: string | null
@@ -174,7 +184,7 @@ export interface MenuRecord {
 
 /** Validasi Zod -> EditorError('invalid') dengan issue per field. */
 function parse<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
-  const result = schema.safeParse(raw)
+  const result = schema.safeParse(raw, { error: editorErrorMap })
   if (result.success) return result.data
   throw invalid(result.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })))
 }
@@ -389,6 +399,32 @@ export function createEditorRepository(ctx: RepositoryContext) {
   }
 
   const api = {
+    // ======================= Pilihan untuk form =======================
+
+    /** Penulis untuk pilihan di form artikel (termasuk HIDDEN, ditandai). */
+    async listAuthors(siteId: SiteId): Promise<{ id: string; name: string; status: string }[]> {
+      return db.select({ id: authors.id, name: authors.name, status: authors.status }).from(authors).where(eq(authors.siteId, siteId)).orderBy(asc(authors.name))
+    },
+
+    /**
+     * Media site, terbaru dulu, untuk pemilih gambar (upload menyusul di 4.3).
+     * `ids`: hanya media itu (mis. yang sedang terpasang tetapi di luar halaman pertama).
+     */
+    async listMedia(siteId: SiteId, query: { page?: number; pageSize?: number; ids?: string[] } = {}): Promise<Page<MediaListItem>> {
+      const paging = normalizePaging({ page: query.page, pageSize: query.pageSize ?? 30 })
+      const ids = (query.ids ?? []).filter((v) => UUID.test(v)).slice(0, 50)
+      const where = query.ids ? and(eq(media.siteId, siteId), inArray(media.id, ids.length ? ids : ['00000000-0000-0000-0000-000000000000'])) : eq(media.siteId, siteId)
+      const [total] = await db.select({ n: count() }).from(media).where(where)
+      const rows = await db
+        .select({ id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height, altText: media.altText, createdAt: media.createdAt })
+        .from(media)
+        .where(where)
+        .orderBy(desc(media.createdAt), desc(media.id))
+        .limit(paging.pageSize)
+        .offset(paging.offset)
+      return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
     // ======================= Artikel =======================
 
     async listArticles(siteId: SiteId, query: AdminArticleQuery = {}): Promise<Page<ArticleListItem>> {
