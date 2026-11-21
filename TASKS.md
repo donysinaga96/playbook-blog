@@ -9,12 +9,12 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 |---|---|---|
 | M0 — Fondasi | 10 / 10 | ✅ Lulus 17 Nov 2026 — pipeline #3078334327 (commit 9df99b4) |
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
-| M2 — Tampilan pertama | 30 / 30 | 🟡 Lulus lokal 19 Nov 2026 — menunggu pipeline CI (belum di-commit) |
-| M3 — Template kedua (titik evaluasi) | 0 / 3 | — |
+| M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
+| M3 — Template kedua (titik evaluasi) | 0 / 3 | — (rincian menunggu persetujuan usulan A–F) |
 | M4 — Admin minimal | 0 / 5 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 4 | — |
 
-**Task berikutnya:** commit M2 dan pastikan pipeline CI hijau (gate M2), lalu merinci M3. Task M3–M5 sengaja masih kasar dan dirinci saat milestone sebelumnya selesai.
+**Task berikutnya:** setujui usulan A–F di M3, lalu kerjakan rincian M3. Task M4–M5 sengaja masih kasar dan dirinci saat milestone sebelumnya selesai.
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -56,7 +56,7 @@ Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Ur
 
 Commit M1: ee02dea (koneksi DB, drizzle-kit pull, run_all.sh), 1537c45 (Zod block body v1, sites.settings, extractBodyText), fea423a (repository site/konten/menu + test isolasi).
 
-## M2 — Tampilan pertama 🟡
+## M2 — Tampilan pertama
 
 ### Pemeriksaan poin yang ada (19 Nov 2026)
 
@@ -115,14 +115,55 @@ Usulan A–E disetujui 19 Nov 2026 dan sudah dimasukkan ke rincian di bawah (dit
 - [x] [E] Snapshot test view model per jenis halaman — `packages/core/src/views/view-models.snapshot.test.ts` (chrome dua site + 10 jenis halaman/redirect)
 
 **Gate:** dua domain dari satu server tampil berbeda; request paralel tidak saling tertukar.
-Lulus lokal 19 Nov 2026: `pnpm check` (376 test), smoke + gate di build produksi. Menunggu pipeline CI hijau.
-20 Nov 2026: domain dev pindah ke `*.localhost` (tanpa file hosts); diulang setelah `pnpm db:reset`: `pnpm check` (376 test), `pnpm db:test`, smoke dua domain, gate. Hidrasi diperiksa dengan Chromium headless (Playwright) di `pnpm dev`: 11 halaman di tiga domain, semuanya ter-hydrate tanpa peringatan mismatch atau page error.
+✅ Lulus 20 Nov 2026: pipeline hijau (commit c312b05), job check, db, dan build (smoke + gate paralel) hijau.
+Sebelumnya, 20 Nov 2026: domain dev pindah ke `*.localhost` (tanpa file hosts); diulang setelah `pnpm db:reset`: `pnpm check` (376 test), `pnpm db:test`, smoke dua domain, gate. Hidrasi diperiksa dengan Chromium headless (Playwright) di `pnpm dev`: 11 halaman di tiga domain, semuanya ter-hydrate tanpa peringatan mismatch atau page error.
+
+Commit M2: cb5f0c6 (template-kit, base, magazine, route publik, block renderer, SEO, feed), c312b05 (gate paralel, snapshot view model, domain `.localhost`, sumber tutorial).
+
+**Retro mini M2**
+- Lebih lama dari dugaan: domain dev. `.local.test` butuh file hosts Windows (hak Administrator) dan `allowedHosts` Vite, lalu diganti `.localhost`. Cek hidrasi juga butuh browser headless yang dipasang manual karena mesin dev tanpa browser.
+- Ternyata tidak perlu: file gambar dev. Route `/media` yang membuat SVG placeholder sudah cukup.
+- Perlu diubah di roadmap: theme diresolve di plugin Vue setelah view model jadi. Section home (M3) butuh layout tervalidasi sebelum core mengambil data, jadi M3 pasti menyentuh core dan `apps/web` (lihat usulan A dan B).
 
 ## M3 — Template kedua (titik evaluasi)
 
-- [ ] `templates/news` dengan susunan home, token, serta CSS kartu dan header yang berbeda, memakai komponen base tanpa override
-- [ ] Layout home berbasis section dari `site_themes.layouts`
-- [ ] Satu contoh `migrateConfig` (naikkan magazine ke 1.1.0)
+### Pemeriksaan poin yang ada (20 Nov 2026)
+
+| Poin | Kondisi repo | Catatan |
+|---|---|---|
+| `templates/news` dengan susunan home, token, CSS kartu dan header berbeda, tanpa override | `templates/news` baru berisi `package.json`. Seed sudah menyimpan theme `news` 1.0.0 untuk dapur-nusantara (merah/krem, Merriweather + Source Sans 3, `header.style: left`, radius 2px). Site itu kini jatuh ke `base`. | Opsi base hanya `header.style` (left/centered) dan `header.showDate`, jadi header dan kartu yang berbeda harus dibuat lewat CSS di bawah `.tpl-news`. Bila CSS tidak cukup, tambahkan opsi di base (versi minor), bukan override. Smoke dan gate saat ini mengharapkan `tpl-base` untuk kuliner, jadi harus diperbarui; jalur fallback tetap teruji di `theme.test.ts`. |
+| Layout home berbasis section dari `site_themes.layouts` | Kolom `layouts` sudah dibaca `getActiveTheme` tetapi belum dipakai. Seed: magazine `hero`, `latest-grid`, `category-strip`; news `headline-list`, `category-strip`. `HomeView` hanya berisi `featured`, `latest`, `pagination`. Manifest belum mengenal `sections`/`defaultLayouts`. | Tidak bisa selesai tanpa mengubah core: menurut guide (alur render langkah 4) core yang mengambil data setiap section, padahal theme baru diresolve di `app/plugins/site.server.ts` setelah view model dibangun di Nitro. Jadi gate M3 akan lewat jalur "perubahan core dicatat sebagai ADR". Contoh manifest di guide menaruh komponen section di paket template (`./sections/Hero.vue`), bertentangan dengan keputusan 17 Nov bahwa semua template memakai komponen dari base. |
+| Satu contoh `migrateConfig` (magazine ke 1.1.0) | `resolveTheme` hanya mencatat issue bila versi mayor berbeda ("migrateConfig belum didukung"). Seed magazine menyimpan `options.adSlots`, yang tidak ada di skema dan muncul di log setiap start. | Menurut semver guide, minor = opsi baru dengan default dan tidak butuh migrasi; contoh guide (`'1.0.0': (cfg) => cfg`) hanya menguji jalurnya. Supaya contoh 1.1.0 menguji transformasi nyata, lihat usulan D. |
+
+### Usulan (menunggu persetujuan)
+
+Usulan A–F ada di [docs/usulan-m3.md](docs/usulan-m3.md), dibahas 21 Nov 2026.
+
+### Rincian (draf; disesuaikan setelah usulan disetujui)
+
+**3.0 Kontrak section [A] [B]**
+- [ ] ADR-008: section di base, kosakata data section, manifest server, theme diresolve di Nitro
+- [ ] template-kit: `sections`, `defaultLayouts`, tipe permintaan data section, validasi layout per item, tipe `SectionView`
+- [ ] Entry `./manifest` untuk base, magazine, dan news; registry server di `apps/web/server/`
+- [ ] Middleware: resolve theme sebelum view model; plugin Vue memakai theme dari `event.context`
+
+**3.1 Layout home berbasis section [A] [C]**
+- [ ] Core: eksekusi permintaan data section (latest, featured, category, tag) dengan batas limit dan tanpa duplikasi antar-section
+- [ ] `HomeView.sections`; halaman 1 dari layout, `?page=N` tetap daftar terbaru
+- [ ] Komponen section di base: `hero`, `latest-grid`, `headline-list`, `category-strip` (nama dari seed)
+- [ ] `defaultLayouts.home` untuk base, magazine, news
+
+**3.2 Template news**
+- [ ] `templates/news`: manifest 1.0.0, token default, CSS kartu dan header di bawah `.tpl-news`, tanpa override
+- [ ] Daftarkan di registry web; kuliner tampil dengan news
+
+**3.3 migrateConfig [D]**
+- [ ] Mekanisme migrasi berantai di template-kit (`resolveTheme`)
+- [ ] Magazine 1.1.0 dengan migrasi `1.0.0 → 1.1.0`
+
+**3.4 Test pembukti [E] [F]**
+- [ ] Smoke + gate paralel untuk tiga template, snapshot home dengan section, test render dan template-kit, test arsitektur manifest
+- [ ] Skrip cek hidrasi + screenshot lokal
 
 **Gate:** news selesai tanpa mengubah core, atau setiap perubahan core dicatat sebagai ADR perbaikan kontrak.
 **Evaluasi:** apakah admin (M4) atau produksi dengan data seed/manual (M5) yang lebih dulu?
