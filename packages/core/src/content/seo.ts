@@ -28,3 +28,15 @@ export function parseContentSeo(raw: unknown): ContentSeo {
   }
   return out as ContentSeo
 }
+
+/**
+ * Validasi ketat untuk MENULIS kolom seo dari admin (M4): semua key
+ * opsional, key tidak dikenal dan nilai salah ditolak (bukan diabaikan).
+ */
+export const contentSeoSchema = z.strictObject({
+  title: fields.title.optional(),
+  description: fields.description.optional(),
+  canonical: fields.canonical.optional(),
+  og_image_id: fields.og_image_id.optional(),
+  robots: fields.robots.optional(),
+})

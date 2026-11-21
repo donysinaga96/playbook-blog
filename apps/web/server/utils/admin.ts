@@ -18,12 +18,19 @@ export function useAdminConfig(): AdminConfig {
 export const loginThrottle = createLoginThrottle()
 
 /**
- * IP klien untuk pembatas login. X-Forwarded-For hanya dipercaya bila
- * TRUST_PROXY=true (server di belakang reverse proxy yang menimpa header itu);
- * tanpa itu header bisa dipalsukan klien. Null bila tidak diketahui.
+ * IP klien untuk pembatas login. Tanpa TRUST_PROXY: alamat koneksi. Dengan
+ * TRUST_PROXY=true (satu reverse proxy di depan server): entri PALING KANAN
+ * X-Forwarded-For, yaitu yang ditambahkan proxy kita. Entri di kirinya bisa
+ * diisi klien sesukanya (nginx $proxy_add_x_forwarded_for dan Traefik
+ * menambahkan, bukan menimpa). Null bila tidak diketahui.
  */
 export function clientIp(event: RequestEvent): string | null {
-  return getRequestIP(event, { xForwardedFor: process.env['TRUST_PROXY'] === 'true' }) ?? null
+  if (process.env['TRUST_PROXY'] === 'true') {
+    const forwarded = event.req.headers.get('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean)
+    const last = forwarded?.at(-1)
+    if (last) return last
+  }
+  return getRequestIP(event) ?? null
 }
 
 const ADMIN_PREFIXES = ['/admin', '/api/admin']
@@ -106,6 +113,11 @@ export async function requireAdmin(event: RequestEvent): Promise<AdminContext> {
     throw createError({ statusCode: 401, statusMessage: 'Belum login' })
   }
   const sites = await useRepositories().users.listSites(user, useSiteMode())
+  // Sama dengan aturan login: user tanpa site tidak punya apa pun untuk dikelola.
+  if (sites.length === 0) {
+    await session.clear()
+    throw createError({ statusCode: 401, statusMessage: 'Belum login' })
+  }
   return { user, sites }
 }
 

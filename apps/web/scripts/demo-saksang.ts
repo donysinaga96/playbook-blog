@@ -26,6 +26,7 @@
 import { parseArgs } from 'node:util'
 import { bodySchema, extractBodyText } from '@framework/core'
 import {
+  and,
   articleRevisions,
   articles,
   articleTags,
@@ -34,8 +35,10 @@ import {
   databaseUrlFromEnv,
   eq,
   inArray,
+  like,
   media,
   menuItems,
+  or,
   redirects,
   tags,
 } from '@framework/db'
@@ -152,7 +155,8 @@ const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 1, appl
 
 async function remove(tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) {
   await tx.delete(menuItems).where(eq(menuItems.id, ID.menuItem))
-  await tx.delete(redirects).where(eq(redirects.id, ID.redirect))
+  // Termasuk redirect yang dibuat editor bila artikel demo diubah slug/kategorinya.
+  await tx.delete(redirects).where(and(eq(redirects.siteId, SITE), or(like(redirects.fromPath, '%saksang%'), like(redirects.toPath, '%saksang%'))))
   await tx.delete(articles).where(eq(articles.id, ID.article)) // article_tags dan revisi ikut terhapus (CASCADE)
   await tx.delete(authors).where(eq(authors.id, ID.author))
   await tx.delete(tags).where(eq(tags.id, ID.tagBatak))

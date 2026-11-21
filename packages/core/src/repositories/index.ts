@@ -1,5 +1,6 @@
 import type { Database } from '@framework/db'
 import { createContentRepository } from './content-repository'
+import { createEditorRepository } from '../editor/editor-repository'
 import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
@@ -33,6 +34,7 @@ export function createRepositories(db: Database, options: RepositoryOptions = {}
     content: createContentRepository(ctx),
     menus: createMenuRepository(ctx),
     users: createUserRepository(ctx),
+    editor: createEditorRepository(ctx),
   }
 }
 

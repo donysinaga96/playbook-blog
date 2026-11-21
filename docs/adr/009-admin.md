@@ -55,8 +55,8 @@ harus diputuskan sebelum kode:
 7. **Pengamanan dasar.**
    - Rate limit login di memori proses: 5 percobaan gagal per IP + email dan 30 per IP dalam
      15 menit, lalu 429 dengan `Retry-After`. Percobaan dicatat sebelum verifikasi password,
-     agar request paralel tidak lolos semua. IP diambil dari `X-Forwarded-For` hanya bila
-     `TRUST_PROXY=true` (di belakang reverse proxy, M5); IP yang tidak diketahui hanya dibatasi
+     agar request paralel tidak lolos semua. IP diambil dari entri paling kanan
+     `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (satu reverse proxy di depan server, M5); IP yang tidak diketahui hanya dibatasi
      per email. Cukup untuk satu proses (ADR-001); banyak proses butuh penyimpanan bersama
      (backlog bersama Redis).
    - Request non-GET ke `/api/admin/*` wajib membawa header `Origin` yang sama dengan origin

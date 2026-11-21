@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 9 / 27 | — |
+| M4 — Admin minimal | 16 / 27 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre dan 4.0 selesai 21 Nov 2026; berikutnya 4.1. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), dan 4.1 + sebagian 4.5 (22 Nov 2026) selesai; berikutnya 4.2 (layar admin). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -236,11 +236,12 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - Code review (level high, 21 Nov 2026, diff 4.0): 9 temuan, semuanya ditindaklanjuti: rate limit dicatat sebelum verifikasi (login paralel lolos semua), segmen `admin` dicadangkan di URL konten, `TRUST_PROXY` untuk IP klien di belakang proxy (tanpa itu satu ember IP untuk semua klien), API admin non-GET di domain alias mode single 404, `ADMIN_PASSWORD` hanya tanpa terminal, prompt menyimpan sisa input paste, hash palsu gagal tidak di-cache, logout gagal menampilkan pesan; `--reset-password` tidak mencabut sesi lama dicatat di ADR-009.
 
 **4.1 Repository tulis di core**
-- [ ] Buat, ubah, arsipkan: artikel, halaman, kategori, tag, menu; siteId wajib; body divalidasi skema block v1; `body_text` dari `extractBodyText`
-- [ ] Optimistic locking lewat `version`; konflik → 409
-- [ ] Slug unik per site, dibuat dari judul bila kosong
-- [ ] Test isolasi site untuk operasi tulis (menulis ke baris site lain gagal)
+- [x] Buat, ubah, arsipkan: artikel, halaman, kategori, tag, menu; siteId wajib; body divalidasi skema block v1; `body_text` dari `extractBodyText` — `packages/core/src/editor/` (repository `editor`); arsip: artikel ARCHIVED, kategori HIDDEN, tag dan item menu dihapus
+- [x] Optimistic locking lewat `version`; konflik → 409 — artikel `version`; halaman/kategori/tag/menu `updatedAt` (tabel tanpa kolom versi); 409 dipetakan di API 4.2
+- [x] Slug unik per site, dibuat dari judul bila kosong — juga segmen route sistem ditolak; simpan paralel = galat field slug
+- [x] Test isolasi site untuk operasi tulis (menulis ke baris site lain gagal) — di site uji sementara (ARCHIVED), agar tidak mengganggu test lain yang membaca seed
 - › Skill: `/code-review` (level high)
+- Code review (level high, 22 Nov 2026): 8 temuan diperbaiki: tanggal terbit tidak bisa dikosongkan (tidak dikirim vs null), arsip memvalidasi ulang isi lama, simpan paralel slug sama = error 500, X-Forwarded-For paling kiri bisa dipalsukan (kini paling kanan), user tanpa site tetap punya sesi, field galat gambar OG halaman, komentar sesi login, pembersihan redirect `demo:saksang`. Ikut diperbaiki: sumber test acak sejak M2 (test berbasis seed membaca site fixture sementara dari test lain).
 
 **4.2 Layar admin [A] [C]**
 - [ ] Layout admin, daftar + form untuk artikel, halaman, kategori, tag, menu (tree)
@@ -261,9 +262,9 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - › Skill: `frontend-design:frontend-design` untuk form token (warna, font) dan panel preview
 
 **4.5 Revisi dan redirect**
-- [ ] Setiap update artikel: snapshot ke `article_revisions` dalam transaksi yang sama, `version` naik
-- [ ] Slug artikel atau halaman yang pernah terbit berubah → redirect 301 dari path lama; rantai diratakan; redirect yang menunjuk ke dirinya sendiri dihapus
-- [ ] Daftar revisi per artikel
+- [x] Setiap update artikel: snapshot ke `article_revisions` dalam transaksi yang sama, `version` naik — dikerjakan di 4.1 (satu transaksi dengan update)
+- [x] Slug artikel atau halaman yang pernah terbit berubah → redirect 301 dari path lama; rantai diratakan; redirect yang menunjuk ke dirinya sendiri dihapus — dikerjakan di 4.1; juga kategori dan tag
+- [x] Daftar revisi per artikel — `editor.listRevisions` (4.1); tampilan di 4.2
 
 **4.6 Test pembukti gate dan penutup [F]**
 - [ ] [F] Skrip gate `apps/web/scripts/gate-admin.mjs`, masuk CI job `build`: login → buat artikel → jadwalkan `published_at` beberapa detik ke depan → sebelum waktunya 404 dan tidak ada di home, sitemap, RSS → sesudahnya tampil

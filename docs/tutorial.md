@@ -371,8 +371,8 @@ ADMIN_SESSION_SECRET=
 ADMIN_HOST=admin.localhost
 # Hanya untuk otomasi `pnpm admin:create` tanpa terminal (CI); di terminal password diketik.
 # ADMIN_PASSWORD=
-# true bila server di belakang reverse proxy yang menimpa X-Forwarded-For (M5);
-# pembatas login lalu memakai IP klien asli, bukan IP proxy.
+# true bila server di belakang SATU reverse proxy (M5); pembatas login lalu
+# memakai entri paling kanan X-Forwarded-For (yang ditambahkan proxy itu).
 # TRUST_PROXY=true
 ```
 
@@ -2684,7 +2684,7 @@ export function databaseUrlFromEnv(env: Record<string, string | undefined> = pro
 }
 ```
 
-9. Tulis entry point paket. Operator query (`eq`, `and`, ...) diekspor ulang dari sini, sehingga hanya paket `db` yang bergantung langsung pada `drizzle-orm` dan hanya ada satu salinan Drizzle saat runtime:
+9. Tulis entry point paket (file di bawah sudah memuat operator tambahan `ne`, `like`, dan `notInArray` dari bab-bab berikutnya). Operator query (`eq`, `and`, ...) diekspor ulang dari sini, sehingga hanya paket `db` yang bergantung langsung pada `drizzle-orm` dan hanya ada satu salinan Drizzle saat runtime:
 
 `packages/db/src/index.ts`
 
@@ -2697,7 +2697,7 @@ export * from './schema/schema'
 // Operator query diekspor ulang agar HANYA paket ini yang bergantung pada
 // drizzle-orm. Paket lain (core) memakai operator dari sini; dengan begitu
 // hanya ada satu salinan drizzle-orm di runtime.
-export { and, asc, count, desc, eq, inArray, isNotNull, lte, notInArray, or, sql } from 'drizzle-orm'
+export { and, asc, count, desc, eq, inArray, isNotNull, like, lte, ne, notInArray, or, sql } from 'drizzle-orm'
 export type { SQL } from 'drizzle-orm'
 export type { PgColumn } from 'drizzle-orm/pg-core'
 ```
@@ -3263,7 +3263,7 @@ describe('sites.settings', () => {
 })
 ```
 
-5. Tulis test konsistensi yang membaca database: semua body di database lolos skema block, `body_text` sama dengan hasil `extractBodyText(body)`, dan settings setiap site lolos skema. Test ini menangkap data seed atau data lama yang tidak lagi cocok dengan aturan aplikasi:
+5. Tulis test konsistensi yang membaca database (versi di bawah dibatasi ke dua site seed; alasannya di bab "Menyimpan Konten dari Admin"): semua body di database lolos skema block, `body_text` sama dengan hasil `extractBodyText(body)`, dan settings setiap site lolos skema. Test ini menangkap data seed atau data lama yang tidak lagi cocok dengan aturan aplikasi:
 
 `packages/core/src/content/seed-consistency.test.ts`
 
@@ -3272,7 +3272,10 @@ describe('sites.settings', () => {
 // database dev yang di-seed (pnpm db:up): setiap body valid, setiap body_text
 // sama dengan hasil ekstraksi, dan settings kedua site terbaca.
 // Dilewati bila DATABASE_URL tidak ada (mis. di CI).
-import { createDatabase, databaseUrlFromEnv } from '@framework/db'
+//
+// Hanya data dua site seed yang diperiksa: file test lain membuat site dan
+// konten sementara (mis. body rusak yang disengaja) secara paralel.
+import { articles, createDatabase, databaseUrlFromEnv, inArray, pages, sites } from '@framework/db'
 import { afterAll, describe, expect, it } from 'vitest'
 import { parseSiteSettings } from '../site/settings'
 import { parseBody } from './blocks'
@@ -3284,25 +3287,33 @@ describe.skipIf(!hasDb)('data seed di database dev', () => {
   const db = createDatabase({ connectionString: hasDb ? databaseUrlFromEnv() : '', max: 2, applicationName: 'vitest-core' })
   afterAll(() => db.$client.end())
 
+  const SEED_SITES = ['dapur-nusantara', 'kabar-tekno']
+  const seedSiteIds = async () =>
+    (await db.select({ id: sites.id }).from(sites).where(inArray(sites.code, SEED_SITES))).map((s) => s.id)
+
   it('semua body artikel dan halaman lolos skema block v1', async () => {
-    const articles = await db.query.articles.findMany({ columns: { slug: true, body: true } })
-    const pages = await db.query.pages.findMany({ columns: { slug: true, body: true } })
-    expect(articles.length).toBeGreaterThanOrEqual(7)
-    for (const row of [...articles, ...pages]) {
+    const ids = await seedSiteIds()
+    const articleRows = await db.select({ slug: articles.slug, body: articles.body }).from(articles).where(inArray(articles.siteId, ids))
+    const pageRows = await db.select({ slug: pages.slug, body: pages.body }).from(pages).where(inArray(pages.siteId, ids))
+    expect(articleRows.length).toBeGreaterThanOrEqual(7)
+    for (const row of [...articleRows, ...pageRows]) {
       expect(() => parseBody(row.body), row.slug).not.toThrow()
     }
   })
 
   it('body_text di database sama dengan extractBodyText(body)', async () => {
-    const articles = await db.query.articles.findMany({ columns: { slug: true, body: true, bodyText: true } })
-    for (const a of articles) {
+    const rows = await db
+      .select({ slug: articles.slug, body: articles.body, bodyText: articles.bodyText })
+      .from(articles)
+      .where(inArray(articles.siteId, await seedSiteIds()))
+    for (const a of rows) {
       expect(extractBodyText(parseBody(a.body)), a.slug).toBe(a.bodyText)
     }
   })
 
   it('sites.settings kedua site lolos skema', async () => {
-    const rows = await db.query.sites.findMany({ columns: { code: true, settings: true } })
-    expect(rows.map((r) => r.code).sort()).toEqual(['dapur-nusantara', 'kabar-tekno'])
+    const rows = await db.select({ code: sites.code, settings: sites.settings }).from(sites).where(inArray(sites.code, SEED_SITES))
+    expect(rows.map((r) => r.code).sort()).toEqual(SEED_SITES)
     for (const r of rows) {
       expect(() => parseSiteSettings(r.settings), r.code).not.toThrow()
     }
@@ -4287,13 +4298,14 @@ export function createMenuRepository(ctx: RepositoryContext) {
 export type MenuRepository = ReturnType<typeof createMenuRepository>
 ```
 
-7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses:
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin"):
 
 `packages/core/src/repositories/index.ts`
 
 ```ts
 import type { Database } from '@framework/db'
 import { createContentRepository } from './content-repository'
+import { createEditorRepository } from '../editor/editor-repository'
 import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
@@ -4327,6 +4339,7 @@ export function createRepositories(db: Database, options: RepositoryOptions = {}
     content: createContentRepository(ctx),
     menus: createMenuRepository(ctx),
     users: createUserRepository(ctx),
+    editor: createEditorRepository(ctx),
   }
 }
 
@@ -4356,6 +4369,10 @@ export * from './feeds/feeds'
 export * from './auth/password'
 export * from './auth/admin-config'
 export * from './auth/login-throttle'
+export * from './editor/editor-repository'
+export * from './editor/errors'
+export * from './editor/inputs'
+export * from './editor/slug'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -11909,7 +11926,7 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
 </template>
 ```
 
-4. Baca kolom `seo` konten. Bentuknya mengikuti komentar DDL: `title`, `description`, `canonical`, `og_image_id`, `robots`. Setiap key divalidasi sendiri; nilai yang salah diabaikan, bukan menggagalkan halaman:
+4. Baca kolom `seo` konten (skema ketat `contentSeoSchema` untuk menulis dari admin ditambahkan di bab "Menyimpan Konten dari Admin"). Bentuknya mengikuti komentar DDL: `title`, `description`, `canonical`, `og_image_id`, `robots`. Setiap key divalidasi sendiri; nilai yang salah diabaikan, bukan menggagalkan halaman:
 
 `packages/core/src/content/seo.ts`
 
@@ -11944,6 +11961,18 @@ export function parseContentSeo(raw: unknown): ContentSeo {
   }
   return out as ContentSeo
 }
+
+/**
+ * Validasi ketat untuk MENULIS kolom seo dari admin (M4): semua key
+ * opsional, key tidak dikenal dan nilai salah ditolak (bukan diabaikan).
+ */
+export const contentSeoSchema = z.strictObject({
+  title: fields.title.optional(),
+  description: fields.description.optional(),
+  canonical: fields.canonical.optional(),
+  og_image_id: fields.og_image_id.optional(),
+  robots: fields.robots.optional(),
+})
 ```
 
 `packages/core/src/content/seo.test.ts`
@@ -15093,8 +15122,8 @@ harus diputuskan sebelum kode:
 7. **Pengamanan dasar.**
    - Rate limit login di memori proses: 5 percobaan gagal per IP + email dan 30 per IP dalam
      15 menit, lalu 429 dengan `Retry-After`. Percobaan dicatat sebelum verifikasi password,
-     agar request paralel tidak lolos semua. IP diambil dari `X-Forwarded-For` hanya bila
-     `TRUST_PROXY=true` (di belakang reverse proxy, M5); IP yang tidak diketahui hanya dibatasi
+     agar request paralel tidak lolos semua. IP diambil dari entri paling kanan
+     `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (satu reverse proxy di depan server, M5); IP yang tidak diketahui hanya dibatasi
      per email. Cukup untuk satu proses (ADR-001); banyak proses butuh penyimpanan bersama
      (backlog bersama Redis).
    - Request non-GET ke `/api/admin/*` wajib membawa header `Origin` yang sama dengan origin
@@ -15637,6 +15666,8 @@ export type UserRepository = ReturnType<typeof createUserRepository>
 ```ts
 // Repository user admin terhadap database dev yang di-seed (dilewati tanpa
 // DATABASE_URL). User test dibuat dan dihapus di sini; user seed tidak diubah.
+// File test lain membuat site sementara secara paralel, jadi daftar site
+// superadmin hanya dibandingkan untuk site seed.
 import { createDatabase, eq, users } from '@framework/db'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createRepositories, UserInputError } from './index'
@@ -15654,7 +15685,8 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository user admin', () => {
     const admin = await repos.users.findForLogin('Admin@Local.Test ')
     if (!admin) throw new Error('admin seed tidak ada')
     expect(admin).toMatchObject({ email: 'admin@local.test', isSuperadmin: true })
-    expect((await repos.users.listSites(admin, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([
+    const seed = <T extends { code: string }>(list: T[]) => list.filter((s) => ['dapur-nusantara', 'kabar-tekno'].includes(s.code))
+    expect(seed(await repos.users.listSites(admin, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([
       ['dapur-nusantara', 'OWNER'],
       ['kabar-tekno', 'OWNER'],
     ])
@@ -15880,12 +15912,19 @@ export function useAdminConfig(): AdminConfig {
 export const loginThrottle = createLoginThrottle()
 
 /**
- * IP klien untuk pembatas login. X-Forwarded-For hanya dipercaya bila
- * TRUST_PROXY=true (server di belakang reverse proxy yang menimpa header itu);
- * tanpa itu header bisa dipalsukan klien. Null bila tidak diketahui.
+ * IP klien untuk pembatas login. Tanpa TRUST_PROXY: alamat koneksi. Dengan
+ * TRUST_PROXY=true (satu reverse proxy di depan server): entri PALING KANAN
+ * X-Forwarded-For, yaitu yang ditambahkan proxy kita. Entri di kirinya bisa
+ * diisi klien sesukanya (nginx $proxy_add_x_forwarded_for dan Traefik
+ * menambahkan, bukan menimpa). Null bila tidak diketahui.
  */
 export function clientIp(event: RequestEvent): string | null {
-  return getRequestIP(event, { xForwardedFor: process.env['TRUST_PROXY'] === 'true' }) ?? null
+  if (process.env['TRUST_PROXY'] === 'true') {
+    const forwarded = event.req.headers.get('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean)
+    const last = forwarded?.at(-1)
+    if (last) return last
+  }
+  return getRequestIP(event) ?? null
 }
 
 const ADMIN_PREFIXES = ['/admin', '/api/admin']
@@ -15968,6 +16007,11 @@ export async function requireAdmin(event: RequestEvent): Promise<AdminContext> {
     throw createError({ statusCode: 401, statusMessage: 'Belum login' })
   }
   const sites = await useRepositories().users.listSites(user, useSiteMode())
+  // Sama dengan aturan login: user tanpa site tidak punya apa pun untuk dikelola.
+  if (sites.length === 0) {
+    await session.clear()
+    throw createError({ statusCode: 401, statusMessage: 'Belum login' })
+  }
   return { user, sites }
 }
 
@@ -16062,7 +16106,9 @@ export default defineEventHandler(async (event) => {
   }
 
   loginThrottle.success(ip, input.email)
-  // Sesi baru setiap login (id sesi lama tidak dipakai ulang).
+  // Data sesi lama dibuang. Catatan: h3 memakai ulang id sesi dari cookie
+  // yang sama; aman karena isi cookie tersegel (tidak bisa dipalsukan) dan
+  // cookie yang ditanam pihak lain tidak membawa userId.
   await session.clear()
   await session.update({ userId: candidate.id })
   await users.recordLogin(candidate.id)
@@ -16407,6 +16453,1290 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 18. Masukkan ke job CI `build`: variabel `ADMIN_HOST`, `ADMIN_SESSION_SECRET`, dan `ADMIN_PASSWORD` khusus CI (database dan server CI dibuang setelah job), lalu `pnpm admin:create --email admin@local.test --reset-password` dan `pnpm --filter @framework/web gate:admin` setelah gate isolasi site.
 
-19. Hal lain dari code review yang ikut diperbaiki: segmen `admin` dicadangkan di `RESERVED_SEGMENTS` (`packages/core/src/views/urls.ts`) agar konten tidak memakai path `/admin`; IP klien di belakang reverse proxy dibaca dari `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (`clientIp`); API admin non-GET di domain alias mode single dijawab 404 karena 301 mengubah POST menjadi GET; `ADMIN_PASSWORD` hanya dipakai CLI tanpa terminal; prompt password menyimpan sisa input yang di-paste; dan hash palsu yang gagal dibuat tidak disimpan.
+19. Hal lain dari code review yang ikut diperbaiki: segmen `admin` dicadangkan di `RESERVED_SEGMENTS` (`packages/core/src/views/urls.ts`) agar konten tidak memakai path `/admin`; IP klien di belakang reverse proxy dibaca dari entri paling kanan `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (`clientIp`; entri di kirinya bisa diisi klien sesukanya), user yang kehilangan semua site kehilangan sesinya; API admin non-GET di domain alias mode single dijawab 404 karena 301 mengubah POST menjadi GET; `ADMIN_PASSWORD` hanya dipakai CLI tanpa terminal; prompt password menyimpan sisa input yang di-paste; dan hash palsu yang gagal dibuat tidak disimpan.
 
 20. Coba di browser: http://admin.localhost:3000/admin mengarah ke halaman login; setelah login, halaman admin menampilkan nama dan daftar site. Path `/admin` di http://tekno.localhost:3000 harus 404.
+
+# Menyimpan Konten dari Admin
+
+1. Pahami aturannya sebelum menulis. Operasi tulis mengikuti aturan yang sama dengan repository baca: setiap fungsi menerima siteId sebagai argumen pertama, dan setiap baris yang dibaca atau ditulis dibatasi site itu. Tambahannya:
+   - Referensi ke data lain (kategori, penulis, media, tag, gambar di body, gambar OG, induk, target menu) harus milik site yang sama. Data site lain dijawab "tidak ditemukan" dengan galat yang rapi, bukan error database.
+   - Simpan bersamaan dari dua tab tidak boleh saling menimpa diam-diam (penguncian optimistis).
+   - Slug dibuat dari judul bila kosong, unik per site, dan tidak boleh memakai segmen route sistem.
+   - Setiap simpan artikel menulis revisi, dan URL publik yang berubah meninggalkan redirect 301.
+
+2. Tulis galat operasi tulis. Lapisan API nanti memetakannya ke 404, 409, dan 422:
+
+`packages/core/src/editor/errors.ts`
+
+```ts
+// Galat operasi tulis admin (M4). Lapisan API memetakannya ke status HTTP:
+//   not-found -> 404   (termasuk data site lain: keberadaannya tidak dibocorkan)
+//   conflict  -> 409   (versi berbeda: data sudah diubah orang/tab lain)
+//   invalid   -> 422   (input tidak lolos aturan; `issues` per field)
+export type EditorErrorKind = 'not-found' | 'conflict' | 'invalid'
+
+export interface FieldIssue {
+  /** Path field, mis. 'slug', 'body.blocks.3.text'. '' = seluruh input. */
+  field: string
+  message: string
+}
+
+export class EditorError extends Error {
+  override name = 'EditorError'
+  constructor(
+    readonly kind: EditorErrorKind,
+    message: string,
+    readonly issues: FieldIssue[] = [],
+  ) {
+    super(message)
+  }
+}
+
+export const notFound = (what: string) => new EditorError('not-found', `${what} tidak ditemukan`)
+export const conflict = (what: string) =>
+  new EditorError('conflict', `${what} sudah diubah di tempat lain; muat ulang lalu simpan lagi`)
+export const invalid = (issues: FieldIssue[]) =>
+  new EditorError('invalid', issues.map((i) => (i.field ? `${i.field}: ${i.message}` : i.message)).join('; '), issues)
+```
+
+3. Tulis util slug. Huruf beraksen diubah ke huruf dasarnya, hasilnya selalu cocok dengan CHECK `*_slug_format` di database:
+
+`packages/core/src/editor/slug.ts`
+
+```ts
+// Slug konten: huruf kecil ASCII, angka, tanda hubung (sama dengan CHECK
+// *_slug_format di database), paling panjang 200 karakter.
+import { RESERVED_SEGMENTS } from '../views/urls'
+
+export const SLUG_MAX = 200
+export const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+/** Judul -> slug: "Saksang Khas Batak!" -> "saksang-khas-batak". Huruf beraksen jadi huruf dasarnya. */
+export function slugify(text: string): string {
+  return text
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' dan ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, SLUG_MAX)
+    .replace(/-+$/, '')
+}
+
+/**
+ * Slug yang tertutup route tetap bila menjadi segmen pertama URL: slug
+ * kategori dengan permalink /:category/... atau slug artikel dengan
+ * permalink /:slug. Lihat RESERVED_SEGMENTS (ADR-006, ADR-009).
+ */
+export function isReservedFirstSegment(slug: string): boolean {
+  return (RESERVED_SEGMENTS as readonly string[]).includes(slug)
+}
+
+/** Token pertama permalink, mis. '/:category/:slug' -> ':category'. */
+export function permalinkFirstToken(permalink: string): string {
+  return permalink.split('/').filter(Boolean)[0] ?? ''
+}
+
+/** Kandidat slug unik: base, base-2, base-3, ... (dipotong agar tetap <= SLUG_MAX). */
+export function slugCandidate(base: string, attempt: number): string {
+  if (attempt <= 1) return base
+  const suffix = `-${attempt}`
+  return `${base.slice(0, SLUG_MAX - suffix.length).replace(/-+$/, '')}${suffix}`
+}
+```
+
+`packages/core/src/editor/slug.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { isReservedFirstSegment, permalinkFirstToken, slugCandidate, slugify, SLUG_MAX, SLUG_PATTERN } from './slug'
+
+describe('slug', () => {
+  it.each([
+    ['Saksang khas Batak: daging berbumbu!', 'saksang-khas-batak-daging-berbumbu'],
+    ['  Résumé  café ', 'resume-cafe'],
+    ['Teh & kopi', 'teh-dan-kopi'],
+    ['---', ''],
+    ['Ponsel 5G 2026', 'ponsel-5g-2026'],
+  ])('slugify(%j) = %j', (input, expected) => {
+    expect(slugify(input)).toBe(expected)
+  })
+
+  it('hasil slugify selalu cocok dengan pola database dan tidak lebih dari 200 karakter', () => {
+    const long = slugify('kata '.repeat(100))
+    expect(long.length).toBeLessThanOrEqual(SLUG_MAX)
+    expect(long).toMatch(SLUG_PATTERN)
+  })
+
+  it('kandidat unik tetap dalam batas panjang', () => {
+    expect(slugCandidate('resep', 1)).toBe('resep')
+    expect(slugCandidate('resep', 3)).toBe('resep-3')
+    expect(slugCandidate('a'.repeat(200), 12)).toHaveLength(200)
+    expect(slugCandidate('a'.repeat(200), 12)).toMatch(/-12$/)
+  })
+
+  it('segmen cadangan dan token permalink', () => {
+    expect(isReservedFirstSegment('admin')).toBe(true)
+    expect(isReservedFirstSegment('category')).toBe(true)
+    expect(isReservedFirstSegment('resep')).toBe(false)
+    expect(permalinkFirstToken('/:category/:slug')).toBe(':category')
+    expect(permalinkFirstToken('/:yyyy/:mm/:slug')).toBe(':yyyy')
+  })
+})
+```
+
+4. Tambahkan skema SEO yang ketat untuk menulis di `packages/core/src/content/seo.ts` (`contentSeoSchema`: semua key opsional, key tidak dikenal dan nilai salah ditolak). Skema baca tetap longgar, agar halaman publik tidak gagal karena data lama.
+
+5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review):
+
+`packages/core/src/editor/inputs.ts`
+
+```ts
+// Input operasi tulis admin (M4), divalidasi Zod di core: lapisan API hanya
+// meneruskan body request. Referensi ke data lain (kategori, penulis, media,
+// tag, induk) dicek terpisah: harus milik site yang sama.
+import { z } from 'zod'
+import { bodySchema } from '../content/blocks'
+import { contentSeoSchema } from '../content/seo'
+import { SLUG_MAX, SLUG_PATTERN } from './slug'
+
+const id = z.uuid()
+/** Slug kosong / tidak diisi = dibuat dari judul atau nama. */
+const slug = z
+  .string()
+  .trim()
+  .max(SLUG_MAX)
+  .refine((s) => s === '' || SLUG_PATTERN.test(s), 'slug hanya huruf kecil, angka, dan tanda hubung')
+  .optional()
+const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullish()
+    .transform((s) => (s ? s : null))
+/** Tanggal ISO 8601 dengan zona waktu (dari form admin, dikonversi di browser). */
+const isoDate = z.iso.datetime({ offset: true }).transform((s) => new Date(s))
+
+export const ARTICLE_STATUSES = ['DRAFT', 'REVIEW', 'PUBLISHED', 'ARCHIVED'] as const
+export const ARTICLE_FORMATS = ['STANDARD', 'LISTICLE', 'GALLERY', 'VIDEO'] as const
+export const PAGE_STATUSES = ['DRAFT', 'PUBLISHED', 'ARCHIVED'] as const
+
+export const articleInputSchema = z.strictObject({
+  title: z.string().trim().min(1).max(300),
+  slug,
+  excerpt: optionalText(1_000),
+  body: bodySchema,
+  categoryId: id,
+  authorId: id.nullish().transform((v) => v ?? null),
+  featuredMediaId: id.nullish().transform((v) => v ?? null),
+  format: z.enum(ARTICLE_FORMATS).default('STANDARD'),
+  status: z.enum(ARTICLE_STATUSES).default('DRAFT'),
+  isFeatured: z.boolean().default(false),
+  /**
+   * Tidak dikirim = tanggal tersimpan dipertahankan; null = dikosongkan
+   * (PUBLISHED tanpa tanggal = sekarang); tanggal masa depan = terjadwal.
+   */
+  publishedAt: isoDate.nullable().optional(),
+  tagIds: z.array(id).max(50).default([]),
+  seo: contentSeoSchema.default({}),
+  attributes: z.record(z.string(), z.unknown()).default({}),
+})
+export type ArticleInput = z.output<typeof articleInputSchema>
+
+export const pageInputSchema = z.strictObject({
+  title: z.string().trim().min(1).max(300),
+  slug,
+  body: bodySchema,
+  viewKey: z.string().regex(SLUG_PATTERN, 'view_key huruf kecil, angka, tanda hubung').max(50).default('default'),
+  status: z.enum(PAGE_STATUSES).default('DRAFT'),
+  /** Sama seperti artikel: tidak dikirim = dipertahankan, null = dikosongkan. */
+  publishedAt: isoDate.nullable().optional(),
+  seo: contentSeoSchema.default({}),
+})
+export type PageInput = z.output<typeof pageInputSchema>
+
+export const categoryInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  slug,
+  parentId: id.nullish().transform((v) => v ?? null),
+  description: optionalText(1_000),
+  sortOrder: z.number().int().min(0).max(10_000).default(0),
+  seo: contentSeoSchema.default({}),
+})
+export type CategoryInput = z.output<typeof categoryInputSchema>
+
+export const tagInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  slug,
+})
+export type TagInput = z.output<typeof tagInputSchema>
+
+export const MENU_ITEM_TYPES = ['CATEGORY', 'ARTICLE', 'PAGE', 'TAG', 'URL', 'ROUTE'] as const
+
+export const menuItemInputSchema = z
+  .strictObject({
+    label: z.string().trim().min(1).max(120),
+    parentId: id.nullish().transform((v) => v ?? null),
+    type: z.enum(MENU_ITEM_TYPES),
+    /** Id kategori/artikel/halaman/tag untuk tipe yang menunjuk konten. */
+    targetId: id.nullish().transform((v) => v ?? null),
+    /** URL: https://... ; ROUTE: /path internal. */
+    url: z.string().trim().max(2_048).nullish().transform((v) => v || null),
+    openInNewTab: z.boolean().default(false),
+    sortOrder: z.number().int().min(0).max(10_000).default(0),
+    isActive: z.boolean().default(true),
+  })
+  .superRefine((item, ctx) => {
+    const needsTarget = item.type !== 'URL' && item.type !== 'ROUTE'
+    if (needsTarget && !item.targetId) ctx.addIssue({ code: 'custom', path: ['targetId'], message: `tipe ${item.type} butuh targetId` })
+    if (!needsTarget && item.targetId) ctx.addIssue({ code: 'custom', path: ['targetId'], message: `tipe ${item.type} tidak memakai targetId` })
+    if (item.type === 'URL' && !/^https?:\/\/\S+$/.test(item.url ?? '')) {
+      ctx.addIssue({ code: 'custom', path: ['url'], message: 'URL harus diawali http:// atau https://' })
+    }
+    if (item.type === 'ROUTE' && !/^\/(?!\/)\S*$/.test(item.url ?? '')) {
+      ctx.addIssue({ code: 'custom', path: ['url'], message: 'route internal harus diawali / (bukan //)' })
+    }
+    if (needsTarget && item.url) ctx.addIssue({ code: 'custom', path: ['url'], message: `tipe ${item.type} tidak memakai url` })
+  })
+export type MenuItemInput = z.output<typeof menuItemInputSchema>
+
+/** Token konkurensi: versi artikel, atau updatedAt (ISO) untuk tabel tanpa kolom versi. */
+export const versionSchema = z.number().int().positive()
+export const updatedAtSchema = z.iso.datetime({ offset: true })
+```
+
+6. Tulis repository editor. Hal-hal yang mudah terlewat:
+   - Tabel tanpa kolom `version` (halaman, kategori, tag, item menu) memakai `updatedAt` sebagai token konkurensi. PostgreSQL menyimpan mikrodetik, Date JavaScript hanya milidetik, jadi pembandingannya memakai `date_trunc('milliseconds', ...)`.
+   - Penguncian artikel dijaga dua kali: pengecekan versi di awal, dan `WHERE version = ...` di UPDATE, yang tetap menolak bila dua transaksi lolos pengecekan awal bersamaan.
+   - Path lama untuk redirect dihitung dengan URL builder yang sama dengan halaman publik, jadi pola permalink setiap site ikut dihormati. Rantai diratakan (A→B lalu B→C menjadi A→C dan B→C), dan redirect yang berangkat dari path yang kini berisi konten dihapus.
+   - Pengecekan slug terjadi sebelum INSERT, jadi dua simpan bersamaan bisa memilih slug yang sama. Pelanggaran unique constraint (kode 23505) diubah menjadi galat field `slug`.
+   - Arsip hanya mengubah status, versi, dan revisi, tanpa memvalidasi ulang isi, agar artikel lama dengan data yang tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
+
+`packages/core/src/editor/editor-repository.ts`
+
+```ts
+// Repository tulis untuk admin (M4 4.1, revisi dan redirect 4.5).
+//
+// Aturan yang sama dengan repository baca: setiap fungsi menerima siteId
+// sebagai argumen pertama, dan setiap baris yang dibaca atau ditulis
+// dibatasi site itu. Referensi lintas tabel (kategori, penulis, media, tag,
+// induk, target menu) dicek milik site yang sama; site lain = "tidak
+// ditemukan" (EditorError), bukan error database.
+//
+// Konkurensi: artikel memakai kolom version (naik setiap simpan, = nomor
+// revisi). Tabel tanpa kolom version (halaman, kategori, tag, item menu)
+// memakai updatedAt yang dibaca saat form dibuka. Token berbeda -> conflict.
+//
+// Artikel: setiap simpan menulis snapshot ke article_revisions dalam
+// transaksi yang sama. Slug/URL artikel atau halaman yang sudah tampil
+// publik berubah -> redirect 301 dari path lama, rantai diratakan.
+import {
+  and,
+  articleRevisions,
+  articles,
+  articleTags,
+  asc,
+  authors,
+  categories,
+  count,
+  desc,
+  eq,
+  inArray,
+  media,
+  menuItems,
+  menus,
+  ne,
+  pages,
+  redirects,
+  sites,
+  sql,
+  tags,
+  type PgColumn,
+  type SQL,
+} from '@framework/db'
+import type { z } from 'zod'
+import type { Body } from '../content/blocks'
+import { extractBodyText } from '../content/extract-body-text'
+import type { ContentSeo } from '../content/seo'
+import { parseSiteSettings } from '../site/settings'
+import { createUrlBuilder } from '../views/urls'
+import type { Page, RepositoryContext, SiteId, SiteScoped } from '../repositories/types'
+import { normalizePaging, toPage } from '../repositories/types'
+import { conflict, EditorError, invalid, notFound, type FieldIssue } from './errors'
+import {
+  articleInputSchema,
+  categoryInputSchema,
+  menuItemInputSchema,
+  pageInputSchema,
+  tagInputSchema,
+  updatedAtSchema,
+  versionSchema,
+  type ArticleInput,
+  type MenuItemInput,
+} from './inputs'
+import { isReservedFirstSegment, permalinkFirstToken, slugCandidate, slugify } from './slug'
+
+type Tx = Parameters<Parameters<RepositoryContext['db']['transaction']>[0]>[0]
+type Db = RepositoryContext['db'] | Tx
+/** Tabel konten bersiteId yang dicek kepemilikannya. */
+type OwnedTable = typeof articles | typeof pages | typeof categories | typeof tags | typeof authors | typeof media
+/** Tabel dengan slug unik per site. */
+type SluggedTable = typeof articles | typeof pages | typeof categories | typeof tags
+
+// ---------- Bentuk data untuk admin -----------------------------------------
+
+export interface ArticleListItem {
+  id: string
+  title: string
+  slug: string
+  status: string
+  isFeatured: boolean
+  publishedAt: Date | null
+  updatedAt: Date
+  version: number
+  category: { id: string; name: string }
+  author: { id: string; name: string } | null
+}
+
+export interface AdminArticleQuery {
+  page?: number
+  pageSize?: number
+  status?: string
+  /** Cari di judul (tidak peka huruf besar). */
+  q?: string
+}
+
+export interface ArticleRecord {
+  id: string
+  title: string
+  slug: string
+  excerpt: string | null
+  body: Body
+  categoryId: string
+  authorId: string | null
+  featuredMediaId: string | null
+  format: string
+  status: string
+  isFeatured: boolean
+  publishedAt: Date | null
+  tagIds: string[]
+  seo: ContentSeo
+  attributes: Record<string, unknown>
+  version: number
+  createdAt: Date
+  updatedAt: Date
+  /** Path publik saat ini (pola permalink site); null bila belum tampil publik. */
+  publicPath: string | null
+}
+
+export interface RevisionItem {
+  revisionNo: number
+  changeNote: string | null
+  createdAt: Date
+  createdBy: string | null
+}
+
+export interface PageRecord {
+  id: string
+  title: string
+  slug: string
+  body: Body
+  viewKey: string
+  status: string
+  publishedAt: Date | null
+  seo: ContentSeo
+  updatedAt: Date
+}
+
+export interface CategoryRecord {
+  id: string
+  name: string
+  slug: string
+  parentId: string | null
+  description: string | null
+  sortOrder: number
+  status: string
+  seo: ContentSeo
+  updatedAt: Date
+}
+
+export interface TagRecord {
+  id: string
+  name: string
+  slug: string
+  updatedAt: Date
+}
+
+export interface MenuItemRecord {
+  id: string
+  label: string
+  parentId: string | null
+  type: MenuItemInput['type']
+  targetId: string | null
+  url: string | null
+  openInNewTab: boolean
+  sortOrder: number
+  isActive: boolean
+  updatedAt: Date
+}
+
+export interface MenuRecord {
+  id: string
+  location: string
+  name: string
+  items: MenuItemRecord[]
+}
+
+// ---------- Util -------------------------------------------------------------
+
+/** Validasi Zod -> EditorError('invalid') dengan issue per field. */
+function parse<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
+  const result = schema.safeParse(raw)
+  if (result.success) return result.data
+  throw invalid(result.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })))
+}
+
+/** Kolom timestamp dibandingkan pada presisi milidetik (Date JavaScript), bukan mikrodetik PostgreSQL. */
+function sameMillis(column: PgColumn, iso: string): SQL {
+  return sql`date_trunc('milliseconds', ${column}) = ${new Date(iso).toISOString()}::timestamptz`
+}
+
+const VISIBLE = (status: string, publishedAt: Date | null, now: Date) =>
+  status === 'PUBLISHED' && publishedAt !== null && publishedAt <= now
+
+export function createEditorRepository(ctx: RepositoryContext) {
+  const { db } = ctx
+
+  async function siteSettings(tx: Db, siteId: SiteId) {
+    const [row] = await tx.select({ settings: sites.settings, timezone: sites.timezone }).from(sites).where(eq(sites.id, siteId)).limit(1)
+    if (!row) throw notFound('Site')
+    const settings = parseSiteSettings(row.settings)
+    return { settings, urls: createUrlBuilder({ permalink: settings.permalink, timeZone: row.timezone }) }
+  }
+
+  /** Semua id harus ada di tabel itu dan milik site; selain itu invalid di field tersebut. */
+  async function ensureOwned(tx: Db, table: OwnedTable, siteId: SiteId, ids: (string | null)[], field: string, label: string) {
+    const wanted = [...new Set(ids.filter((v): v is string => Boolean(v)))]
+    if (wanted.length === 0) return
+    const rows = await tx.select({ id: table.id }).from(table).where(and(eq(table.siteId, siteId), inArray(table.id, wanted)))
+    const found = new Set(rows.map((r) => r.id))
+    const missing = wanted.filter((v) => !found.has(v))
+    if (missing.length) throw invalid([{ field, message: `${label} tidak ditemukan di site ini: ${missing.join(', ')}` }])
+  }
+
+  /** Slug unik per site: slug diminta dipakai apa adanya (bentrok = invalid); kosong = dari judul + akhiran. */
+  async function uniqueSlug(
+    tx: Db,
+    table: SluggedTable,
+    siteId: SiteId,
+    requested: string | undefined,
+    source: string,
+    excludeId: string | null,
+    reservedFirst: boolean,
+  ): Promise<string> {
+    const taken = async (candidate: string) => {
+      const conditions = [eq(table.siteId, siteId), eq(table.slug, candidate)]
+      if (excludeId) conditions.push(ne(table.id, excludeId))
+      const [row] = await tx.select({ id: table.id }).from(table).where(and(...conditions)).limit(1)
+      return Boolean(row)
+    }
+    if (requested) {
+      if (reservedFirst && isReservedFirstSegment(requested)) throw invalid([{ field: 'slug', message: `"${requested}" dipakai route sistem` }])
+      if (await taken(requested)) throw invalid([{ field: 'slug', message: `slug "${requested}" sudah dipakai` }])
+      return requested
+    }
+    const base = slugify(source) || 'tanpa-judul'
+    for (let attempt = 1; attempt < 100; attempt++) {
+      const candidate = slugCandidate(base, attempt)
+      if (reservedFirst && isReservedFirstSegment(candidate)) continue
+      if (!(await taken(candidate))) return candidate
+    }
+    throw invalid([{ field: 'slug', message: 'tidak menemukan slug yang belum dipakai; isi slug sendiri' }])
+  }
+
+  /** Redirect lama -> baru, rantai diratakan; dipanggil hanya saat path publik berubah. */
+  async function moveRedirects(tx: Db, siteId: SiteId, fromPath: string, toPath: string) {
+    if (fromPath === toPath) return
+    // Path baru kini berisi konten: redirect yang berangkat dari sana tidak berlaku lagi.
+    await tx.delete(redirects).where(and(eq(redirects.siteId, siteId), eq(redirects.fromPath, toPath)))
+    // Rantai A -> fromPath menjadi A -> toPath (tanpa 301 berantai); yang jadi menunjuk dirinya dihapus.
+    await tx.update(redirects).set({ toPath, updatedAt: sql`now()` }).where(and(eq(redirects.siteId, siteId), eq(redirects.toPath, fromPath), ne(redirects.fromPath, toPath)))
+    await tx
+      .insert(redirects)
+      .values({ siteId, fromPath, toPath, statusCode: 301 })
+      .onConflictDoUpdate({ target: [redirects.siteId, redirects.fromPath], set: { toPath, statusCode: 301, updatedAt: sql`now()` } })
+  }
+
+  // ---------- Artikel --------------------------------------------------------
+
+  async function articleCategorySlug(tx: Db, siteId: SiteId, categoryId: string) {
+    const [row] = await tx.select({ slug: categories.slug }).from(categories).where(and(eq(categories.siteId, siteId), eq(categories.id, categoryId))).limit(1)
+    return row?.slug ?? null
+  }
+
+  async function checkArticleRefs(tx: Db, siteId: SiteId, input: ArticleInput) {
+    await ensureOwned(tx, categories, siteId, [input.categoryId], 'categoryId', 'kategori')
+    await ensureOwned(tx, authors, siteId, [input.authorId], 'authorId', 'penulis')
+    await ensureOwned(tx, media, siteId, [input.featuredMediaId], 'featuredMediaId', 'media')
+    await ensureOwned(tx, media, siteId, [input.seo.og_image_id ?? null], 'seo.og_image_id', 'media')
+    await ensureOwned(tx, tags, siteId, input.tagIds, 'tagIds', 'tag')
+    const imageIds = input.body.blocks.flatMap((b) => (b.type === 'image' ? [b.mediaId] : []))
+    await ensureOwned(tx, media, siteId, imageIds, 'body', 'media gambar')
+  }
+
+  function snapshotOf(input: ArticleInput & { slug: string }) {
+    return {
+      title: input.title, slug: input.slug, excerpt: input.excerpt, body: input.body,
+      category_id: input.categoryId, author_id: input.authorId, featured_media_id: input.featuredMediaId,
+      format: input.format, status: input.status, is_featured: input.isFeatured,
+      published_at: input.publishedAt?.toISOString() ?? null, seo: input.seo, attributes: input.attributes, tag_ids: input.tagIds,
+    }
+  }
+
+  async function writeTags(tx: Db, siteId: SiteId, articleId: string, tagIds: string[]) {
+    await tx.delete(articleTags).where(and(eq(articleTags.siteId, siteId), eq(articleTags.articleId, articleId)))
+    const unique = [...new Set(tagIds)]
+    if (unique.length) await tx.insert(articleTags).values(unique.map((tagId, i) => ({ siteId, articleId, tagId, sortOrder: i })))
+  }
+
+  /**
+   * Tanggal terbit yang disimpan: field tidak dikirim = tanggal lama; null =
+   * dikosongkan. PUBLISHED tanpa tanggal = sekarang.
+   */
+  function effectivePublishedAt(input: { status: string; publishedAt?: Date | null }, previous: Date | null): Date | null {
+    const chosen = input.publishedAt === undefined ? previous : input.publishedAt
+    return input.status === 'PUBLISHED' ? (chosen ?? ctx.now()) : chosen
+  }
+
+  async function articlePath(tx: Db, siteId: SiteId, a: { slug: string; categoryId: string; publishedAt: Date | null; status: string }) {
+    if (!VISIBLE(a.status, a.publishedAt, ctx.now())) return null
+    const { urls } = await siteSettings(tx, siteId)
+    const categorySlug = await articleCategorySlug(tx, siteId, a.categoryId)
+    return categorySlug && a.publishedAt ? urls.article({ slug: a.slug, categorySlug, publishedAt: a.publishedAt }) : null
+  }
+
+  async function loadArticle(tx: Db, siteId: SiteId, id: string): Promise<ArticleRecord> {
+    const [row] = await tx.select().from(articles).where(and(eq(articles.siteId, siteId), eq(articles.id, id))).limit(1)
+    if (!row) throw notFound('Artikel')
+    const tagRows = await tx.select({ tagId: articleTags.tagId }).from(articleTags).where(and(eq(articleTags.siteId, siteId), eq(articleTags.articleId, id))).orderBy(asc(articleTags.sortOrder))
+    const record = {
+      id: row.id, title: row.title, slug: row.slug, excerpt: row.excerpt, body: row.body as Body,
+      categoryId: row.categoryId, authorId: row.authorId, featuredMediaId: row.featuredMediaId, format: row.format,
+      status: row.status, isFeatured: row.isFeatured, publishedAt: row.publishedAt, tagIds: tagRows.map((t) => t.tagId),
+      seo: row.seo as ContentSeo, attributes: row.attributes as Record<string, unknown>, version: row.version,
+      createdAt: row.createdAt, updatedAt: row.updatedAt,
+    }
+    return { ...record, publicPath: await articlePath(tx, siteId, record) }
+  }
+
+  async function articleReservedFirst(tx: Db, siteId: SiteId) {
+    const { settings } = await siteSettings(tx, siteId)
+    return permalinkFirstToken(settings.permalink) === ':slug'
+  }
+
+  // ---------- Halaman, kategori, tag, menu (util kecil) ---------------------
+
+  async function checkPageRefs(tx: Db, siteId: SiteId, input: { seo: ContentSeo; body: Body }) {
+    await ensureOwned(tx, media, siteId, [input.seo.og_image_id ?? null], 'seo.og_image_id', 'media')
+    await ensureOwned(tx, media, siteId, input.body.blocks.flatMap((b) => (b.type === 'image' ? [b.mediaId] : [])), 'body', 'media gambar')
+  }
+
+  async function guardedUpdate<T>(
+    rawRun: () => Promise<T[]>,
+    exists: () => Promise<boolean>,
+    what: string,
+  ): Promise<T> {
+    const [row] = await withSlugConflict(rawRun)
+    if (row) return row
+    throw (await exists()) ? conflict(what) : notFound(what)
+  }
+
+  async function categoryDepthOk(tx: Db, siteId: SiteId, id: string | null, parentId: string | null) {
+    // Induk tidak boleh dirinya atau turunannya (mencegah siklus).
+    let current = parentId
+    for (let depth = 0; current; depth++) {
+      if (current === id) throw invalid([{ field: 'parentId', message: 'induk tidak boleh kategori itu sendiri atau turunannya' }])
+      if (depth > 50) throw invalid([{ field: 'parentId', message: 'kategori terlalu dalam' }])
+      const [row] = await tx.select({ parentId: categories.parentId }).from(categories).where(and(eq(categories.siteId, siteId), eq(categories.id, current))).limit(1)
+      if (!row) throw invalid([{ field: 'parentId', message: 'kategori induk tidak ditemukan di site ini' }])
+      current = row.parentId
+    }
+  }
+
+  const TARGET_TABLE = { CATEGORY: categories, ARTICLE: articles, PAGE: pages, TAG: tags } as const
+
+  async function checkMenuItem(tx: Db, siteId: SiteId, menuId: string, itemId: string | null, input: MenuItemInput) {
+    if (input.type !== 'URL' && input.type !== 'ROUTE') {
+      await ensureOwned(tx, TARGET_TABLE[input.type], siteId, [input.targetId], 'targetId', 'target menu')
+    }
+    let current = input.parentId
+    for (let depth = 0; current; depth++) {
+      if (current === itemId) throw invalid([{ field: 'parentId', message: 'induk tidak boleh item itu sendiri atau turunannya' }])
+      if (depth > 10) throw invalid([{ field: 'parentId', message: 'menu terlalu dalam' }])
+      const [row] = await tx.select({ parentId: menuItems.parentId }).from(menuItems).where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menuId), eq(menuItems.id, current))).limit(1)
+      if (!row) throw invalid([{ field: 'parentId', message: 'item induk tidak ada di menu ini' }])
+      current = row.parentId
+    }
+  }
+
+  function menuItemValues(input: MenuItemInput) {
+    const target = input.targetId
+    return {
+      label: input.label, parentId: input.parentId, itemType: input.type,
+      categoryId: input.type === 'CATEGORY' ? target : null,
+      articleId: input.type === 'ARTICLE' ? target : null,
+      pageId: input.type === 'PAGE' ? target : null,
+      tagId: input.type === 'TAG' ? target : null,
+      url: input.url, openInNewTab: input.openInNewTab, sortOrder: input.sortOrder, isActive: input.isActive,
+    }
+  }
+
+  function toMenuItem(row: typeof menuItems.$inferSelect): MenuItemRecord {
+    return {
+      id: row.id, label: row.label, parentId: row.parentId, type: row.itemType as MenuItemInput['type'],
+      targetId: row.categoryId ?? row.articleId ?? row.pageId ?? row.tagId ?? null,
+      url: row.url, openInNewTab: row.openInNewTab, sortOrder: row.sortOrder, isActive: row.isActive, updatedAt: row.updatedAt,
+    }
+  }
+
+  async function menuOf(tx: Db, siteId: SiteId, location: string) {
+    const [menu] = await tx.select({ id: menus.id, location: menus.location, name: menus.name }).from(menus).where(and(eq(menus.siteId, siteId), eq(menus.location, location))).limit(1)
+    if (!menu) throw notFound(`Menu ${location}`)
+    return menu
+  }
+
+  const api = {
+    // ======================= Artikel =======================
+
+    async listArticles(siteId: SiteId, query: AdminArticleQuery = {}): Promise<Page<ArticleListItem>> {
+      const paging = normalizePaging({ page: query.page, pageSize: query.pageSize ?? 20 })
+      const conditions: SQL[] = [eq(articles.siteId, siteId)]
+      if (query.status) conditions.push(eq(articles.status, query.status))
+      const q = query.q?.trim().slice(0, 200)
+      if (q) conditions.push(sql`${articles.title} ILIKE ${`%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`}`)
+      const where = and(...conditions)
+      const [total] = await db.select({ n: count() }).from(articles).where(where)
+      const rows = await db
+        .select({
+          id: articles.id, title: articles.title, slug: articles.slug, status: articles.status, isFeatured: articles.isFeatured,
+          publishedAt: articles.publishedAt, updatedAt: articles.updatedAt, version: articles.version,
+          categoryId: categories.id, categoryName: categories.name, authorId: authors.id, authorName: authors.name,
+        })
+        .from(articles)
+        .innerJoin(categories, and(eq(categories.siteId, articles.siteId), eq(categories.id, articles.categoryId)))
+        .leftJoin(authors, and(eq(authors.siteId, articles.siteId), eq(authors.id, articles.authorId)))
+        .where(where)
+        .orderBy(desc(articles.updatedAt), desc(articles.id))
+        .limit(paging.pageSize)
+        .offset(paging.offset)
+      const items = rows.map((r) => ({
+        id: r.id, title: r.title, slug: r.slug, status: r.status, isFeatured: r.isFeatured, publishedAt: r.publishedAt,
+        updatedAt: r.updatedAt, version: r.version, category: { id: r.categoryId, name: r.categoryName },
+        author: r.authorId && r.authorName ? { id: r.authorId, name: r.authorName } : null,
+      }))
+      return toPage(items, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    async getArticle(siteId: SiteId, id: string): Promise<ArticleRecord> {
+      return loadArticle(db, siteId, asId(id, 'Artikel'))
+    },
+
+    async listRevisions(siteId: SiteId, articleId: string): Promise<RevisionItem[]> {
+      await loadArticle(db, siteId, asId(articleId, 'Artikel'))
+      return db
+        .select({ revisionNo: articleRevisions.revisionNo, changeNote: articleRevisions.changeNote, createdAt: articleRevisions.createdAt, createdBy: articleRevisions.createdBy })
+        .from(articleRevisions)
+        .where(and(eq(articleRevisions.siteId, siteId), eq(articleRevisions.articleId, articleId)))
+        .orderBy(desc(articleRevisions.revisionNo))
+    },
+
+    async createArticle(siteId: SiteId, raw: unknown, userId: string | null): Promise<ArticleRecord> {
+      const input = parse(articleInputSchema, raw)
+      return db.transaction(async (tx) => {
+        await checkArticleRefs(tx, siteId, input)
+        const slug = await uniqueSlug(tx, articles, siteId, input.slug, input.title, null, await articleReservedFirst(tx, siteId))
+        const publishedAt = effectivePublishedAt(input, null)
+        const [row] = await withSlugConflict(() => tx
+          .insert(articles)
+          .values({
+            siteId, categoryId: input.categoryId, authorId: input.authorId, featuredMediaId: input.featuredMediaId,
+            title: input.title, slug, excerpt: input.excerpt, body: input.body, bodyText: extractBodyText(input.body),
+            format: input.format, status: input.status, isFeatured: input.isFeatured, publishedAt, seo: input.seo,
+            attributes: input.attributes, version: 1, createdBy: userId, updatedBy: userId,
+          })
+          .returning({ id: articles.id }))
+        if (!row) throw new Error('insert artikel tidak mengembalikan baris')
+        await writeTags(tx, siteId, row.id, input.tagIds)
+        await tx.insert(articleRevisions).values({ siteId, articleId: row.id, revisionNo: 1, snapshot: snapshotOf({ ...input, slug, publishedAt }), changeNote: 'Dibuat', createdBy: userId })
+        return loadArticle(tx, siteId, row.id)
+      })
+    },
+
+    /** Simpan seluruh isi artikel; expectedVersion = version yang dibaca saat form dibuka. */
+    async updateArticle(siteId: SiteId, id: string, raw: unknown, expectedVersion: number, userId: string | null, changeNote?: string): Promise<ArticleRecord> {
+      const articleId = asId(id, 'Artikel')
+      const version = parse(versionSchema, expectedVersion)
+      const input = parse(articleInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const before = await loadArticle(tx, siteId, articleId)
+        if (before.version !== version) throw conflict('Artikel')
+        await checkArticleRefs(tx, siteId, input)
+        const slug = await uniqueSlug(tx, articles, siteId, input.slug ?? before.slug, input.title, articleId, await articleReservedFirst(tx, siteId))
+        const publishedAt = effectivePublishedAt(input, before.publishedAt)
+        const [row] = await withSlugConflict(() => tx
+          .update(articles)
+          .set({
+            categoryId: input.categoryId, authorId: input.authorId, featuredMediaId: input.featuredMediaId,
+            title: input.title, slug, excerpt: input.excerpt, body: input.body, bodyText: extractBodyText(input.body),
+            format: input.format, status: input.status, isFeatured: input.isFeatured, publishedAt, seo: input.seo,
+            attributes: input.attributes, version: version + 1, updatedBy: userId, updatedAt: sql`now()`,
+          })
+          .where(and(eq(articles.siteId, siteId), eq(articles.id, articleId), eq(articles.version, version)))
+          .returning({ id: articles.id }))
+        if (!row) throw conflict('Artikel')
+        await writeTags(tx, siteId, articleId, input.tagIds)
+        await tx.insert(articleRevisions).values({
+          siteId, articleId, revisionNo: version + 1, snapshot: snapshotOf({ ...input, slug, publishedAt }),
+          changeNote: changeNote?.trim().slice(0, 500) || null, createdBy: userId,
+        })
+        const after = await loadArticle(tx, siteId, articleId)
+        // URL publik berubah (slug, kategori, atau tanggal di permalink) -> redirect dari URL lama.
+        if (before.publicPath && after.publicPath && before.publicPath !== after.publicPath) {
+          await moveRedirects(tx, siteId, before.publicPath, after.publicPath)
+        }
+        return after
+      })
+    },
+
+    /** Arsipkan: status ARCHIVED (tidak tampil publik), dengan revisi baru. */
+    /**
+     * Arsipkan: hanya status (ARCHIVED, tidak tampil publik), versi, dan
+     * revisi. Isi tidak divalidasi ulang, agar artikel lama dengan data yang
+     * tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
+     */
+    async archiveArticle(siteId: SiteId, id: string, expectedVersion: number, userId: string | null): Promise<ArticleRecord> {
+      const articleId = asId(id, 'Artikel')
+      const version = parse(versionSchema, expectedVersion)
+      return db.transaction(async (tx) => {
+        const a = await loadArticle(tx, siteId, articleId)
+        const [row] = await tx
+          .update(articles)
+          .set({ status: 'ARCHIVED', version: version + 1, updatedBy: userId, updatedAt: sql`now()` })
+          .where(and(eq(articles.siteId, siteId), eq(articles.id, articleId), eq(articles.version, version)))
+          .returning({ id: articles.id })
+        if (!row) throw conflict('Artikel')
+        const snapshot = {
+          title: a.title, slug: a.slug, excerpt: a.excerpt, body: a.body, category_id: a.categoryId, author_id: a.authorId,
+          featured_media_id: a.featuredMediaId, format: a.format, status: 'ARCHIVED', is_featured: a.isFeatured,
+          published_at: a.publishedAt?.toISOString() ?? null, seo: a.seo, attributes: a.attributes, tag_ids: a.tagIds,
+        }
+        await tx.insert(articleRevisions).values({ siteId, articleId, revisionNo: version + 1, snapshot, changeNote: 'Diarsipkan', createdBy: userId })
+        return loadArticle(tx, siteId, articleId)
+      })
+    },
+
+    // ======================= Halaman =======================
+
+    async listPages(siteId: SiteId): Promise<PageRecord[]> {
+      const rows = await db.select().from(pages).where(eq(pages.siteId, siteId)).orderBy(asc(pages.title))
+      return rows.map((r) => ({ id: r.id, title: r.title, slug: r.slug, body: r.body as Body, viewKey: r.viewKey, status: r.status, publishedAt: r.publishedAt, seo: r.seo as ContentSeo, updatedAt: r.updatedAt }))
+    },
+
+    async createPage(siteId: SiteId, raw: unknown): Promise<PageRecord> {
+      const input = parse(pageInputSchema, raw)
+      return db.transaction(async (tx) => {
+        await checkPageRefs(tx, siteId, input)
+        const slug = await uniqueSlug(tx, pages, siteId, input.slug, input.title, null, false)
+        const publishedAt = effectivePublishedAt(input, null)
+        const [row] = await withSlugConflict(() => tx.insert(pages).values({ siteId, title: input.title, slug, body: input.body, viewKey: input.viewKey, status: input.status, publishedAt, seo: input.seo }).returning())
+        if (!row) throw new Error('insert halaman tidak mengembalikan baris')
+        return { id: row.id, title: row.title, slug: row.slug, body: row.body as Body, viewKey: row.viewKey, status: row.status, publishedAt: row.publishedAt, seo: row.seo as ContentSeo, updatedAt: row.updatedAt }
+      })
+    },
+
+    async updatePage(siteId: SiteId, id: string, raw: unknown, expectedUpdatedAt: string): Promise<PageRecord> {
+      const pageId = asId(id, 'Halaman')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const input = parse(pageInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const [before] = await tx.select().from(pages).where(and(eq(pages.siteId, siteId), eq(pages.id, pageId))).limit(1)
+        if (!before) throw notFound('Halaman')
+        await checkPageRefs(tx, siteId, input)
+        const slug = await uniqueSlug(tx, pages, siteId, input.slug ?? before.slug, input.title, pageId, false)
+        const publishedAt = effectivePublishedAt(input, before.publishedAt)
+        const row = await guardedUpdate(
+          () => tx.update(pages).set({ title: input.title, slug, body: input.body, viewKey: input.viewKey, status: input.status, publishedAt, seo: input.seo, updatedAt: sql`now()` })
+            .where(and(eq(pages.siteId, siteId), eq(pages.id, pageId), sameMillis(pages.updatedAt, token))).returning(),
+          async () => true,
+          'Halaman',
+        )
+        const wasVisible = VISIBLE(before.status, before.publishedAt, ctx.now())
+        const isVisible = VISIBLE(row.status, row.publishedAt, ctx.now())
+        if (wasVisible && isVisible && before.slug !== row.slug) {
+          const { urls } = await siteSettings(tx, siteId)
+          await moveRedirects(tx, siteId, urls.page(before.slug), urls.page(row.slug))
+        }
+        return { id: row.id, title: row.title, slug: row.slug, body: row.body as Body, viewKey: row.viewKey, status: row.status, publishedAt: row.publishedAt, seo: row.seo as ContentSeo, updatedAt: row.updatedAt }
+      })
+    },
+
+    // ======================= Kategori =======================
+
+    async listCategories(siteId: SiteId): Promise<CategoryRecord[]> {
+      const rows = await db.select().from(categories).where(eq(categories.siteId, siteId)).orderBy(asc(categories.sortOrder), asc(categories.name))
+      return rows.map((r) => ({ id: r.id, name: r.name, slug: r.slug, parentId: r.parentId, description: r.description, sortOrder: r.sortOrder, status: r.status, seo: r.seo as ContentSeo, updatedAt: r.updatedAt }))
+    },
+
+    async createCategory(siteId: SiteId, raw: unknown): Promise<CategoryRecord> {
+      const input = parse(categoryInputSchema, raw)
+      return db.transaction(async (tx) => {
+        await categoryDepthOk(tx, siteId, null, input.parentId)
+        await ensureOwned(tx, media, siteId, [input.seo.og_image_id ?? null], 'seo.og_image_id', 'media')
+        const { settings } = await siteSettings(tx, siteId)
+        const slug = await uniqueSlug(tx, categories, siteId, input.slug, input.name, null, permalinkFirstToken(settings.permalink) === ':category')
+        const [row] = await withSlugConflict(() => tx.insert(categories).values({ siteId, name: input.name, slug, parentId: input.parentId, description: input.description, sortOrder: input.sortOrder, seo: input.seo }).returning())
+        if (!row) throw new Error('insert kategori tidak mengembalikan baris')
+        return { id: row.id, name: row.name, slug: row.slug, parentId: row.parentId, description: row.description, sortOrder: row.sortOrder, status: row.status, seo: row.seo as ContentSeo, updatedAt: row.updatedAt }
+      })
+    },
+
+    /** status ACTIVE/HIDDEN ikut diubah lewat field terpisah agar form biasa tidak menyembunyikan kategori tanpa sengaja. */
+    async updateCategory(siteId: SiteId, id: string, raw: unknown, expectedUpdatedAt: string, status?: 'ACTIVE' | 'HIDDEN'): Promise<CategoryRecord> {
+      const categoryId = asId(id, 'Kategori')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const input = parse(categoryInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const [before] = await tx.select().from(categories).where(and(eq(categories.siteId, siteId), eq(categories.id, categoryId))).limit(1)
+        if (!before) throw notFound('Kategori')
+        await categoryDepthOk(tx, siteId, categoryId, input.parentId)
+        await ensureOwned(tx, media, siteId, [input.seo.og_image_id ?? null], 'seo.og_image_id', 'media')
+        const { settings, urls } = await siteSettings(tx, siteId)
+        const slug = await uniqueSlug(tx, categories, siteId, input.slug ?? before.slug, input.name, categoryId, permalinkFirstToken(settings.permalink) === ':category')
+        const row = await guardedUpdate(
+          () => tx.update(categories).set({ name: input.name, slug, parentId: input.parentId, description: input.description, sortOrder: input.sortOrder, seo: input.seo, status: status ?? before.status, updatedAt: sql`now()` })
+            .where(and(eq(categories.siteId, siteId), eq(categories.id, categoryId), sameMillis(categories.updatedAt, token))).returning(),
+          async () => true,
+          'Kategori',
+        )
+        // URL kategori berubah -> redirect halaman kategori. Artikel di dalamnya
+        // tidak perlu: path artikel lama dialihkan ke permalink kanonik oleh route publik.
+        if (before.status === 'ACTIVE' && row.status === 'ACTIVE' && before.slug !== row.slug) {
+          await moveRedirects(tx, siteId, urls.category(before.slug), urls.category(row.slug))
+        }
+        return { id: row.id, name: row.name, slug: row.slug, parentId: row.parentId, description: row.description, sortOrder: row.sortOrder, status: row.status, seo: row.seo as ContentSeo, updatedAt: row.updatedAt }
+      })
+    },
+
+    // ======================= Tag =======================
+
+    async listTags(siteId: SiteId): Promise<TagRecord[]> {
+      return db.select({ id: tags.id, name: tags.name, slug: tags.slug, updatedAt: tags.updatedAt }).from(tags).where(eq(tags.siteId, siteId)).orderBy(asc(tags.name))
+    },
+
+    async createTag(siteId: SiteId, raw: unknown): Promise<TagRecord> {
+      const input = parse(tagInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const slug = await uniqueSlug(tx, tags, siteId, input.slug, input.name, null, false)
+        const [row] = await withSlugConflict(() => tx.insert(tags).values({ siteId, name: input.name, slug }).returning({ id: tags.id, name: tags.name, slug: tags.slug, updatedAt: tags.updatedAt }))
+        if (!row) throw new Error('insert tag tidak mengembalikan baris')
+        return row
+      })
+    },
+
+    async updateTag(siteId: SiteId, id: string, raw: unknown, expectedUpdatedAt: string): Promise<TagRecord> {
+      const tagId = asId(id, 'Tag')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const input = parse(tagInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const [before] = await tx.select({ slug: tags.slug }).from(tags).where(and(eq(tags.siteId, siteId), eq(tags.id, tagId))).limit(1)
+        if (!before) throw notFound('Tag')
+        const slug = await uniqueSlug(tx, tags, siteId, input.slug ?? before.slug, input.name, tagId, false)
+        const row = await guardedUpdate(
+          () => tx.update(tags).set({ name: input.name, slug, updatedAt: sql`now()` })
+            .where(and(eq(tags.siteId, siteId), eq(tags.id, tagId), sameMillis(tags.updatedAt, token)))
+            .returning({ id: tags.id, name: tags.name, slug: tags.slug, updatedAt: tags.updatedAt }),
+          async () => true,
+          'Tag',
+        )
+        if (before.slug !== row.slug) {
+          const { urls } = await siteSettings(tx, siteId)
+          await moveRedirects(tx, siteId, urls.tag(before.slug), urls.tag(row.slug))
+        }
+        return row
+      })
+    },
+
+    /** Hapus tag: lepas dari semua artikel dan item menu yang menunjuknya (CASCADE). */
+    async deleteTag(siteId: SiteId, id: string, expectedUpdatedAt: string): Promise<void> {
+      const tagId = asId(id, 'Tag')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      await guardedUpdate(
+        () => db.delete(tags).where(and(eq(tags.siteId, siteId), eq(tags.id, tagId), sameMillis(tags.updatedAt, token))).returning({ id: tags.id }),
+        async () => Boolean((await db.select({ id: tags.id }).from(tags).where(and(eq(tags.siteId, siteId), eq(tags.id, tagId))).limit(1))[0]),
+        'Tag',
+      )
+    },
+
+    // ======================= Menu =======================
+
+    async getMenu(siteId: SiteId, location: string): Promise<MenuRecord> {
+      const menu = await menuOf(db, siteId, location)
+      const rows = await db.select().from(menuItems).where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menu.id))).orderBy(asc(menuItems.sortOrder), asc(menuItems.label))
+      return { ...menu, items: rows.map(toMenuItem) }
+    },
+
+    async createMenuItem(siteId: SiteId, location: string, raw: unknown): Promise<MenuItemRecord> {
+      const input = parse(menuItemInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const menu = await menuOf(tx, siteId, location)
+        await checkMenuItem(tx, siteId, menu.id, null, input)
+        const [row] = await tx.insert(menuItems).values({ siteId, menuId: menu.id, ...menuItemValues(input) }).returning()
+        if (!row) throw new Error('insert item menu tidak mengembalikan baris')
+        return toMenuItem(row)
+      })
+    },
+
+    async updateMenuItem(siteId: SiteId, location: string, id: string, raw: unknown, expectedUpdatedAt: string): Promise<MenuItemRecord> {
+      const itemId = asId(id, 'Item menu')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const input = parse(menuItemInputSchema, raw)
+      return db.transaction(async (tx) => {
+        const menu = await menuOf(tx, siteId, location)
+        await checkMenuItem(tx, siteId, menu.id, itemId, input)
+        const row = await guardedUpdate(
+          () => tx.update(menuItems).set({ ...menuItemValues(input), updatedAt: sql`now()` })
+            .where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menu.id), eq(menuItems.id, itemId), sameMillis(menuItems.updatedAt, token))).returning(),
+          async () => Boolean((await tx.select({ id: menuItems.id }).from(menuItems).where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menu.id), eq(menuItems.id, itemId))).limit(1))[0]),
+          'Item menu',
+        )
+        return toMenuItem(row)
+      })
+    },
+
+    /** Hapus item menu beserta sub-itemnya (CASCADE). */
+    async deleteMenuItem(siteId: SiteId, location: string, id: string, expectedUpdatedAt: string): Promise<void> {
+      const itemId = asId(id, 'Item menu')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const menu = await menuOf(db, siteId, location)
+      await guardedUpdate(
+        () => db.delete(menuItems).where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menu.id), eq(menuItems.id, itemId), sameMillis(menuItems.updatedAt, token))).returning({ id: menuItems.id }),
+        async () => Boolean((await db.select({ id: menuItems.id }).from(menuItems).where(and(eq(menuItems.siteId, siteId), eq(menuItems.menuId, menu.id), eq(menuItems.id, itemId))).limit(1))[0]),
+        'Item menu',
+      )
+    },
+  } satisfies Record<string, SiteScoped>
+  return api
+}
+
+/** Kode PostgreSQL unique_violation pada constraint slug (uq_<tabel>_site_slug). */
+function isSlugConflict(error: unknown): boolean {
+  for (let e: unknown = error; e; e = (e as { cause?: unknown }).cause) {
+    const pg = e as { code?: string; constraint?: string }
+    if (pg.code === '23505' && /_site_slug$/.test(pg.constraint ?? '')) return true
+  }
+  return false
+}
+
+/**
+ * Slug dicek dulu (uniqueSlug), tetapi dua simpan bersamaan bisa memilih slug
+ * yang sama; constraint database yang menangkapnya diubah menjadi galat field.
+ */
+async function withSlugConflict<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    if (isSlugConflict(error)) throw invalid([{ field: 'slug', message: 'slug baru saja dipakai konten lain; simpan lagi atau pilih slug lain' }])
+    throw error
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Id dari URL request: bukan uuid = tidak ditemukan (bukan error database). */
+function asId(value: string, what: string): string {
+  if (!UUID.test(value)) throw notFound(what)
+  return value
+}
+
+export type EditorRepository = ReturnType<typeof createEditorRepository>
+export { EditorError, type FieldIssue }
+```
+
+7. Daftarkan sebagai `editor` di `createRepositories` dan ekspor modul `editor/*` dari `packages/core/src/index.ts`. Tipe daftar artikel admin bernama `AdminArticleQuery` karena `ArticleListQuery` sudah dipakai repository baca.
+
+8. Uji terhadap database dev, tetapi jangan menulis ke site seed. File test lain membaca data seed secara paralel: artikel uji yang terbit di site kuliner sempat membuat test RSS, daftar penulis, dan snapshot home gagal secara acak. Test ini membuat site uji sendiri berstatus `ARCHIVED` (tidak ditemukan resolver dan tidak muncul di daftar site admin) dan menghapusnya di akhir; seluruh isinya ikut terhapus lewat CASCADE:
+
+`packages/core/src/editor/editor-repository.test.ts`
+
+```ts
+// Repository tulis admin terhadap database dev (dilewati tanpa DATABASE_URL).
+//
+// Test ini MENULIS, sementara file test lain membaca data seed secara
+// paralel. Karena itu semua tulisan terjadi di site uji sendiri (status
+// ARCHIVED: tidak ditemukan resolver dan tidak muncul di daftar site admin),
+// yang dibuat di beforeAll dan dihapus di afterAll beserta seluruh isinya
+// (CASCADE). Site seed dapur-nusantara hanya dibaca, sebagai "site lain".
+import { articles, authors, categories, createDatabase, eq, media, menus, sites, tags } from '@framework/db'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createRepositories } from '../repositories'
+import { EditorError } from './errors'
+
+// Site lain (seed, hanya dibaca).
+const OTHER = '01930000-0000-7000-8000-000000000102'
+const OTHER_CATEGORY = '01930000-0000-7000-8000-000000000413'
+const OTHER_MEDIA = '01930000-0000-7000-8000-000000000212'
+const OTHER_TAG = '01930000-0000-7000-8000-000000000511'
+const USER = '01930000-0000-7000-8000-000000000001'
+
+const run = `t${process.pid}x${Date.now().toString(36)}`
+const body = (text = 'Isi artikel uji.') => ({ version: 1, blocks: [{ type: 'paragraph', text }, { type: 'heading', level: 2, text: 'Bagian' }] })
+
+/** EditorError dengan jenis tertentu (dan, bila diberi, field tertentu). */
+async function rejects(promise: Promise<unknown>, kind: EditorError['kind'], field?: string) {
+  const error = await promise.then(() => null, (e: unknown) => e)
+  expect(error, 'seharusnya gagal').toBeInstanceOf(EditorError)
+  const e = error as EditorError
+  expect(e.kind).toBe(kind)
+  if (field) expect(e.issues.map((i) => i.field)).toContain(field)
+}
+
+describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 2, applicationName: 'vitest-editor' })
+  const repos = createRepositories(db)
+  const editor = repos.editor
+  let SITE = ''
+  let CAT_SUMATERA = ''
+  let CAT_RESEP = ''
+  let AUTHOR = ''
+  let MEDIA = ''
+  let TAG = ''
+
+  beforeAll(async () => {
+    const [site] = await db.insert(sites).values({ code: `uji-${run}`, name: `Site uji ${run}`, status: 'ARCHIVED' }).returning({ id: sites.id })
+    if (!site) throw new Error('site uji gagal dibuat')
+    SITE = site.id
+    const [daerah] = await db.insert(categories).values({ siteId: SITE, name: 'Kuliner Daerah', slug: 'kuliner-daerah' }).returning({ id: categories.id })
+    const cats = await db.insert(categories).values([
+      { siteId: SITE, name: 'Sumatera', slug: 'sumatera', parentId: daerah?.id ?? null },
+      { siteId: SITE, name: 'Resep', slug: 'resep' },
+    ]).returning({ id: categories.id, slug: categories.slug })
+    CAT_SUMATERA = cats.find((c) => c.slug === 'sumatera')?.id ?? ''
+    CAT_RESEP = cats.find((c) => c.slug === 'resep')?.id ?? ''
+    AUTHOR = (await db.insert(authors).values({ siteId: SITE, name: 'Redaksi Uji', slug: 'redaksi' }).returning({ id: authors.id }))[0]?.id ?? ''
+    MEDIA = (await db.insert(media).values({ siteId: SITE, storageKey: `uji-${run}/foto.webp`, mimeType: 'image/webp', sizeBytes: 1000, width: 10, height: 10 }).returning({ id: media.id }))[0]?.id ?? ''
+    TAG = (await db.insert(tags).values({ siteId: SITE, name: 'Pedas', slug: 'pedas' }).returning({ id: tags.id }))[0]?.id ?? ''
+    await db.insert(menus).values({ siteId: SITE, location: 'footer', name: 'Menu bawah' })
+  })
+
+  afterAll(async () => {
+    if (SITE) await db.delete(sites).where(eq(sites.id, SITE))
+    await db.$client.end()
+  })
+
+  const article = (overrides: Record<string, unknown> = {}) => ({
+    title: `Uji ${run}`,
+    body: body(),
+    categoryId: CAT_SUMATERA,
+    authorId: AUTHOR,
+    featuredMediaId: MEDIA,
+    tagIds: [TAG],
+    ...overrides,
+  })
+
+  describe('artikel', () => {
+    it('buat draf: slug dari judul (unik per site), body_text, revisi 1, belum publik', async () => {
+      const a = await editor.createArticle(SITE, article(), USER)
+      const b = await editor.createArticle(SITE, article(), USER)
+      expect(a.slug).toBe(`uji-${run}`)
+      expect(b.slug).toBe(`uji-${run}-2`)
+      expect(a).toMatchObject({ status: 'DRAFT', version: 1, publishedAt: null, publicPath: null, tagIds: [TAG] })
+      const [row] = await db.select({ bodyText: articles.bodyText }).from(articles).where(eq(articles.id, a.id))
+      expect(row?.bodyText).toBe('Isi artikel uji. Bagian')
+      expect(await editor.listRevisions(SITE, a.id)).toMatchObject([{ revisionNo: 1, changeNote: 'Dibuat', createdBy: USER }])
+      const list = await editor.listArticles(SITE, { q: run, status: 'DRAFT' })
+      expect(list.items.map((i) => i.id)).toEqual(expect.arrayContaining([a.id, b.id]))
+      expect(list.items[0]).toMatchObject({ category: { id: CAT_SUMATERA, name: 'Sumatera' }, author: { name: 'Redaksi Uji' } })
+    })
+
+    it('input tidak valid ditolak dengan field yang jelas', async () => {
+      await rejects(editor.createArticle(SITE, article({ title: '' }), USER), 'invalid', 'title')
+      await rejects(editor.createArticle(SITE, article({ body: { version: 1, blocks: [{ type: 'carousel' }] } }), USER), 'invalid', 'body.blocks.0.type')
+      await rejects(editor.createArticle(SITE, article({ slug: 'Bukan Slug' }), USER), 'invalid', 'slug')
+      await rejects(editor.createArticle(SITE, article({ seo: { robots: 'index' } }), USER), 'invalid', 'seo.robots')
+      await rejects(editor.createArticle(SITE, article({ extra: 1 }), USER), 'invalid')
+      // Slug dipakai artikel lain di site yang sama; slug sama di site lain boleh.
+      await editor.createArticle(SITE, article({ slug: `dipakai-${run}` }), USER)
+      await rejects(editor.createArticle(SITE, article({ slug: `dipakai-${run}` }), USER), 'invalid', 'slug')
+      expect((await editor.createArticle(SITE, article({ slug: 'rendang-padang-empuk' }), USER)).slug).toBe('rendang-padang-empuk')
+    })
+
+    it('isolasi site: referensi dan artikel site lain tidak bisa dipakai atau disentuh', async () => {
+      await rejects(editor.createArticle(SITE, article({ categoryId: OTHER_CATEGORY }), USER), 'invalid', 'categoryId')
+      await rejects(editor.createArticle(SITE, article({ featuredMediaId: OTHER_MEDIA }), USER), 'invalid', 'featuredMediaId')
+      await rejects(editor.createArticle(SITE, article({ tagIds: [OTHER_TAG] }), USER), 'invalid', 'tagIds')
+      await rejects(editor.createArticle(SITE, article({ body: { version: 1, blocks: [{ type: 'image', mediaId: OTHER_MEDIA }] } }), USER), 'invalid', 'body')
+      await rejects(editor.createArticle(SITE, article({ seo: { og_image_id: OTHER_MEDIA } }), USER), 'invalid', 'seo.og_image_id')
+
+      const own = await editor.createArticle(SITE, article({ slug: `milik-uji-${run}` }), USER)
+      await rejects(editor.getArticle(OTHER, own.id), 'not-found')
+      await rejects(editor.updateArticle(OTHER, own.id, article({ categoryId: OTHER_CATEGORY }), 1, USER), 'not-found')
+      await rejects(editor.archiveArticle(OTHER, own.id, 1, USER), 'not-found')
+      expect((await editor.listArticles(OTHER, { q: run })).items).toEqual([])
+      await rejects(editor.getArticle(SITE, 'bukan-uuid'), 'not-found')
+    })
+
+    it('ubah: versi naik + revisi baru; versi lama -> conflict', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `versi-${run}` }), USER)
+      const b = await editor.updateArticle(SITE, a.id, article({ slug: a.slug, title: 'Judul baru', tagIds: [] }), 1, USER, 'Ganti judul')
+      expect(b).toMatchObject({ version: 2, title: 'Judul baru', tagIds: [] })
+      await rejects(editor.updateArticle(SITE, a.id, article({ slug: a.slug }), 1, USER), 'conflict')
+      expect((await editor.listRevisions(SITE, a.id)).map((r) => [r.revisionNo, r.changeNote])).toEqual([[2, 'Ganti judul'], [1, 'Dibuat']])
+    })
+
+    it('terbit, lalu slug berubah: redirect 301 dari URL lama, rantai diratakan, path yang terisi lagi dibebaskan', async () => {
+      const s1 = `terbit-${run}`
+      const s2 = `terbit-baru-${run}`
+      const s3 = `terbit-final-${run}`
+      const published = { status: 'PUBLISHED', publishedAt: '2026-01-05T03:00:00Z' }
+      const a = await editor.createArticle(SITE, article({ slug: s1, ...published }), USER)
+      expect(a.publicPath).toBe(`/sumatera/${s1}`)
+      expect(await repos.content.getPublishedArticle(SITE, s1)).not.toBeNull()
+
+      const b = await editor.updateArticle(SITE, a.id, article({ slug: s2, ...published }), 1, USER)
+      expect(b.publicPath).toBe(`/sumatera/${s2}`)
+      expect(await repos.content.findRedirect(SITE, `/sumatera/${s1}`)).toEqual({ toPath: `/sumatera/${s2}`, statusCode: 301 })
+
+      // Kategori ikut berubah: URL berubah, rantai s1 -> s2 menjadi s1 -> s3.
+      await editor.updateArticle(SITE, a.id, article({ slug: s3, categoryId: CAT_RESEP, ...published }), 2, USER)
+      expect(await repos.content.findRedirect(SITE, `/sumatera/${s1}`)).toEqual({ toPath: `/resep/${s3}`, statusCode: 301 })
+      expect(await repos.content.findRedirect(SITE, `/sumatera/${s2}`)).toEqual({ toPath: `/resep/${s3}`, statusCode: 301 })
+
+      // Kembali ke URL pertama: redirect dari URL itu dihapus (kini berisi artikel lagi).
+      await editor.updateArticle(SITE, a.id, article({ slug: s1, ...published }), 3, USER)
+      expect(await repos.content.findRedirect(SITE, `/sumatera/${s1}`)).toBeNull()
+      expect(await repos.content.findRedirect(SITE, `/resep/${s3}`)).toEqual({ toPath: `/sumatera/${s1}`, statusCode: 301 })
+    })
+
+    it('draf yang ganti slug tidak membuat redirect; terjadwal belum publik', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `draf-${run}` }), USER)
+      await editor.updateArticle(SITE, a.id, article({ slug: `draf-lain-${run}` }), 1, USER)
+      expect(await repos.content.findRedirect(SITE, `/sumatera/draf-${run}`)).toBeNull()
+
+      const future = await editor.createArticle(SITE, article({ slug: `jadwal-${run}`, status: 'PUBLISHED', publishedAt: '2099-01-01T00:00:00Z' }), USER)
+      expect(future.publicPath).toBeNull()
+      expect(await repos.content.getPublishedArticle(SITE, `jadwal-${run}`)).toBeNull()
+    })
+
+    it('PUBLISHED tanpa tanggal = sekarang; arsip menyembunyikan dan mencatat revisi', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `arsip-${run}`, status: 'PUBLISHED' }), USER)
+      expect(a.publishedAt).toBeInstanceOf(Date)
+      expect(a.publicPath).toBe(`/sumatera/arsip-${run}`)
+      const archived = await editor.archiveArticle(SITE, a.id, 1, USER)
+      expect(archived).toMatchObject({ status: 'ARCHIVED', version: 2, publicPath: null })
+      expect(await repos.content.getPublishedArticle(SITE, `arsip-${run}`)).toBeNull()
+      expect((await editor.listRevisions(SITE, a.id))[0]).toMatchObject({ revisionNo: 2, changeNote: 'Diarsipkan' })
+    })
+  })
+
+  describe('perbaikan code review 4.1', () => {
+    it('tanggal terbit: tidak dikirim = dipertahankan, null = dikosongkan, PUBLISHED + null = sekarang', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `tanggal-${run}`, status: 'PUBLISHED', publishedAt: '2099-01-01T00:00:00Z' }), USER)
+      const kept = await editor.updateArticle(SITE, a.id, article({ slug: a.slug, status: 'DRAFT' }), 1, USER)
+      expect(kept.publishedAt?.toISOString()).toBe('2099-01-01T00:00:00.000Z')
+      const cleared = await editor.updateArticle(SITE, a.id, article({ slug: a.slug, status: 'DRAFT', publishedAt: null }), 2, USER)
+      expect(cleared.publishedAt).toBeNull()
+      const now = await editor.updateArticle(SITE, a.id, article({ slug: a.slug, status: 'PUBLISHED', publishedAt: null }), 3, USER)
+      expect(now.publicPath).toBe(`/sumatera/tanggal-${run}`)
+    })
+
+    it('arsip tidak memvalidasi ulang isi lama (seo longgar tetap bisa diarsipkan)', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `longgar-${run}`, status: 'PUBLISHED' }), USER)
+      await db.update(articles).set({ seo: { title: 'Lama', keyLama: true } }).where(eq(articles.id, a.id))
+      expect((await editor.archiveArticle(SITE, a.id, 1, USER)).status).toBe('ARCHIVED')
+    })
+
+    it('dua simpan bersamaan dengan slug sama: satu berhasil, yang lain galat field slug (bukan error database)', async () => {
+      const results = await Promise.allSettled([0, 1, 2].map(() => editor.createArticle(SITE, article({ slug: `balapan-${run}` }), USER)))
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      for (const r of results.filter((x): x is PromiseRejectedResult => x.status === 'rejected')) {
+        expect(r.reason).toBeInstanceOf(EditorError)
+        expect((r.reason as EditorError).issues.map((i) => i.field)).toEqual(['slug'])
+      }
+    })
+
+    it('gambar OG halaman dari site lain dilaporkan di seo.og_image_id', async () => {
+      await rejects(editor.createPage(SITE, { title: 'x', body: body(), seo: { og_image_id: OTHER_MEDIA } }), 'invalid', 'seo.og_image_id')
+    })
+  })
+
+  describe('halaman', () => {
+    it('buat, ubah slug halaman terbit -> redirect; updatedAt lama -> conflict', async () => {
+      const p = await editor.createPage(SITE, { title: `Halaman ${run}`, slug: `hal-${run}`, body: body(), status: 'PUBLISHED' })
+      const q = await editor.updatePage(SITE, p.id, { title: p.title, slug: `hal-baru-${run}`, body: body('Ubah'), status: 'PUBLISHED' }, p.updatedAt.toISOString())
+      expect(q.slug).toBe(`hal-baru-${run}`)
+      expect(await repos.content.findRedirect(SITE, `/p/hal-${run}`)).toEqual({ toPath: `/p/hal-baru-${run}`, statusCode: 301 })
+      await rejects(editor.updatePage(SITE, p.id, { title: 'x', body: body(), status: 'DRAFT' }, p.updatedAt.toISOString()), 'conflict')
+      await rejects(editor.updatePage(OTHER, p.id, { title: 'x', body: body() }, q.updatedAt.toISOString()), 'not-found')
+    })
+  })
+
+  describe('kategori', () => {
+    it('induk bertingkat, siklus ditolak, slug cadangan ditolak, ganti slug -> redirect', async () => {
+      const parent = await editor.createCategory(SITE, { name: `Induk ${run}` })
+      const child = await editor.createCategory(SITE, { name: 'Anak', slug: `anak-${run}`, parentId: parent.id })
+      expect(child.parentId).toBe(parent.id)
+      await rejects(editor.updateCategory(SITE, parent.id, { name: parent.name, parentId: child.id }, parent.updatedAt.toISOString()), 'invalid', 'parentId')
+      await rejects(editor.createCategory(SITE, { name: 'Admin', slug: 'admin' }), 'invalid', 'slug')
+      await rejects(editor.createCategory(SITE, { name: 'X', parentId: OTHER_CATEGORY }), 'invalid', 'parentId')
+      // Nama "Admin" tanpa slug: slug cadangan dilewati, jadi admin-2.
+      expect((await editor.createCategory(SITE, { name: 'Admin' })).slug).toBe('admin-2')
+
+      const renamed = await editor.updateCategory(SITE, parent.id, { name: parent.name, slug: `induk-baru-${run}` }, parent.updatedAt.toISOString())
+      expect(await repos.content.findRedirect(SITE, `/category/${parent.slug}`)).toEqual({ toPath: `/category/induk-baru-${run}`, statusCode: 301 })
+      const hidden = await editor.updateCategory(SITE, parent.id, { name: parent.name, slug: renamed.slug }, renamed.updatedAt.toISOString(), 'HIDDEN')
+      expect(hidden.status).toBe('HIDDEN')
+    })
+  })
+
+  describe('tag', () => {
+    it('buat, ubah, hapus dengan token updatedAt', async () => {
+      const t = await editor.createTag(SITE, { name: `Tag ${run}` })
+      const u = await editor.updateTag(SITE, t.id, { name: 'Tag ganti', slug: `tag-ganti-${run}` }, t.updatedAt.toISOString())
+      await rejects(editor.deleteTag(SITE, t.id, t.updatedAt.toISOString()), 'conflict')
+      await rejects(editor.deleteTag(OTHER, t.id, u.updatedAt.toISOString()), 'not-found')
+      await editor.deleteTag(SITE, t.id, u.updatedAt.toISOString())
+      expect((await editor.listTags(SITE)).some((x) => x.id === t.id)).toBe(false)
+    })
+  })
+
+  describe('menu', () => {
+    it('item menu: target milik site, induk di menu yang sama, tanpa siklus', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `menu-${run}` }), USER)
+      const item = await editor.createMenuItem(SITE, 'footer', { label: `${run} artikel`, type: 'ARTICLE', targetId: a.id })
+      const sub = await editor.createMenuItem(SITE, 'footer', { label: `${run} sub`, type: 'URL', url: 'https://contoh.id', parentId: item.id })
+      expect((await editor.getMenu(SITE, 'footer')).items.map((i) => i.id)).toEqual(expect.arrayContaining([item.id, sub.id]))
+
+      await rejects(editor.createMenuItem(SITE, 'footer', { label: `${run} x`, type: 'CATEGORY', targetId: OTHER_CATEGORY }), 'invalid', 'targetId')
+      await rejects(editor.createMenuItem(SITE, 'footer', { label: `${run} x`, type: 'URL', url: 'javascript:alert(1)' }), 'invalid', 'url')
+      await rejects(editor.createMenuItem(SITE, 'footer', { label: `${run} x`, type: 'ROUTE', url: '//evil.test' }), 'invalid', 'url')
+      await rejects(editor.updateMenuItem(SITE, 'footer', item.id, { label: item.label, type: 'ARTICLE', targetId: a.id, parentId: sub.id }, item.updatedAt.toISOString()), 'invalid', 'parentId')
+      await rejects(editor.createMenuItem(SITE, 'tidak-ada', { label: 'x', type: 'ROUTE', url: '/' }), 'not-found')
+      await rejects(editor.deleteMenuItem(OTHER, 'footer', item.id, item.updatedAt.toISOString()), 'not-found')
+
+      const renamed = await editor.updateMenuItem(SITE, 'footer', item.id, { label: `${run} ganti`, type: 'ARTICLE', targetId: a.id }, item.updatedAt.toISOString())
+      expect(renamed.label).toBe(`${run} ganti`)
+      await editor.deleteMenuItem(SITE, 'footer', item.id, renamed.updatedAt.toISOString())
+      // Sub-item ikut terhapus (CASCADE).
+      expect((await editor.getMenu(SITE, 'footer')).items.some((i) => i.id === sub.id)).toBe(false)
+    })
+  })
+})
+```
+
+9. Cari sumber kegagalan acak yang lain dengan cara yang sama. `repositories.test.ts` membuat site fixture ACTIVE sementara, sehingga test yang mengasumsikan database hanya berisi data seed (`seed-consistency.test.ts` dan daftar site superadmin di `user-repository.test.ts`) kadang ikut membaca data itu. Batasi keduanya ke dua site seed.
+
+10. Buktikan test penguncian bisa gagal: hapus sementara pengecekan versi dan syarat `version` di UPDATE, lalu jalankan; test "versi lama -> conflict" harus GAGAL. Kembalikan, lalu jalankan `pnpm test` beberapa kali berturut-turut untuk memastikan tidak ada lagi kegagalan acak.
+

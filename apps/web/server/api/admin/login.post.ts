@@ -36,7 +36,9 @@ export default defineEventHandler(async (event) => {
   }
 
   loginThrottle.success(ip, input.email)
-  // Sesi baru setiap login (id sesi lama tidak dipakai ulang).
+  // Data sesi lama dibuang. Catatan: h3 memakai ulang id sesi dari cookie
+  // yang sama; aman karena isi cookie tersegel (tidak bisa dipalsukan) dan
+  // cookie yang ditanam pihak lain tidak membawa userId.
   await session.clear()
   await session.update({ userId: candidate.id })
   await users.recordLogin(candidate.id)

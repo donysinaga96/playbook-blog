@@ -345,7 +345,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 @@include packages/db/src/client.ts ts@@
 
-9. Tulis entry point paket. Operator query (`eq`, `and`, ...) diekspor ulang dari sini, sehingga hanya paket `db` yang bergantung langsung pada `drizzle-orm` dan hanya ada satu salinan Drizzle saat runtime:
+9. Tulis entry point paket (file di bawah sudah memuat operator tambahan `ne`, `like`, dan `notInArray` dari bab-bab berikutnya). Operator query (`eq`, `and`, ...) diekspor ulang dari sini, sehingga hanya paket `db` yang bergantung langsung pada `drizzle-orm` dan hanya ada satu salinan Drizzle saat runtime:
 
 @@include packages/db/src/index.ts ts@@
 
@@ -383,7 +383,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 @@include packages/core/src/site/settings.test.ts ts@@
 
-5. Tulis test konsistensi yang membaca database: semua body di database lolos skema block, `body_text` sama dengan hasil `extractBodyText(body)`, dan settings setiap site lolos skema. Test ini menangkap data seed atau data lama yang tidak lagi cocok dengan aturan aplikasi:
+5. Tulis test konsistensi yang membaca database (versi di bawah dibatasi ke dua site seed; alasannya di bab "Menyimpan Konten dari Admin"): semua body di database lolos skema block, `body_text` sama dengan hasil `extractBodyText(body)`, dan settings setiap site lolos skema. Test ini menangkap data seed atau data lama yang tidak lagi cocok dengan aturan aplikasi:
 
 @@include packages/core/src/content/seed-consistency.test.ts ts@@
 
@@ -415,7 +415,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 @@include packages/core/src/repositories/menu-repository.ts ts@@
 
-7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses:
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin"):
 
 @@include packages/core/src/repositories/index.ts ts@@
 
@@ -1133,7 +1133,7 @@ done
 
 @@include templates/base/src/components/BlockRenderer.vue vue@@
 
-4. Baca kolom `seo` konten. Bentuknya mengikuti komentar DDL: `title`, `description`, `canonical`, `og_image_id`, `robots`. Setiap key divalidasi sendiri; nilai yang salah diabaikan, bukan menggagalkan halaman:
+4. Baca kolom `seo` konten (skema ketat `contentSeoSchema` untuk menulis dari admin ditambahkan di bab "Menyimpan Konten dari Admin"). Bentuknya mengikuti komentar DDL: `title`, `description`, `canonical`, `og_image_id`, `robots`. Setiap key divalidasi sendiri; nilai yang salah diabaikan, bukan menggagalkan halaman:
 
 @@include packages/core/src/content/seo.ts ts@@
 
@@ -1602,6 +1602,50 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 18. Masukkan ke job CI `build`: variabel `ADMIN_HOST`, `ADMIN_SESSION_SECRET`, dan `ADMIN_PASSWORD` khusus CI (database dan server CI dibuang setelah job), lalu `pnpm admin:create --email admin@local.test --reset-password` dan `pnpm --filter @framework/web gate:admin` setelah gate isolasi site.
 
-19. Hal lain dari code review yang ikut diperbaiki: segmen `admin` dicadangkan di `RESERVED_SEGMENTS` (`packages/core/src/views/urls.ts`) agar konten tidak memakai path `/admin`; IP klien di belakang reverse proxy dibaca dari `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (`clientIp`); API admin non-GET di domain alias mode single dijawab 404 karena 301 mengubah POST menjadi GET; `ADMIN_PASSWORD` hanya dipakai CLI tanpa terminal; prompt password menyimpan sisa input yang di-paste; dan hash palsu yang gagal dibuat tidak disimpan.
+19. Hal lain dari code review yang ikut diperbaiki: segmen `admin` dicadangkan di `RESERVED_SEGMENTS` (`packages/core/src/views/urls.ts`) agar konten tidak memakai path `/admin`; IP klien di belakang reverse proxy dibaca dari entri paling kanan `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (`clientIp`; entri di kirinya bisa diisi klien sesukanya), user yang kehilangan semua site kehilangan sesinya; API admin non-GET di domain alias mode single dijawab 404 karena 301 mengubah POST menjadi GET; `ADMIN_PASSWORD` hanya dipakai CLI tanpa terminal; prompt password menyimpan sisa input yang di-paste; dan hash palsu yang gagal dibuat tidak disimpan.
 
 20. Coba di browser: http://admin.localhost:3000/admin mengarah ke halaman login; setelah login, halaman admin menampilkan nama dan daftar site. Path `/admin` di http://tekno.localhost:3000 harus 404.
+
+# Menyimpan Konten dari Admin
+
+1. Pahami aturannya sebelum menulis. Operasi tulis mengikuti aturan yang sama dengan repository baca: setiap fungsi menerima siteId sebagai argumen pertama, dan setiap baris yang dibaca atau ditulis dibatasi site itu. Tambahannya:
+   - Referensi ke data lain (kategori, penulis, media, tag, gambar di body, gambar OG, induk, target menu) harus milik site yang sama. Data site lain dijawab "tidak ditemukan" dengan galat yang rapi, bukan error database.
+   - Simpan bersamaan dari dua tab tidak boleh saling menimpa diam-diam (penguncian optimistis).
+   - Slug dibuat dari judul bila kosong, unik per site, dan tidak boleh memakai segmen route sistem.
+   - Setiap simpan artikel menulis revisi, dan URL publik yang berubah meninggalkan redirect 301.
+
+2. Tulis galat operasi tulis. Lapisan API nanti memetakannya ke 404, 409, dan 422:
+
+@@include packages/core/src/editor/errors.ts ts@@
+
+3. Tulis util slug. Huruf beraksen diubah ke huruf dasarnya, hasilnya selalu cocok dengan CHECK `*_slug_format` di database:
+
+@@include packages/core/src/editor/slug.ts ts@@
+
+@@include packages/core/src/editor/slug.test.ts ts@@
+
+4. Tambahkan skema SEO yang ketat untuk menulis di `packages/core/src/content/seo.ts` (`contentSeoSchema`: semua key opsional, key tidak dikenal dan nilai salah ditolak). Skema baca tetap longgar, agar halaman publik tidak gagal karena data lama.
+
+5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review):
+
+@@include packages/core/src/editor/inputs.ts ts@@
+
+6. Tulis repository editor. Hal-hal yang mudah terlewat:
+   - Tabel tanpa kolom `version` (halaman, kategori, tag, item menu) memakai `updatedAt` sebagai token konkurensi. PostgreSQL menyimpan mikrodetik, Date JavaScript hanya milidetik, jadi pembandingannya memakai `date_trunc('milliseconds', ...)`.
+   - Penguncian artikel dijaga dua kali: pengecekan versi di awal, dan `WHERE version = ...` di UPDATE, yang tetap menolak bila dua transaksi lolos pengecekan awal bersamaan.
+   - Path lama untuk redirect dihitung dengan URL builder yang sama dengan halaman publik, jadi pola permalink setiap site ikut dihormati. Rantai diratakan (A→B lalu B→C menjadi A→C dan B→C), dan redirect yang berangkat dari path yang kini berisi konten dihapus.
+   - Pengecekan slug terjadi sebelum INSERT, jadi dua simpan bersamaan bisa memilih slug yang sama. Pelanggaran unique constraint (kode 23505) diubah menjadi galat field `slug`.
+   - Arsip hanya mengubah status, versi, dan revisi, tanpa memvalidasi ulang isi, agar artikel lama dengan data yang tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
+
+@@include packages/core/src/editor/editor-repository.ts ts@@
+
+7. Daftarkan sebagai `editor` di `createRepositories` dan ekspor modul `editor/*` dari `packages/core/src/index.ts`. Tipe daftar artikel admin bernama `AdminArticleQuery` karena `ArticleListQuery` sudah dipakai repository baca.
+
+8. Uji terhadap database dev, tetapi jangan menulis ke site seed. File test lain membaca data seed secara paralel: artikel uji yang terbit di site kuliner sempat membuat test RSS, daftar penulis, dan snapshot home gagal secara acak. Test ini membuat site uji sendiri berstatus `ARCHIVED` (tidak ditemukan resolver dan tidak muncul di daftar site admin) dan menghapusnya di akhir; seluruh isinya ikut terhapus lewat CASCADE:
+
+@@include packages/core/src/editor/editor-repository.test.ts ts@@
+
+9. Cari sumber kegagalan acak yang lain dengan cara yang sama. `repositories.test.ts` membuat site fixture ACTIVE sementara, sehingga test yang mengasumsikan database hanya berisi data seed (`seed-consistency.test.ts` dan daftar site superadmin di `user-repository.test.ts`) kadang ikut membaca data itu. Batasi keduanya ke dua site seed.
+
+10. Buktikan test penguncian bisa gagal: hapus sementara pengecekan versi dan syarat `version` di UPDATE, lalu jalankan; test "versi lama -> conflict" harus GAGAL. Kembalikan, lalu jalankan `pnpm test` beberapa kali berturut-turut untuk memastikan tidak ada lagi kegagalan acak.
+

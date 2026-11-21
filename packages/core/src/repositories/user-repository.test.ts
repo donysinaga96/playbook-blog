@@ -1,5 +1,7 @@
 // Repository user admin terhadap database dev yang di-seed (dilewati tanpa
 // DATABASE_URL). User test dibuat dan dihapus di sini; user seed tidak diubah.
+// File test lain membuat site sementara secara paralel, jadi daftar site
+// superadmin hanya dibandingkan untuk site seed.
 import { createDatabase, eq, users } from '@framework/db'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createRepositories, UserInputError } from './index'
@@ -17,7 +19,8 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository user admin', () => {
     const admin = await repos.users.findForLogin('Admin@Local.Test ')
     if (!admin) throw new Error('admin seed tidak ada')
     expect(admin).toMatchObject({ email: 'admin@local.test', isSuperadmin: true })
-    expect((await repos.users.listSites(admin, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([
+    const seed = <T extends { code: string }>(list: T[]) => list.filter((s) => ['dapur-nusantara', 'kabar-tekno'].includes(s.code))
+    expect(seed(await repos.users.listSites(admin, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([
       ['dapur-nusantara', 'OWNER'],
       ['kabar-tekno', 'OWNER'],
     ])
