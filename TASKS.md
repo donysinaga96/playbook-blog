@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 22 / 27 | — |
+| M4 — Admin minimal | 25 / 27 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, 4.2, dan 4.3 (22 Nov 2026) selesai; berikutnya 4.4 (pengaturan tema). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, 4.2, 4.3, dan 4.4 (22 Nov 2026) selesai; berikutnya 4.6 (gate M4: artikel terjadwal tampil tepat waktu). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -258,10 +258,11 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - Security review (22 Nov 2026): tidak ada temuan. Catatan privasi: metadata EXIF (termasuk GPS) belum dibuang dari file yang diunggah (butuh pemrosesan gambar; dicatat di dev-setup). `gate-admin` 36 pemeriksaan (upload asli, SVG menyamar 415, tanpa alt 422, nosniff, media site lain 404, media uji dihapus).
 
 **4.4 Pengaturan tema [D]**
-- [ ] Form dari skema manifest: tokens, options, layout per section
-- [ ] [D] Preview config draf tanpa mengubah theme aktif
-- [ ] Simpan: validasi, lalu tulis config dalam versi template terpasang
+- [x] Form dari skema manifest: tokens, options, layout per section — `describeTemplate` (JSON Schema dari Zod, label dari `.meta()`), `SchemaForm`, `LayoutEditor` (bawaan / susunan sendiri / tanpa section)
+- [x] [D] Preview config draf tanpa mengubah theme aktif — `/admin/preview/<site>/<path>?draft=<id>` SSR, draf di memori per id (bukan cookie), media lewat `/admin/preview-media`, noindex
+- [x] Simpan: validasi, lalu tulis config dalam versi template terpasang — `validateThemeDraft` ketat + `saveTheme` (kunci site, satu aktif, versi terpasang)
 - › Skill: `frontend-design:frontend-design` untuk form token (warna, font) dan panel preview
+- Code review (level high, 22 Nov 2026, diff 4.4): 10 temuan diperbaiki: template belum disimpan dibuka dengan bawaan base, template aktif tak terdaftar = layar kosong, simpan tema bersamaan = 500 (kini kunci site), kode site seperti `media` membuat pratinjau menampilkan layar admin (kini halaman statis `admin/preview`), draf di cookie bisa > 4 KB dan dua tab saling menimpa (kini memori per id), simpan membuang draf template lain, form pencarian di pratinjau, "belum disimpan" karena urutan key, batas section tertulis langsung. Build produksi merender galat di `/admin/**` sebagai SPA 404: route pratinjau kini menjawab teks dengan status benar (ditangkap gate). `gate-admin` 44 pemeriksaan.
 
 **4.5 Revisi dan redirect**
 - [x] Setiap update artikel: snapshot ke `article_revisions` dalam transaksi yang sama, `version` naik — dikerjakan di 4.1 (satu transaksi dengan update)

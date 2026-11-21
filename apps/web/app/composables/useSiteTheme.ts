@@ -21,6 +21,11 @@ export interface PageState {
   seo: SeoMeta
 }
 
+/** true saat halaman dirender sebagai pratinjau tema di admin (M4 4.4). */
+export function useThemePreview() {
+  return useState<boolean>('theme-preview', () => false)
+}
+
 /** Null untuk request tanpa site atau tanpa halaman (mis. /api yang tidak ada). */
 export function usePageState() {
   return useState<PageState | null>('site-page', () => null)

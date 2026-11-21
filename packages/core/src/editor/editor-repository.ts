@@ -32,6 +32,7 @@ import {
   or,
   pages,
   redirects,
+  siteThemes,
   sites,
   sql,
   tags,
@@ -137,6 +138,26 @@ export interface NewMediaFile {
   sizeBytes: number
   width: number
   height: number
+}
+
+export interface ThemeRecord {
+  templateKey: string
+  templateVersion: string
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  layouts: Record<string, unknown>
+  isActive: boolean
+  updatedAt: Date
+}
+
+/** Config tema yang sudah divalidasi skema manifest (validateThemeDraft di template-kit). */
+export interface ThemeSaveInput {
+  templateKey: string
+  /** Versi template terpasang: config ditulis dalam bentuk versi ini (migrateConfig selesai). */
+  templateVersion: string
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  layouts: Record<string, unknown>
 }
 
 export interface RevisionItem {
@@ -415,6 +436,15 @@ export function createEditorRepository(ctx: RepositoryContext) {
     return menu
   }
 
+  async function themesOf(tx: Db, siteId: SiteId): Promise<ThemeRecord[]> {
+    const rows = await tx
+      .select({ templateKey: siteThemes.templateKey, templateVersion: siteThemes.templateVersion, tokens: siteThemes.tokens, options: siteThemes.options, layouts: siteThemes.layouts, isActive: siteThemes.isActive, updatedAt: siteThemes.updatedAt })
+      .from(siteThemes)
+      .where(eq(siteThemes.siteId, siteId))
+      .orderBy(desc(siteThemes.isActive), asc(siteThemes.templateKey))
+    return rows.map((r) => ({ ...r, tokens: r.tokens as Record<string, unknown>, options: r.options as Record<string, unknown>, layouts: r.layouts as Record<string, unknown> }))
+  }
+
   const api = {
     // ======================= Pilihan untuk form =======================
 
@@ -440,6 +470,45 @@ export function createEditorRepository(ctx: RepositoryContext) {
         .limit(paging.pageSize)
         .offset(paging.offset)
       return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    // ======================= Tema =======================
+
+    /** Config tersimpan per template (aktif dan tidak). */
+    async listThemes(siteId: SiteId): Promise<ThemeRecord[]> {
+      return themesOf(db, siteId)
+    },
+
+    /**
+     * Simpan config tema dan jadikan aktif, dalam satu transaksi: theme lain
+     * dinonaktifkan dulu (satu theme aktif per site). expectedUpdatedAt =
+     * updatedAt baris template itu saat form dibuka; null = belum pernah
+     * disimpan untuk template ini.
+     */
+    async saveTheme(siteId: SiteId, input: ThemeSaveInput, expectedUpdatedAt: string | null): Promise<ThemeRecord> {
+      const token = expectedUpdatedAt === null ? null : parse(updatedAtSchema, expectedUpdatedAt)
+      return db.transaction(async (tx) => {
+        // Kunci baris site: dua simpan bersamaan diantrekan, yang kedua melihat
+        // hasil yang pertama (conflict), bukan melanggar uq_site_themes_one_active.
+        const [locked] = await tx.select({ id: sites.id }).from(sites).where(eq(sites.id, siteId)).for('update')
+        if (!locked) throw notFound('Site')
+        const [current] = await tx.select({ updatedAt: siteThemes.updatedAt }).from(siteThemes)
+          .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.templateKey, input.templateKey))).limit(1)
+        if (current && (token === null || current.updatedAt.getTime() !== new Date(token).getTime())) throw conflict('Tema')
+        if (!current && token !== null) throw conflict('Tema')
+        await tx.update(siteThemes).set({ isActive: false, updatedAt: sql`now()` })
+          .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.isActive, true), ne(siteThemes.templateKey, input.templateKey)))
+        const values = { templateVersion: input.templateVersion, tokens: input.tokens, options: input.options, layouts: input.layouts, isActive: true, updatedAt: sql`now()` }
+        const [row] = current
+          ? await tx.update(siteThemes).set(values)
+            .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.templateKey, input.templateKey), sameMillis(siteThemes.updatedAt, new Date(token as string).toISOString())))
+            .returning({ templateKey: siteThemes.templateKey })
+          : await tx.insert(siteThemes).values({ siteId, templateKey: input.templateKey, ...values }).returning({ templateKey: siteThemes.templateKey })
+        if (!row) throw conflict('Tema')
+        const saved = (await themesOf(tx, siteId)).find((t) => t.templateKey === input.templateKey)
+        if (!saved) throw new Error('tema tidak tersimpan')
+        return saved
+      })
     },
 
     // ======================= Media =======================

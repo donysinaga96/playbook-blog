@@ -2,7 +2,8 @@
 //
 // 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
 // login salah/benar, sesi, logout, dan rate limit login.
-// 4.2: API per site (404 site lain, 422 input salah, 409 versi lama). Alur buat-jadwalkan-tampilkan artikel
+// 4.2: API per site (404 site lain, 422 input salah, 409 versi lama).
+// 4.3: upload media. 4.4: tema dan pratinjau. Alur buat-jadwalkan-tampilkan artikel
 // ditambahkan di 4.6.
 //
 // Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
@@ -157,6 +158,31 @@ try {
     r = await admin(`/api/admin/sites/${tekno.id}/media/${uploadedMedia.id}?updatedAt=${encodeURIComponent(uploadedMedia.updatedAt)}`, { method: 'DELETE', cookie: adminCookie })
     check('hapus media uji', r.status === 200, String(r.status))
   }
+
+  // Tema (4.4): deskripsi form dari manifest, draf salah ditolak, pratinjau
+  // SSR noindex dari sesi. Tidak menyimpan apa pun.
+  r = await admin(`/api/admin/sites/${tekno.id}/theme`, { cookie: adminCookie })
+  const theme = r.status === 200 ? JSON.parse(r.body) : null
+  check('tema: template dengan skema form', r.status === 200 && theme.templates.some((x) => x.key === 'magazine' && x.tokens.schema.properties.color), String(r.status))
+  r = await admin(`/api/admin/sites/${tekno.id}/theme/preview`, { method: 'POST', cookie: adminCookie, body: { templateKey: 'magazine', draft: { tokens: { color: { primary: 'merah' } } } } })
+  check('pratinjau draf salah 422', r.status === 422, String(r.status))
+  const magazine = theme?.templates.find((x) => x.key === 'magazine')
+  const draft = { tokens: { ...magazine?.config.tokens, color: { ...magazine?.config.tokens.color, primary: '#123456' } }, options: magazine?.config.options, layouts: {} }
+  r = await admin(`/api/admin/sites/${tekno.id}/theme/preview`, { method: 'POST', cookie: adminCookie, body: { templateKey: 'magazine', draft } })
+  const preview = r.status === 200 ? JSON.parse(r.body) : { base: '/admin/preview/kabar-tekno', draftId: '' }
+  const previewUrl = `${preview.base}/?draft=${preview.draftId}`
+  r = await admin(previewUrl, { cookie: adminCookie })
+  check('pratinjau SSR memakai draf, noindex', r.status === 200 && r.body.includes('--color-primary:#123456') && r.headers['x-robots-tag']?.includes('noindex'), `${r.status} ${r.headers['x-robots-tag']}`)
+  r = await admin(`${preview.base}/?draft=00000000-0000-4000-8000-000000000000`, { cookie: adminCookie })
+  check('id draf tidak dikenal: pratinjau memakai theme aktif', r.status === 200 && !r.body.includes('--color-primary:#123456'), String(r.status))
+  r = await admin(previewUrl)
+  check('pratinjau tanpa sesi ditolak, tanpa isi site', r.status === 401 && !r.body.includes('--color-primary'), `${r.status}`)
+  r = await requestWithHost(port, { path: '/', host: siteHost })
+  check('pratinjau tidak mengubah site', r.status === 200 && !r.body.includes('--color-primary:#123456'), String(r.status))
+  r = await admin('/admin/preview-media/kabar-tekno/logo.svg')
+  check('media pratinjau tanpa sesi 401', r.status === 401, `${r.status} ${r.body.slice(0, 160)}`)
+  r = await admin('/admin/preview-media/kabar-tekno/logo.svg', { cookie: adminCookie })
+  check('media pratinjau dengan sesi: diizinkan (file seed tidak ada di build = 404 dari route)', r.status === 200 || (r.status === 404 && r.body.startsWith('Media tidak ditemukan')), `${r.status} ${r.body.slice(0, 160)}`)
 
   // User yang hanya anggota satu site tidak bisa membuka site lain.
   r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })

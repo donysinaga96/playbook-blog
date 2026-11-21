@@ -9,6 +9,8 @@ export default defineNuxtConfig({
   routeRules: {
     '/admin': { ssr: false },
     '/admin/**': { ssr: false },
+    // Pratinjau tema: halaman publik yang dirender di server (ADR-007).
+    '/admin/preview/**': { ssr: true },
   },
   // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
   // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.

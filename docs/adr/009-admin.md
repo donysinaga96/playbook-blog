@@ -64,6 +64,16 @@ harus diputuskan sebelum kode:
    - Respons API admin `Cache-Control: no-store`.
    - `/security-review` setelah 4.0, 4.3 (upload), dan seluruh M4.
 
+8. **Pratinjau tema** (usulan M4-D, M4 4.4). `/admin/preview/<kode-site>/<path>?draft=<id>`
+   dirender SSR (`routeRules` `ssr: true`) dengan pembangun halaman publik dan config draf.
+   Draf disimpan di memori proses per id (milik user dan site itu, kedaluwarsa 30 menit),
+   bukan di cookie sesi: cookie tersegel bisa melewati ~4 KB dan dibuang browser tanpa galat,
+   dan satu draf per sesi membuat dua tab saling menimpa. Respons `noindex`, `no-store`,
+   `X-Frame-Options: SAMEORIGIN`; media lewat `/admin/preview-media/<storage_key>` (wajib
+   sesi, kode site milik user). Halaman Vue-nya `pages/admin/preview/[...path].vue`: segmen
+   statis selalu menang atas `pages/admin/[site]/*`. Akibatnya kode site `preview` dan `login`
+   bertabrakan dengan route admin; kode itu dicadangkan saat pembuatan site ada di admin.
+
 ## Alternatif yang ditolak
 
 - **Admin di setiap domain site** (mode multi). Cookie sesi terpisah per domain, jadi admin

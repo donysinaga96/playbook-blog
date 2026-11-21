@@ -20,5 +20,6 @@ export default defineNuxtPlugin(() => {
   const { templateKey, templateVersion, rootClass, tokens, options, css } = context.theme
   useSiteTheme().value = { templateKey, templateVersion, rootClass, tokens, options, css }
   usePageState().value = page
+  useThemePreview().value = Boolean(context.themePreview)
   if (page.status !== 200) setResponseStatus(event, page.status)
 })

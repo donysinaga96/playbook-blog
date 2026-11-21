@@ -1097,9 +1097,9 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 
 @@include apps/web/app/composables/useSiteTheme.ts ts@@
 
-14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` (import registry menjadi `'../templates'`) dan `app.vue` tinggal `<NuxtPage />`; file di bawah adalah lokasi barunya:
+14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` dan `app.vue` tinggal `<NuxtPage />`; di bab "Mengatur Tema dari Admin" isinya pindah lagi ke komponen `app/components/PublicPage.vue` (dipakai juga pratinjau tema). File di bawah adalah lokasi terakhirnya:
 
-@@include apps/web/app/pages/[...slug].vue vue@@
+@@include apps/web/app/components/PublicPage.vue vue@@
 
 15. Uji semua jenis halaman di dev:
 
@@ -1182,7 +1182,7 @@ done
 
 13. Pasang metadata di `app.vue` (sejak bab "Membangun Login Admin": `app/pages/[...slug].vue`) dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
 
-@@include apps/web/app/pages/[...slug].vue vue@@
+@@include apps/web/app/components/PublicPage.vue vue@@
 
 @@include apps/web/app/composables/useSiteTheme.ts ts@@
 
@@ -1781,4 +1781,58 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 ```
 
 12. Catat batasnya: metadata EXIF (termasuk lokasi GPS) belum dibuang dari file yang diunggah, karena itu butuh pemrosesan gambar. Sampai ada, hapus metadata dari foto sebelum diunggah.
+
+# Mengatur Tema dari Admin
+
+1. Tentukan dari mana form tema dibangkitkan. Admin tidak menulis ulang daftar field: skema Zod token, opsi, dan props section di manifest diubah ke JSON Schema (`z.toJSONSchema`), lalu dirender menjadi form. Label berbahasa Indonesia ditaruh di manifest lewat `.meta({ title, description })`:
+
+@@include templates/base/src/config.ts ts@@
+
+@@include templates/base/src/sections/definitions.ts ts@@
+
+   Helper yang membungkus `z.enum` kehilangan tipe literal (`'latest' | 'featured'` menjadi `string`) dan `defineSection` menolaknya; tulis enum langsung dan bagikan objek meta-nya saja.
+
+2. Tulis dua fungsi di template-kit. `describeTemplate` menghasilkan deskripsi untuk form; `validateThemeDraft` memvalidasi KETAT config yang akan disimpan atau dipratinjau. Ini berbeda dengan `resolveTheme` saat render, yang mengganti nilai salah dengan default:
+
+@@include packages/template-kit/src/theme-admin.ts ts@@
+
+@@include packages/template-kit/src/theme-admin.test.ts ts@@
+
+3. Tambahkan `listThemes` dan `saveTheme` di repository editor (bab "Menyimpan Konten dari Admin"). `saveTheme` mengunci baris site (`SELECT ... FOR UPDATE`) di awal transaksi, menonaktifkan theme lain, lalu menyimpan dan mengaktifkan theme ini dalam versi template terpasang. Tanpa kunci, dua simpan bersamaan melanggar indeks "satu theme aktif per site" dan menjadi error 500. Baca ulang hasilnya lewat `tx`, bukan `db`, agar perubahan yang belum di-commit terlihat.
+
+4. Tulis API tema. GET memberi setiap template terdaftar beserta deskripsi form dan nilai awal: config tersimpan dimigrasi dan divalidasi seperti saat render, dan template yang belum pernah disimpan dibuka dengan bawaan template ITU (bukan `resolveTheme(null)`, yang selalu jatuh ke base):
+
+@@include apps/web/server/api/admin/sites/[siteId]/theme.get.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/theme.put.ts ts@@
+
+5. Simpan draf pratinjau di memori proses dengan id per draf, bukan di cookie sesi. Cookie tersegel bisa melewati ~4 KB (browser membuangnya tanpa galat), dan satu draf per sesi membuat dua tab saling menimpa:
+
+@@include apps/web/server/utils/preview-drafts.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/theme/preview.post.ts ts@@
+
+6. Render pratinjau dengan pembangun halaman publik yang sama. Galat akses dijawab teks polos dengan status yang benar: di build produksi, galat yang dilempar di path `/admin/**` dirender sebagai halaman SPA berstatus 404 (gate admin menangkap ini; di dev statusnya benar). Media di pratinjau lewat route admin sendiri, karena `/media` hanya melayani domain site:
+
+@@include apps/web/server/utils/theme-preview.ts ts@@
+
+@@include apps/web/server/routes/admin/preview-media/[...key].get.ts ts@@
+
+7. Pasang di aplikasi: middleware site memanggil `preparePreview` untuk path pratinjau (host admin di mode multi, domain site di mode single), `routeRules` `'/admin/preview/**': { ssr: true }` menimpa `ssr: false` admin, dan renderer publik pindah ke komponen `PublicPage` yang dipakai dua halaman. Halaman pratinjau memakai segmen statis, yang selalu menang atas `pages/admin/[site]/*`; tanpa itu, site berkode `media` membuat iframe menampilkan layar admin Media:
+
+@@include apps/web/app/pages/admin/preview/[...path].vue vue@@
+
+   Di dalam pratinjau, tautan dan form dimatikan lewat CSS (state `useThemePreview`), agar iframe tidak berpindah ke host admin.
+
+8. Tulis form dari skema. Warna hex menjadi pemilih warna plus isian teks, enum menjadi pilihan, boolean menjadi centang; komponen memanggil dirinya sendiri untuk object bersarang. Di template Vue, `as number | undefined` dibaca ESLint sebagai filter Vue 2, jadi pakai helper:
+
+@@include apps/web/app/components/admin/SchemaForm.vue vue@@
+
+@@include apps/web/app/components/admin/LayoutEditor.vue vue@@
+
+9. Rangkai di layar Tema. Draf disimpan per template (berpindah template tidak membuang perubahan, dan simpan hanya menyelaraskan template yang disimpan), pratinjau diperbarui 600 ms setelah form berhenti berubah, dan perbandingan "belum disimpan" memakai JSON dengan key terurut:
+
+@@include apps/web/app/pages/admin/[site]/theme.vue vue@@
+
+10. Uji di gate admin tanpa menyimpan apa pun: deskripsi form ada, draf salah 422, pratinjau memakai draf dan `noindex`, id draf yang tidak dikenal memakai theme aktif, pratinjau dan media pratinjau tanpa sesi 401, dan site publik tidak berubah. Lalu coba di browser: ubah warna aksen, lihat pratinjau, pindah template, pilih "Tanpa section", lihat lebar ponsel, simpan, dan buka site.
 

@@ -5318,6 +5318,8 @@ export default defineNuxtConfig({
   routeRules: {
     '/admin': { ssr: false },
     '/admin/**': { ssr: false },
+    // Pratinjau tema: halaman publik yang dirender di server (ADR-007).
+    '/admin/preview/**': { ssr: true },
   },
   // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
   // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.
@@ -6009,6 +6011,8 @@ declare module 'nuxt/schema' {
     theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+    /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
+    themePreview?: { draft: boolean }
   }
 }
 
@@ -6047,6 +6051,7 @@ import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
+import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -6062,7 +6067,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -6076,7 +6081,8 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
@@ -6966,6 +6972,7 @@ export * from './migrations'
 export { isPlainObject, mergeDeep } from './objects'
 export * from './sections'
 export * from './theme'
+export * from './theme-admin'
 export * from './tokens'
 export * from './view-models'
 ```
@@ -7497,6 +7504,8 @@ describe('toImageView', () => {
 ```ts
 // Skema token dan opsi template base. Template turunan mewarisinya, jadi
 // semua komponen base boleh mengandalkan variabel CSS dan opsi di sini.
+// `title` dan `description` (meta) menjadi label form pengaturan tema di
+// admin, yang dibangkitkan dari skema ini (M4 4.4).
 import { z } from '@framework/template-kit'
 
 /** Font yang file-nya di-self-host (styles/fonts.css). Menambah font = tambah di sini dan di fonts.css. */
@@ -7507,27 +7516,27 @@ const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'warna hex 6 digit, mis. 
 export const baseTokenSchema = z.object({
   color: z.object({
     /** Aksen: tautan, tombol, label kategori. */
-    primary: hexColor,
+    primary: hexColor.meta({ title: 'Warna aksen', description: 'Tautan, tombol, dan label kategori' }),
     /** Latar halaman. */
-    surface: hexColor,
+    surface: hexColor.meta({ title: 'Warna latar' }),
     /** Teks utama. Warna sekunder diturunkan dari text dan surface di CSS. */
-    text: hexColor,
-  }),
+    text: hexColor.meta({ title: 'Warna teks', description: 'Warna sekunder diturunkan dari teks dan latar' }),
+  }).meta({ title: 'Warna' }),
   font: z.object({
-    heading: z.enum(FONTS),
-    body: z.enum(FONTS),
-  }),
+    heading: z.enum(FONTS).meta({ title: 'Huruf judul' }),
+    body: z.enum(FONTS).meta({ title: 'Huruf isi' }),
+  }).meta({ title: 'Huruf' }),
   radius: z.object({
-    card: z.enum(['0px', '2px', '4px', '8px', '16px']),
-  }),
+    card: z.enum(['0px', '2px', '4px', '8px', '16px']).meta({ title: 'Sudut kartu dan gambar' }),
+  }).meta({ title: 'Sudut' }),
 })
 
 export const baseOptionsSchema = z.object({
   header: z.object({
-    style: z.enum(['left', 'centered']),
+    style: z.enum(['left', 'centered']).meta({ title: 'Posisi nama site', description: 'left = rata kiri, centered = di tengah' }),
     /** Tampilkan tanggal hari ini (zona waktu site) di header. */
-    showDate: z.boolean(),
-  }),
+    showDate: z.boolean().meta({ title: 'Tampilkan tanggal hari ini' }),
+  }).meta({ title: 'Kepala halaman' }),
 })
 
 export type BaseTokens = z.output<typeof baseTokenSchema>
@@ -11395,6 +11404,7 @@ import { createFeedBuilder, createMediaUrlResolver, createPageBuilder } from '@f
 import { useRepositories } from './database'
 
 let pageBuilder: ReturnType<typeof createPageBuilder> | undefined
+let previewBuilder: ReturnType<typeof createPageBuilder> | undefined
 let feedBuilder: ReturnType<typeof createFeedBuilder> | undefined
 
 export function usePageBuilder() {
@@ -11402,6 +11412,17 @@ export function usePageBuilder() {
     mediaUrl: createMediaUrlResolver({ baseUrl: process.env['MEDIA_BASE_URL'] || '/media' }),
   })
   return pageBuilder
+}
+
+/**
+ * Pembangun halaman untuk pratinjau tema di admin: sama, tetapi URL media
+ * lewat /admin/preview-media (route /media hanya melayani domain site).
+ */
+export function usePreviewPageBuilder() {
+  previewBuilder ??= createPageBuilder(useRepositories(), {
+    mediaUrl: createMediaUrlResolver({ baseUrl: '/admin/preview-media' }),
+  })
+  return previewBuilder
 }
 
 export function useFeedBuilder() {
@@ -11436,6 +11457,7 @@ import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
+import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -11451,7 +11473,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -11465,7 +11487,8 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
@@ -11526,6 +11549,8 @@ declare module 'nuxt/schema' {
     theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+    /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
+    themePreview?: { draft: boolean }
   }
 }
 
@@ -11559,6 +11584,7 @@ export default defineNuxtPlugin(() => {
   const { templateKey, templateVersion, rootClass, tokens, options, css } = context.theme
   useSiteTheme().value = { templateKey, templateVersion, rootClass, tokens, options, css }
   usePageState().value = page
+  useThemePreview().value = Boolean(context.themePreview)
   if (page.status !== 200) setResponseStatus(event, page.status)
 })
 ```
@@ -11589,19 +11615,25 @@ export interface PageState {
   seo: SeoMeta
 }
 
+/** true saat halaman dirender sebagai pratinjau tema di admin (M4 4.4). */
+export function useThemePreview() {
+  return useState<boolean>('theme-preview', () => false)
+}
+
 /** Null untuk request tanpa site atau tanpa halaman (mis. /api yang tidak ada). */
 export function usePageState() {
   return useState<PageState | null>('site-page', () => null)
 }
 ```
 
-14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` (import registry menjadi `'../templates'`) dan `app.vue` tinggal `<NuxtPage />`; file di bawah adalah lokasi barunya:
+14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` dan `app.vue` tinggal `<NuxtPage />`; di bab "Mengatur Tema dari Admin" isinya pindah lagi ke komponen `app/components/PublicPage.vue` (dipakai juga pratinjau tema). File di bawah adalah lokasi terakhirnya:
 
-`apps/web/app/pages/[...slug].vue`
+`apps/web/app/components/PublicPage.vue`
 
 ```vue
 <!--
-  Halaman publik, semua path selain /admin (ADR-007, ADR-009): wrapper kelas root template
+  Renderer halaman publik (ADR-007), dipakai pages/[...slug].vue (semua path
+  selain /admin) dan pages/admin/preview/[...path].vue (pratinjau tema): wrapper kelas root template
   (.tpl .tpl-<key>), token sebagai CSS variable di <head>, layout template,
   lalu view untuk jenis halaman ini. Semua data datang dari state yang diisi
   di server; tautan berupa <a href> biasa, tanpa navigasi sisi klien.
@@ -11654,10 +11686,16 @@ const links = computed(() => {
   return out
 })
 
+// Pratinjau tema di admin: tautan dan form dimatikan agar iframe tidak
+// berpindah ke alamat site di host admin; halaman dipilih dari panel pratinjau.
+const preview = useThemePreview()
 useHead(() => ({
   htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
   link: links.value,
-  style: theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : [],
+  style: [
+    ...(theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : []),
+    ...(preview.value ? [{ key: 'theme-preview', textContent: '.tpl a,.tpl form{pointer-events:none;cursor:default}' }] : []),
+  ],
 }))
 </script>
 
@@ -12387,6 +12425,7 @@ import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
+import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -12402,7 +12441,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -12416,7 +12455,8 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
@@ -12477,6 +12517,8 @@ declare module 'nuxt/schema' {
     theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+    /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
+    themePreview?: { draft: boolean }
   }
 }
 
@@ -12491,6 +12533,7 @@ import { createFeedBuilder, createMediaUrlResolver, createPageBuilder } from '@f
 import { useRepositories } from './database'
 
 let pageBuilder: ReturnType<typeof createPageBuilder> | undefined
+let previewBuilder: ReturnType<typeof createPageBuilder> | undefined
 let feedBuilder: ReturnType<typeof createFeedBuilder> | undefined
 
 export function usePageBuilder() {
@@ -12498,6 +12541,17 @@ export function usePageBuilder() {
     mediaUrl: createMediaUrlResolver({ baseUrl: process.env['MEDIA_BASE_URL'] || '/media' }),
   })
   return pageBuilder
+}
+
+/**
+ * Pembangun halaman untuk pratinjau tema di admin: sama, tetapi URL media
+ * lewat /admin/preview-media (route /media hanya melayani domain site).
+ */
+export function usePreviewPageBuilder() {
+  previewBuilder ??= createPageBuilder(useRepositories(), {
+    mediaUrl: createMediaUrlResolver({ baseUrl: '/admin/preview-media' }),
+  })
+  return previewBuilder
 }
 
 export function useFeedBuilder() {
@@ -12571,11 +12625,12 @@ export default defineEventHandler((event) =>
 
 13. Pasang metadata di `app.vue` (sejak bab "Membangun Login Admin": `app/pages/[...slug].vue`) dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
 
-`apps/web/app/pages/[...slug].vue`
+`apps/web/app/components/PublicPage.vue`
 
 ```vue
 <!--
-  Halaman publik, semua path selain /admin (ADR-007, ADR-009): wrapper kelas root template
+  Renderer halaman publik (ADR-007), dipakai pages/[...slug].vue (semua path
+  selain /admin) dan pages/admin/preview/[...path].vue (pratinjau tema): wrapper kelas root template
   (.tpl .tpl-<key>), token sebagai CSS variable di <head>, layout template,
   lalu view untuk jenis halaman ini. Semua data datang dari state yang diisi
   di server; tautan berupa <a href> biasa, tanpa navigasi sisi klien.
@@ -12628,10 +12683,16 @@ const links = computed(() => {
   return out
 })
 
+// Pratinjau tema di admin: tautan dan form dimatikan agar iframe tidak
+// berpindah ke alamat site di host admin; halaman dipilih dari panel pratinjau.
+const preview = useThemePreview()
 useHead(() => ({
   htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
   link: links.value,
-  style: theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : [],
+  style: [
+    ...(theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : []),
+    ...(preview.value ? [{ key: 'theme-preview', textContent: '.tpl a,.tpl form{pointer-events:none;cursor:default}' }] : []),
+  ],
 }))
 </script>
 
@@ -12682,6 +12743,11 @@ export interface PageState {
   chrome: ChromeView
   vm: PageViewModel
   seo: SeoMeta
+}
+
+/** true saat halaman dirender sebagai pratinjau tema di admin (M4 4.4). */
+export function useThemePreview() {
+  return useState<boolean>('theme-preview', () => false)
 }
 
 /** Null untuk request tanpa site atau tanpa halaman (mis. /api yang tidak ada). */
@@ -13550,24 +13616,26 @@ describe('resolveLayout', () => {
 // (SECTION_LIMITS.maxArticles = 12).
 import { defineSection, z } from '@framework/template-kit'
 
-const limit = (fallback: number, max = 12) => z.number().int().min(1).max(max).default(fallback)
+// title/description (meta) menjadi label form layout di admin (M4 4.4).
+const limit = (fallback: number, max = 12) => z.number().int().min(1).max(max).default(fallback).meta({ title: 'Jumlah artikel' })
 /** Judul pengganti; tanpa judul = judul bawaan komponen. */
-const title = z.string().trim().min(1).max(80).optional()
-const slug = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'slug huruf kecil, angka, tanda hubung')
+const title = z.string().trim().min(1).max(80).optional().meta({ title: 'Judul section', description: 'Kosong: judul bawaan' })
+const slug = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'slug huruf kecil, angka, tanda hubung').meta({ title: 'Slug kategori' })
+const SOURCE_META = { title: 'Sumber artikel', description: 'latest = terbaru, featured = pilihan redaksi' }
 
 export const baseSections = {
   /** Artikel utama berukuran besar di puncak halaman. */
   hero: defineSection({
     props: z.object({
-      source: z.enum(['featured', 'latest']).default('featured'),
+      source: z.enum(['featured', 'latest']).default('featured').meta(SOURCE_META),
       limit: limit(1, 3),
-    }),
+    }).meta({ title: 'Artikel utama' }),
     data: ({ source, limit }) => ({ source, limit }),
   }),
 
   /** Grid kartu artikel terbaru. */
   'latest-grid': defineSection({
-    props: z.object({ title, limit: limit(6) }),
+    props: z.object({ title, limit: limit(6) }).meta({ title: 'Grid terbaru' }),
     data: ({ limit }) => ({ source: 'latest', limit }),
   }),
 
@@ -13575,15 +13643,15 @@ export const baseSections = {
   'headline-list': defineSection({
     props: z.object({
       title,
-      source: z.enum(['latest', 'featured']).default('latest'),
+      source: z.enum(['latest', 'featured']).default('latest').meta(SOURCE_META),
       limit: limit(5),
-    }),
+    }).meta({ title: 'Daftar judul' }),
     data: ({ source, limit }) => ({ source, limit }),
   }),
 
   /** Deret kartu dari satu kategori (termasuk sub-kategorinya), dengan tautan ke kategori. */
   'category-strip': defineSection({
-    props: z.object({ title, categorySlug: slug, limit: limit(4) }),
+    props: z.object({ title, categorySlug: slug, limit: limit(4) }).meta({ title: 'Strip kategori' }),
     data: ({ categorySlug, limit }) => ({ source: 'category', slug: categorySlug, limit }),
   }),
 }
@@ -15110,6 +15178,16 @@ harus diputuskan sebelum kode:
    - Respons API admin `Cache-Control: no-store`.
    - `/security-review` setelah 4.0, 4.3 (upload), dan seluruh M4.
 
+8. **Pratinjau tema** (usulan M4-D, M4 4.4). `/admin/preview/<kode-site>/<path>?draft=<id>`
+   dirender SSR (`routeRules` `ssr: true`) dengan pembangun halaman publik dan config draf.
+   Draf disimpan di memori proses per id (milik user dan site itu, kedaluwarsa 30 menit),
+   bukan di cookie sesi: cookie tersegel bisa melewati ~4 KB dan dibuang browser tanpa galat,
+   dan satu draf per sesi membuat dua tab saling menimpa. Respons `noindex`, `no-store`,
+   `X-Frame-Options: SAMEORIGIN`; media lewat `/admin/preview-media/<storage_key>` (wajib
+   sesi, kode site milik user). Halaman Vue-nya `pages/admin/preview/[...path].vue`: segmen
+   statis selalu menang atas `pages/admin/[site]/*`. Akibatnya kode site `preview` dan `login`
+   bertabrakan dengan route admin; kode itu dicadangkan saat pembuatan site ada di admin.
+
 ## Alternatif yang ditolak
 
 - **Admin di setiap domain site** (mode multi). Cookie sesi terpisah per domain, jadi admin
@@ -16371,7 +16449,8 @@ if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 //
 // 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
 // login salah/benar, sesi, logout, dan rate limit login.
-// 4.2: API per site (404 site lain, 422 input salah, 409 versi lama). Alur buat-jadwalkan-tampilkan artikel
+// 4.2: API per site (404 site lain, 422 input salah, 409 versi lama).
+// 4.3: upload media. 4.4: tema dan pratinjau. Alur buat-jadwalkan-tampilkan artikel
 // ditambahkan di 4.6.
 //
 // Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
@@ -16526,6 +16605,31 @@ try {
     r = await admin(`/api/admin/sites/${tekno.id}/media/${uploadedMedia.id}?updatedAt=${encodeURIComponent(uploadedMedia.updatedAt)}`, { method: 'DELETE', cookie: adminCookie })
     check('hapus media uji', r.status === 200, String(r.status))
   }
+
+  // Tema (4.4): deskripsi form dari manifest, draf salah ditolak, pratinjau
+  // SSR noindex dari sesi. Tidak menyimpan apa pun.
+  r = await admin(`/api/admin/sites/${tekno.id}/theme`, { cookie: adminCookie })
+  const theme = r.status === 200 ? JSON.parse(r.body) : null
+  check('tema: template dengan skema form', r.status === 200 && theme.templates.some((x) => x.key === 'magazine' && x.tokens.schema.properties.color), String(r.status))
+  r = await admin(`/api/admin/sites/${tekno.id}/theme/preview`, { method: 'POST', cookie: adminCookie, body: { templateKey: 'magazine', draft: { tokens: { color: { primary: 'merah' } } } } })
+  check('pratinjau draf salah 422', r.status === 422, String(r.status))
+  const magazine = theme?.templates.find((x) => x.key === 'magazine')
+  const draft = { tokens: { ...magazine?.config.tokens, color: { ...magazine?.config.tokens.color, primary: '#123456' } }, options: magazine?.config.options, layouts: {} }
+  r = await admin(`/api/admin/sites/${tekno.id}/theme/preview`, { method: 'POST', cookie: adminCookie, body: { templateKey: 'magazine', draft } })
+  const preview = r.status === 200 ? JSON.parse(r.body) : { base: '/admin/preview/kabar-tekno', draftId: '' }
+  const previewUrl = `${preview.base}/?draft=${preview.draftId}`
+  r = await admin(previewUrl, { cookie: adminCookie })
+  check('pratinjau SSR memakai draf, noindex', r.status === 200 && r.body.includes('--color-primary:#123456') && r.headers['x-robots-tag']?.includes('noindex'), `${r.status} ${r.headers['x-robots-tag']}`)
+  r = await admin(`${preview.base}/?draft=00000000-0000-4000-8000-000000000000`, { cookie: adminCookie })
+  check('id draf tidak dikenal: pratinjau memakai theme aktif', r.status === 200 && !r.body.includes('--color-primary:#123456'), String(r.status))
+  r = await admin(previewUrl)
+  check('pratinjau tanpa sesi ditolak, tanpa isi site', r.status === 401 && !r.body.includes('--color-primary'), `${r.status}`)
+  r = await requestWithHost(port, { path: '/', host: siteHost })
+  check('pratinjau tidak mengubah site', r.status === 200 && !r.body.includes('--color-primary:#123456'), String(r.status))
+  r = await admin('/admin/preview-media/kabar-tekno/logo.svg')
+  check('media pratinjau tanpa sesi 401', r.status === 401, `${r.status} ${r.body.slice(0, 160)}`)
+  r = await admin('/admin/preview-media/kabar-tekno/logo.svg', { cookie: adminCookie })
+  check('media pratinjau dengan sesi: diizinkan (file seed tidak ada di build = 404 dari route)', r.status === 200 || (r.status === 404 && r.body.startsWith('Media tidak ditemukan')), `${r.status} ${r.body.slice(0, 160)}`)
 
   // User yang hanya anggota satu site tidak bisa membuka site lain.
   r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })
@@ -16915,6 +17019,7 @@ import {
   or,
   pages,
   redirects,
+  siteThemes,
   sites,
   sql,
   tags,
@@ -17020,6 +17125,26 @@ export interface NewMediaFile {
   sizeBytes: number
   width: number
   height: number
+}
+
+export interface ThemeRecord {
+  templateKey: string
+  templateVersion: string
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  layouts: Record<string, unknown>
+  isActive: boolean
+  updatedAt: Date
+}
+
+/** Config tema yang sudah divalidasi skema manifest (validateThemeDraft di template-kit). */
+export interface ThemeSaveInput {
+  templateKey: string
+  /** Versi template terpasang: config ditulis dalam bentuk versi ini (migrateConfig selesai). */
+  templateVersion: string
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  layouts: Record<string, unknown>
 }
 
 export interface RevisionItem {
@@ -17298,6 +17423,15 @@ export function createEditorRepository(ctx: RepositoryContext) {
     return menu
   }
 
+  async function themesOf(tx: Db, siteId: SiteId): Promise<ThemeRecord[]> {
+    const rows = await tx
+      .select({ templateKey: siteThemes.templateKey, templateVersion: siteThemes.templateVersion, tokens: siteThemes.tokens, options: siteThemes.options, layouts: siteThemes.layouts, isActive: siteThemes.isActive, updatedAt: siteThemes.updatedAt })
+      .from(siteThemes)
+      .where(eq(siteThemes.siteId, siteId))
+      .orderBy(desc(siteThemes.isActive), asc(siteThemes.templateKey))
+    return rows.map((r) => ({ ...r, tokens: r.tokens as Record<string, unknown>, options: r.options as Record<string, unknown>, layouts: r.layouts as Record<string, unknown> }))
+  }
+
   const api = {
     // ======================= Pilihan untuk form =======================
 
@@ -17323,6 +17457,45 @@ export function createEditorRepository(ctx: RepositoryContext) {
         .limit(paging.pageSize)
         .offset(paging.offset)
       return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    // ======================= Tema =======================
+
+    /** Config tersimpan per template (aktif dan tidak). */
+    async listThemes(siteId: SiteId): Promise<ThemeRecord[]> {
+      return themesOf(db, siteId)
+    },
+
+    /**
+     * Simpan config tema dan jadikan aktif, dalam satu transaksi: theme lain
+     * dinonaktifkan dulu (satu theme aktif per site). expectedUpdatedAt =
+     * updatedAt baris template itu saat form dibuka; null = belum pernah
+     * disimpan untuk template ini.
+     */
+    async saveTheme(siteId: SiteId, input: ThemeSaveInput, expectedUpdatedAt: string | null): Promise<ThemeRecord> {
+      const token = expectedUpdatedAt === null ? null : parse(updatedAtSchema, expectedUpdatedAt)
+      return db.transaction(async (tx) => {
+        // Kunci baris site: dua simpan bersamaan diantrekan, yang kedua melihat
+        // hasil yang pertama (conflict), bukan melanggar uq_site_themes_one_active.
+        const [locked] = await tx.select({ id: sites.id }).from(sites).where(eq(sites.id, siteId)).for('update')
+        if (!locked) throw notFound('Site')
+        const [current] = await tx.select({ updatedAt: siteThemes.updatedAt }).from(siteThemes)
+          .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.templateKey, input.templateKey))).limit(1)
+        if (current && (token === null || current.updatedAt.getTime() !== new Date(token).getTime())) throw conflict('Tema')
+        if (!current && token !== null) throw conflict('Tema')
+        await tx.update(siteThemes).set({ isActive: false, updatedAt: sql`now()` })
+          .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.isActive, true), ne(siteThemes.templateKey, input.templateKey)))
+        const values = { templateVersion: input.templateVersion, tokens: input.tokens, options: input.options, layouts: input.layouts, isActive: true, updatedAt: sql`now()` }
+        const [row] = current
+          ? await tx.update(siteThemes).set(values)
+            .where(and(eq(siteThemes.siteId, siteId), eq(siteThemes.templateKey, input.templateKey), sameMillis(siteThemes.updatedAt, new Date(token as string).toISOString())))
+            .returning({ templateKey: siteThemes.templateKey })
+          : await tx.insert(siteThemes).values({ siteId, templateKey: input.templateKey, ...values }).returning({ templateKey: siteThemes.templateKey })
+        if (!row) throw conflict('Tema')
+        const saved = (await themesOf(tx, siteId)).find((t) => t.templateKey === input.templateKey)
+        if (!saved) throw new Error('tema tidak tersimpan')
+        return saved
+      })
     },
 
     // ======================= Media =======================
@@ -17971,6 +18144,30 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
 
     it('gambar OG halaman dari site lain dilaporkan di seo.og_image_id', async () => {
       await rejects(editor.createPage(SITE, { title: 'x', body: body(), seo: { og_image_id: OTHER_MEDIA } }), 'invalid', 'seo.og_image_id')
+    })
+  })
+
+  describe('tema', () => {
+    const theme = (templateKey: string, primary = '#112233') => ({ templateKey, templateVersion: '1.1.0', tokens: { color: { primary } }, options: {}, layouts: { home: [] } })
+
+    it('simpan + aktifkan; ganti template menonaktifkan yang lama; token kedaluwarsa = conflict', async () => {
+      const a = await editor.saveTheme(SITE, theme('magazine'), null)
+      expect(a).toMatchObject({ templateKey: 'magazine', templateVersion: '1.1.0', isActive: true, layouts: { home: [] } })
+      await rejects(editor.saveTheme(SITE, theme('magazine'), null), 'conflict')
+
+      const b = await editor.saveTheme(SITE, theme('news'), null)
+      expect(b.isActive).toBe(true)
+      const all = await editor.listThemes(SITE)
+      expect(all.map((t) => [t.templateKey, t.isActive])).toEqual([['news', true], ['magazine', false]])
+
+      // Kembali ke magazine dengan token yang benar: config lama dipertahankan, lalu diganti.
+      const magazine = all.find((t) => t.templateKey === 'magazine')
+      const c = await editor.saveTheme(SITE, theme('magazine', '#445566'), magazine?.updatedAt.toISOString() ?? null)
+      expect(c).toMatchObject({ isActive: true, tokens: { color: { primary: '#445566' } } })
+      await rejects(editor.saveTheme(SITE, theme('magazine'), magazine?.updatedAt.toISOString() ?? null), 'conflict')
+      expect((await editor.listThemes(SITE)).filter((t) => t.isActive).map((t) => t.templateKey)).toEqual(['magazine'])
+      expect(await editor.listThemes(OTHER)).not.toEqual([])
+      expect((await editor.listThemes(OTHER)).some((t) => t.tokens['color'] && (t.tokens['color'] as Record<string, unknown>)['primary'] === '#445566')).toBe(false)
     })
   })
 
@@ -19103,6 +19300,155 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
   pointer-events: none;
 }
 
+/* ---------- Tema: form dari skema + pratinjau ---------------------- */
+
+.adm-theme {
+  display: grid;
+  grid-template-columns: minmax(22rem, 26rem) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.adm-theme__form .adm-panel + .adm-panel {
+  margin-top: 1rem;
+}
+
+.adm-theme__preview {
+  position: sticky;
+  top: 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+@media (max-width: 68rem) {
+  .adm-theme {
+    grid-template-columns: 1fr;
+  }
+
+  .adm-theme__preview {
+    position: static;
+  }
+}
+
+.adm-fieldset {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.75rem 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.adm-fieldset legend {
+  padding-right: 0.5rem;
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.adm-color {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.adm-color input[type='color'] {
+  width: 2.75rem;
+  height: 2.25rem;
+  padding: 0.125rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.adm-segmented {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.adm-segmented label {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.adm-segmented label + label {
+  border-left: 1px solid var(--line-strong);
+}
+
+.adm-segmented label.is-on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.adm-segmented input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.adm-segmented label:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.adm-layout-item {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.adm-layout-item__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.adm-layout-item .adm-block__tools {
+  opacity: 1;
+}
+
+.adm-preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.adm-preview-bar select {
+  width: auto;
+}
+
+.adm-preview-frame {
+  height: calc(100vh - 9rem);
+  min-height: 32rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.adm-preview-frame.is-mobile {
+  width: 390px;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.adm-preview-frame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 /* ---------- Pohon (kategori, menu) --------------------------------- */
 
 .adm-split {
@@ -19183,6 +19529,7 @@ const nav = [
   { to: 'tags', label: 'Tag' },
   { to: 'menus', label: 'Menu' },
   { to: 'media', label: 'Media' },
+  { to: 'theme', label: 'Tema' },
 ]
 
 /** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */
@@ -21404,4 +21751,1199 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 ```
 
 12. Catat batasnya: metadata EXIF (termasuk lokasi GPS) belum dibuang dari file yang diunggah, karena itu butuh pemrosesan gambar. Sampai ada, hapus metadata dari foto sebelum diunggah.
+
+# Mengatur Tema dari Admin
+
+1. Tentukan dari mana form tema dibangkitkan. Admin tidak menulis ulang daftar field: skema Zod token, opsi, dan props section di manifest diubah ke JSON Schema (`z.toJSONSchema`), lalu dirender menjadi form. Label berbahasa Indonesia ditaruh di manifest lewat `.meta({ title, description })`:
+
+`templates/base/src/config.ts`
+
+```ts
+// Skema token dan opsi template base. Template turunan mewarisinya, jadi
+// semua komponen base boleh mengandalkan variabel CSS dan opsi di sini.
+// `title` dan `description` (meta) menjadi label form pengaturan tema di
+// admin, yang dibangkitkan dari skema ini (M4 4.4).
+import { z } from '@framework/template-kit'
+
+/** Font yang file-nya di-self-host (styles/fonts.css). Menambah font = tambah di sini dan di fonts.css. */
+export const FONTS = ['Inter', 'Merriweather', 'Source Sans 3'] as const
+
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'warna hex 6 digit, mis. #0f62fe')
+
+export const baseTokenSchema = z.object({
+  color: z.object({
+    /** Aksen: tautan, tombol, label kategori. */
+    primary: hexColor.meta({ title: 'Warna aksen', description: 'Tautan, tombol, dan label kategori' }),
+    /** Latar halaman. */
+    surface: hexColor.meta({ title: 'Warna latar' }),
+    /** Teks utama. Warna sekunder diturunkan dari text dan surface di CSS. */
+    text: hexColor.meta({ title: 'Warna teks', description: 'Warna sekunder diturunkan dari teks dan latar' }),
+  }).meta({ title: 'Warna' }),
+  font: z.object({
+    heading: z.enum(FONTS).meta({ title: 'Huruf judul' }),
+    body: z.enum(FONTS).meta({ title: 'Huruf isi' }),
+  }).meta({ title: 'Huruf' }),
+  radius: z.object({
+    card: z.enum(['0px', '2px', '4px', '8px', '16px']).meta({ title: 'Sudut kartu dan gambar' }),
+  }).meta({ title: 'Sudut' }),
+})
+
+export const baseOptionsSchema = z.object({
+  header: z.object({
+    style: z.enum(['left', 'centered']).meta({ title: 'Posisi nama site', description: 'left = rata kiri, centered = di tengah' }),
+    /** Tampilkan tanggal hari ini (zona waktu site) di header. */
+    showDate: z.boolean().meta({ title: 'Tampilkan tanggal hari ini' }),
+  }).meta({ title: 'Kepala halaman' }),
+})
+
+export type BaseTokens = z.output<typeof baseTokenSchema>
+export type BaseOptions = z.output<typeof baseOptionsSchema>
+
+export const baseTokenDefaults: BaseTokens = {
+  color: { primary: '#1f4b99', surface: '#ffffff', text: '#1a1a1a' },
+  font: { heading: 'Source Sans 3', body: 'Source Sans 3' },
+  radius: { card: '4px' },
+}
+
+export const baseOptionDefaults: BaseOptions = {
+  header: { style: 'left', showDate: false },
+}
+```
+
+`templates/base/src/sections/definitions.ts`
+
+```ts
+// Definisi section base (ADR-008): skema props + data yang dibutuhkan.
+// Bebas Vue/CSS karena di-import entry ./manifest yang dipakai server.
+// Komponennya ada di ./components.ts dengan key yang sama.
+//
+// Props dari site_themes.layouts; field yang tidak diisi memakai default.
+// Batas limit per section diulang di template-kit dan core
+// (SECTION_LIMITS.maxArticles = 12).
+import { defineSection, z } from '@framework/template-kit'
+
+// title/description (meta) menjadi label form layout di admin (M4 4.4).
+const limit = (fallback: number, max = 12) => z.number().int().min(1).max(max).default(fallback).meta({ title: 'Jumlah artikel' })
+/** Judul pengganti; tanpa judul = judul bawaan komponen. */
+const title = z.string().trim().min(1).max(80).optional().meta({ title: 'Judul section', description: 'Kosong: judul bawaan' })
+const slug = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'slug huruf kecil, angka, tanda hubung').meta({ title: 'Slug kategori' })
+const SOURCE_META = { title: 'Sumber artikel', description: 'latest = terbaru, featured = pilihan redaksi' }
+
+export const baseSections = {
+  /** Artikel utama berukuran besar di puncak halaman. */
+  hero: defineSection({
+    props: z.object({
+      source: z.enum(['featured', 'latest']).default('featured').meta(SOURCE_META),
+      limit: limit(1, 3),
+    }).meta({ title: 'Artikel utama' }),
+    data: ({ source, limit }) => ({ source, limit }),
+  }),
+
+  /** Grid kartu artikel terbaru. */
+  'latest-grid': defineSection({
+    props: z.object({ title, limit: limit(6) }).meta({ title: 'Grid terbaru' }),
+    data: ({ limit }) => ({ source: 'latest', limit }),
+  }),
+
+  /** Daftar judul ringkas tanpa gambar. */
+  'headline-list': defineSection({
+    props: z.object({
+      title,
+      source: z.enum(['latest', 'featured']).default('latest').meta(SOURCE_META),
+      limit: limit(5),
+    }).meta({ title: 'Daftar judul' }),
+    data: ({ source, limit }) => ({ source, limit }),
+  }),
+
+  /** Deret kartu dari satu kategori (termasuk sub-kategorinya), dengan tautan ke kategori. */
+  'category-strip': defineSection({
+    props: z.object({ title, categorySlug: slug, limit: limit(4) }).meta({ title: 'Strip kategori' }),
+    data: ({ categorySlug, limit }) => ({ source: 'category', slug: categorySlug, limit }),
+  }),
+}
+
+export type BaseSectionType = keyof typeof baseSections
+```
+
+   Helper yang membungkus `z.enum` kehilangan tipe literal (`'latest' | 'featured'` menjadi `string`) dan `defineSection` menolaknya; tulis enum langsung dan bagikan objek meta-nya saja.
+
+2. Tulis dua fungsi di template-kit. `describeTemplate` menghasilkan deskripsi untuk form; `validateThemeDraft` memvalidasi KETAT config yang akan disimpan atau dipratinjau. Ini berbeda dengan `resolveTheme` saat render, yang mengganti nilai salah dengan default:
+
+`packages/template-kit/src/theme-admin.ts`
+
+```ts
+// Pengaturan tema dari admin (M4 4.4).
+//
+//  - describeTemplate: deskripsi template untuk form admin, dibangkitkan
+//    dari skema manifest (JSON Schema dari Zod, dengan title/description
+//    dari .meta()). Admin tidak menulis ulang daftar field.
+//  - validateThemeDraft: validasi KETAT config yang akan disimpan atau
+//    dipratinjau. Berbeda dengan resolveTheme (saat render: nilai salah ->
+//    default), di sini nilai salah ditolak dengan galat per field.
+import { z } from 'zod'
+import type { TemplateManifest } from './manifest'
+import { isPlainObject } from './objects'
+import { LAYOUT_PAGES, SECTION_LIMITS, type LayoutItem, type LayoutPage } from './sections'
+import { TokenError, tokensToCssVars, type TokenTree } from './tokens'
+
+/** JSON Schema (draft 2020-12) apa adanya; dirender form admin. */
+export type JsonSchema = Record<string, unknown>
+
+export interface TemplateDescription {
+  key: string
+  name: string
+  version: string
+  tokens: { schema: JsonSchema; defaults: Record<string, unknown> }
+  options: { schema: JsonSchema; defaults: Record<string, unknown> }
+  /** Section yang bisa dipakai layout, dengan skema props-nya. */
+  sections: { type: string; title: string; schema: JsonSchema }[]
+  defaultLayouts: Record<LayoutPage, readonly LayoutItem[]>
+}
+
+const toSchema = (schema: z.ZodType): JsonSchema => z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as JsonSchema
+
+export function describeTemplate(manifest: TemplateManifest): TemplateDescription {
+  return {
+    key: manifest.key,
+    name: manifest.name,
+    version: manifest.version,
+    tokens: { schema: toSchema(manifest.tokens.schema), defaults: manifest.tokens.defaults },
+    options: { schema: toSchema(manifest.options.schema), defaults: manifest.options.defaults },
+    sections: Object.entries(manifest.sections).map(([type, def]) => {
+      const schema = toSchema(def.props)
+      return { type, title: typeof schema['title'] === 'string' ? schema['title'] : type, schema }
+    }),
+    defaultLayouts: manifest.defaultLayouts,
+  }
+}
+
+export interface ThemeDraft {
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  /** Hanya halaman yang diatur; halaman yang tidak ada = defaultLayouts template. */
+  layouts: Partial<Record<LayoutPage, LayoutItem[]>>
+}
+
+export type DraftResult =
+  | { ok: true; value: ThemeDraft }
+  | { ok: false; issues: { field: string; message: string }[] }
+
+/** Validasi ketat draf config untuk template ini. */
+export function validateThemeDraft(manifest: TemplateManifest, raw: unknown, errorMap?: z.core.$ZodErrorMap): DraftResult {
+  const issues: { field: string; message: string }[] = []
+  const input = isPlainObject(raw) ? raw : {}
+  const fromZod = (prefix: string, error: z.ZodError) => {
+    for (const i of error.issues) issues.push({ field: [prefix, ...i.path].join('.'), message: i.message })
+  }
+
+  const tokens = manifest.tokens.schema.safeParse(input['tokens'] ?? {}, { error: errorMap })
+  if (!tokens.success) fromZod('tokens', tokens.error)
+  else {
+    try {
+      tokensToCssVars(tokens.data as TokenTree)
+    } catch (error) {
+      issues.push({ field: 'tokens', message: error instanceof TokenError ? error.message : String(error) })
+    }
+  }
+  const options = manifest.options.schema.safeParse(input['options'] ?? {}, { error: errorMap })
+  if (!options.success) fromZod('options', options.error)
+
+  const layouts: Partial<Record<LayoutPage, LayoutItem[]>> = {}
+  const rawLayouts = input['layouts'] ?? {}
+  if (!isPlainObject(rawLayouts)) issues.push({ field: 'layouts', message: 'harus object per halaman' })
+  else {
+    for (const [page, items] of Object.entries(rawLayouts)) {
+      if (!(LAYOUT_PAGES as readonly string[]).includes(page)) {
+        issues.push({ field: `layouts.${page}`, message: 'halaman tidak punya layout section' })
+        continue
+      }
+      if (items === undefined || items === null) continue
+      if (!Array.isArray(items)) {
+        issues.push({ field: `layouts.${page}`, message: 'harus daftar section' })
+        continue
+      }
+      if (items.length > SECTION_LIMITS.maxSectionsPerPage) {
+        issues.push({ field: `layouts.${page}`, message: `paling banyak ${SECTION_LIMITS.maxSectionsPerPage} section` })
+      }
+      const out: LayoutItem[] = []
+      items.forEach((item, index) => {
+        const at = `layouts.${page}.${index}`
+        const type = isPlainObject(item) && typeof item['type'] === 'string' ? item['type'] : null
+        const def = type && Object.hasOwn(manifest.sections, type) ? manifest.sections[type] : undefined
+        if (!type || !def) {
+          issues.push({ field: `${at}.type`, message: 'jenis section tidak dikenal' })
+          return
+        }
+        const props = def.props.safeParse((item as Record<string, unknown>)['props'] ?? {}, { error: errorMap })
+        if (!props.success) fromZod(`${at}.props`, props.error)
+        else out.push({ type, props: props.data as Record<string, unknown> })
+      })
+      layouts[page as LayoutPage] = out
+    }
+  }
+
+  if (issues.length) return { ok: false, issues }
+  return { ok: true, value: { tokens: tokens.data as Record<string, unknown>, options: options.data as Record<string, unknown>, layouts } }
+}
+```
+
+`packages/template-kit/src/theme-admin.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
+import { defineManifest } from './manifest'
+import { defineSection } from './sections'
+import { describeTemplate, validateThemeDraft } from './theme-admin'
+
+const hex = z.string().regex(/^#[0-9a-f]{6}$/i).meta({ title: 'Warna aksen' })
+const manifest = defineManifest({
+  key: 'base',
+  version: '1.2.0',
+  name: 'Base',
+  tokens: { schema: z.object({ color: z.object({ primary: hex }).meta({ title: 'Warna' }) }), defaults: { color: { primary: '#000000' } } },
+  options: { schema: z.object({ showDate: z.boolean().meta({ title: 'Tanggal' }) }), defaults: { showDate: false } },
+  sections: {
+    grid: defineSection({ props: z.object({ limit: z.number().int().min(1).max(12).default(6) }).meta({ title: 'Grid' }), data: ({ limit }) => ({ source: 'latest', limit }) }),
+  },
+  defaultLayouts: { home: [{ type: 'grid' }] },
+})
+
+describe('describeTemplate', () => {
+  it('JSON Schema dari skema manifest, dengan judul dari meta', () => {
+    const d = describeTemplate(manifest)
+    expect(d).toMatchObject({ key: 'base', version: '1.2.0', defaultLayouts: { home: [{ type: 'grid' }] } })
+    expect(d.tokens.schema).toMatchObject({ type: 'object', properties: { color: { title: 'Warna', properties: { primary: { title: 'Warna aksen', pattern: '^#[0-9a-f]{6}$' } } } } })
+    expect(d.options.schema).toMatchObject({ properties: { showDate: { type: 'boolean' } } })
+    expect(d.sections).toEqual([{ type: 'grid', title: 'Grid', schema: expect.objectContaining({ properties: { limit: expect.objectContaining({ default: 6, maximum: 12 }) } }) }])
+    expect(JSON.parse(JSON.stringify(d))).toEqual(d)
+  })
+})
+
+describe('validateThemeDraft', () => {
+  const draft = (patch: Record<string, unknown> = {}) => ({ tokens: { color: { primary: '#123456' } }, options: { showDate: true }, layouts: { home: [{ type: 'grid', props: { limit: 3 } }] }, ...patch })
+
+  it('draf valid -> nilai bersih (default props diisi)', () => {
+    expect(validateThemeDraft(manifest, draft({ layouts: { home: [{ type: 'grid' }] } }))).toEqual({
+      ok: true,
+      value: { tokens: { color: { primary: '#123456' } }, options: { showDate: true }, layouts: { home: [{ type: 'grid', props: { limit: 6 } }] } },
+    })
+  })
+
+  it('tanpa layouts = bawaan template; array kosong = tanpa section', () => {
+    expect(validateThemeDraft(manifest, draft({ layouts: {} }))).toMatchObject({ ok: true, value: { layouts: {} } })
+    expect(validateThemeDraft(manifest, draft({ layouts: { home: [] } }))).toMatchObject({ ok: true, value: { layouts: { home: [] } } })
+  })
+
+  it('nilai salah DITOLAK per field (bukan diganti default seperti saat render)', () => {
+    const result = validateThemeDraft(manifest, draft({
+      tokens: { color: { primary: 'merah' } },
+      options: { showDate: 'ya' },
+      layouts: { home: [{ type: 'grid', props: { limit: 99 } }, { type: 'carousel' }], about: [] },
+    }))
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.issues.map((i) => i.field)).toEqual(['tokens.color.primary', 'options.showDate', 'layouts.home.0.props.limit', 'layouts.home.1.type', 'layouts.about'])
+    }
+  })
+})
+```
+
+3. Tambahkan `listThemes` dan `saveTheme` di repository editor (bab "Menyimpan Konten dari Admin"). `saveTheme` mengunci baris site (`SELECT ... FOR UPDATE`) di awal transaksi, menonaktifkan theme lain, lalu menyimpan dan mengaktifkan theme ini dalam versi template terpasang. Tanpa kunci, dua simpan bersamaan melanggar indeks "satu theme aktif per site" dan menjadi error 500. Baca ulang hasilnya lewat `tx`, bukan `db`, agar perubahan yang belum di-commit terlihat.
+
+4. Tulis API tema. GET memberi setiap template terdaftar beserta deskripsi form dan nilai awal: config tersimpan dimigrasi dan divalidasi seperti saat render, dan template yang belum pernah disimpan dibuka dengan bawaan template ITU (bukan `resolveTheme(null)`, yang selalu jatuh ke base):
+
+`apps/web/server/api/admin/sites/[siteId]/theme.get.ts`
+
+```ts
+// GET: template yang bisa dipakai site + config untuk form (M4 4.4).
+//
+// Untuk setiap template terdaftar: deskripsi form (JSON Schema dari manifest)
+// dan nilai awal. Config tersimpan dimigrasi dan divalidasi seperti saat
+// render (resolveTheme), jadi form selalu dibuka dengan bentuk versi
+// terpasang. layouts.home: tidak ada = bawaan template, [] = tanpa section.
+import { describeTemplate, isPlainObject, SECTION_LIMITS } from '@framework/template-kit'
+import { defineAdminSiteHandler } from '../../../../utils/admin-api'
+import { templateManifests } from '../../../../utils/templates'
+
+export default defineAdminSiteHandler(async ({ editor, site }) => {
+  const stored = await editor.listThemes(site.id)
+  const activeStored = stored.find((t) => t.isActive)?.templateKey
+  return {
+    // Template aktif yang sudah tidak terdaftar: site tampil dengan fallback, form juga.
+    activeKey: activeStored && templateManifests.has(activeStored) ? activeStored : templateManifests.fallback.key,
+    limits: { maxSectionsPerPage: SECTION_LIMITS.maxSectionsPerPage },
+    templates: templateManifests.templates.map((manifest) => {
+      const row = stored.find((t) => t.templateKey === manifest.key) ?? null
+      // Belum pernah disimpan: bawaan template ITU (resolveTheme(null) = fallback/base).
+      const resolved = templateManifests.resolveTheme(row ?? { templateKey: manifest.key, templateVersion: manifest.version, tokens: manifest.tokens.defaults, options: manifest.options.defaults })
+      const hasHome = row && isPlainObject(row.layouts) && Object.hasOwn(row.layouts, 'home')
+      return {
+        ...describeTemplate(manifest),
+        stored: row ? { templateVersion: row.templateVersion, isActive: row.isActive, updatedAt: row.updatedAt } : null,
+        config: {
+          tokens: resolved.tokens,
+          options: resolved.options,
+          layouts: hasHome ? { home: resolved.layouts.home.map((s) => ({ type: s.type, props: s.props })) } : {},
+        },
+        issues: resolved.issues,
+      }
+    }),
+  }
+})
+```
+
+`apps/web/server/api/admin/sites/[siteId]/theme.put.ts`
+
+```ts
+// PUT { templateKey, draft, updatedAt }: simpan config tema dan aktifkan.
+// Validasi ketat terhadap skema manifest; config ditulis dalam versi
+// template terpasang (migrasi config selesai di sini, ADR-008 butir 8).
+import { editorErrorMap, EditorError } from '@framework/core'
+import { validateThemeDraft } from '@framework/template-kit'
+import { readBody } from 'nuxt/server'
+import { defineAdminSiteHandler } from '../../../../utils/admin-api'
+import { templateManifests } from '../../../../utils/templates'
+
+export default defineAdminSiteHandler(async ({ editor, site, event }) => {
+  const body = (await readBody(event)) as { templateKey?: string; draft?: unknown; updatedAt?: string | null } | null
+  const key = String(body?.templateKey ?? '')
+  if (!templateManifests.has(key)) throw new EditorError('invalid', 'template tidak terdaftar', [{ field: 'templateKey', message: 'template tidak terdaftar' }])
+  const manifest = templateManifests.get(key)
+  const result = validateThemeDraft(manifest, body?.draft, editorErrorMap)
+  if (!result.ok) throw new EditorError('invalid', result.issues.map((i) => `${i.field}: ${i.message}`).join('; '), result.issues)
+  return editor.saveTheme(site.id, { templateKey: key, templateVersion: manifest.version, ...result.value }, body?.updatedAt ?? null)
+})
+```
+
+5. Simpan draf pratinjau di memori proses dengan id per draf, bukan di cookie sesi. Cookie tersegel bisa melewati ~4 KB (browser membuangnya tanpa galat), dan satu draf per sesi membuat dua tab saling menimpa:
+
+`apps/web/server/utils/preview-drafts.ts`
+
+```ts
+// Draf pratinjau tema (M4 4.4) di memori proses, dengan id per draf.
+//
+// Bukan di cookie sesi: cookie tersegel bisa melewati ~4 KB (browser lalu
+// membuangnya tanpa galat), dan satu draf per sesi membuat dua tab saling
+// menimpa. Dengan id di URL pratinjau, setiap iframe memuat drafnya sendiri.
+// Cukup untuk satu proses (sama seperti pembatas login, ADR-009).
+import { randomUUID } from 'node:crypto'
+
+export interface PreviewDraft {
+  userId: string
+  siteId: string
+  templateKey: string
+  tokens: Record<string, unknown>
+  options: Record<string, unknown>
+  layouts: Record<string, unknown>
+}
+
+const TTL_MS = 30 * 60_000
+const MAX_DRAFTS = 500
+const drafts = new Map<string, PreviewDraft & { expiresAt: number }>()
+
+function prune(now: number) {
+  for (const [id, d] of drafts) if (d.expiresAt <= now) drafts.delete(id)
+  while (drafts.size >= MAX_DRAFTS) drafts.delete(drafts.keys().next().value as string)
+}
+
+/** Simpan draf; id lama (draf dari tab yang sama) diganti bila milik user yang sama. */
+export function savePreviewDraft(draft: PreviewDraft, replaceId?: string): string {
+  const now = Date.now()
+  prune(now)
+  const existing = replaceId ? drafts.get(replaceId) : undefined
+  const id = existing && existing.userId === draft.userId ? (replaceId as string) : randomUUID()
+  drafts.set(id, { ...draft, expiresAt: now + TTL_MS })
+  return id
+}
+
+/** Draf milik user ini untuk site ini; null bila tidak ada, kedaluwarsa, atau milik orang lain. */
+export function getPreviewDraft(id: string | null | undefined, userId: string, siteId: string): PreviewDraft | null {
+  if (!id) return null
+  const d = drafts.get(id)
+  if (!d || d.expiresAt <= Date.now() || d.userId !== userId || d.siteId !== siteId) return null
+  return d
+}
+
+export function deletePreviewDraft(id: string, userId: string) {
+  if (drafts.get(id)?.userId === userId) drafts.delete(id)
+}
+```
+
+`apps/web/server/api/admin/sites/[siteId]/theme/preview.post.ts`
+
+```ts
+// POST { templateKey, draft, draftId? }: simpan draf pratinjau (bukan ke
+// database; theme aktif tidak berubah). Mengembalikan URL pratinjau dengan id
+// draf, sehingga setiap tab memuat drafnya sendiri (utils/preview-drafts.ts).
+import { editorErrorMap, EditorError } from '@framework/core'
+import { validateThemeDraft } from '@framework/template-kit'
+import { readBody } from 'nuxt/server'
+import { defineAdminSiteHandler } from '../../../../../utils/admin-api'
+import { savePreviewDraft } from '../../../../../utils/preview-drafts'
+import { templateManifests } from '../../../../../utils/templates'
+import { PREVIEW_PREFIX } from '../../../../../utils/theme-preview'
+
+export default defineAdminSiteHandler(async ({ event, site, admin }) => {
+  const body = (await readBody(event)) as { templateKey?: string; draft?: unknown; draftId?: string } | null
+  const key = String(body?.templateKey ?? '')
+  if (!templateManifests.has(key)) throw new EditorError('invalid', 'template tidak terdaftar', [{ field: 'templateKey', message: 'template tidak terdaftar' }])
+  const result = validateThemeDraft(templateManifests.get(key), body?.draft, editorErrorMap)
+  if (!result.ok) throw new EditorError('invalid', result.issues.map((i) => `${i.field}: ${i.message}`).join('; '), result.issues)
+  const draftId = savePreviewDraft({ userId: admin.user.id, siteId: site.id, templateKey: key, ...result.value }, body?.draftId)
+  return { draftId, base: `${PREVIEW_PREFIX}${site.code}` }
+})
+```
+
+6. Render pratinjau dengan pembangun halaman publik yang sama. Galat akses dijawab teks polos dengan status yang benar: di build produksi, galat yang dilempar di path `/admin/**` dirender sebagai halaman SPA berstatus 404 (gate admin menangkap ini; di dev statusnya benar). Media di pratinjau lewat route admin sendiri, karena `/media` hanya melayani domain site:
+
+`apps/web/server/utils/theme-preview.ts`
+
+```ts
+// Pratinjau tema (usulan M4-D): /admin/preview/<kode-site>/<path> dirender
+// SSR di host admin (mode multi) atau domain site (mode single), dengan
+// template site dan config DRAF (?draft=<id>, utils/preview-drafts.ts).
+// Theme aktif tidak tersentuh; tanpa draf, pratinjau memakai theme aktif.
+// Halaman Vue-nya pages/admin/preview/[...path].vue (segmen statis, jadi
+// tidak tertukar dengan pages/admin/[site]/* walau kode site = 'media').
+//
+// Halaman dibangun oleh pembangun halaman publik yang sama (ADR-007), lalu
+// dirender pages/[...slug].vue seperti halaman biasa. noindex, tanpa cache,
+// hanya bisa dibingkai dari origin yang sama.
+import { getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { requireAdmin, routedPath } from './admin'
+import { useRepositories } from './database'
+import { usePreviewPageBuilder } from './pages'
+import { getPreviewDraft } from './preview-drafts'
+import { resolveSiteTheme, templateManifests } from './templates'
+
+export const PREVIEW_PREFIX = '/admin/preview/'
+
+export function isPreviewPath(pathname: string): boolean {
+  return routedPath(pathname).startsWith(PREVIEW_PREFIX)
+}
+
+/** Isi event.context (site, theme, page) untuk pratinjau, seperti middleware halaman publik. */
+export async function preparePreview(event: RequestEvent) {
+  const url = getRequestURL(event, { xForwardedProto: true })
+  // Galat dijawab teks polos dengan status yang benar: di build produksi,
+  // galat yang dilempar di path /admin/** dirender sebagai halaman SPA (404).
+  let admin
+  try {
+    admin = await requireAdmin(event)
+  } catch (error) {
+    return plain(event, (error as { statusCode?: number }).statusCode ?? 401, 'Tidak diizinkan. Masuk ke admin dulu.')
+  }
+  const [code = '', ...parts] = routedPath(url.pathname).slice(PREVIEW_PREFIX.length).split('/')
+  if (!admin.sites.some((s) => s.code === code)) return plain(event, 404, 'Site tidak ditemukan.')
+  const repos = useRepositories()
+  const site = await repos.sites.findByCode(code)
+  if (!site) return plain(event, 404, 'Site tidak ditemukan.')
+
+  const draftId = url.searchParams.get('draft')
+  const draft = getPreviewDraft(draftId, admin.user.id, site.id)
+  // Parameter pratinjau bukan bagian halaman site (mis. tidak boleh ikut pencarian).
+  url.searchParams.delete('draft')
+  const stored = draft
+    ? { templateKey: draft.templateKey, templateVersion: templateManifests.get(draft.templateKey).version, tokens: draft.tokens, options: draft.options, layouts: draft.layouts }
+    : await repos.sites.getActiveTheme(site.id)
+  const theme = resolveSiteTheme(site, stored)
+
+  const prefix = `${PREVIEW_PREFIX}${code}`
+  const built = await usePreviewPageBuilder().build({
+    site,
+    pathname: `/${parts.join('/')}`,
+    searchParams: url.searchParams,
+    origin: `${url.origin}${prefix}`,
+    layouts: theme.layouts,
+  })
+  const headers = event.res.headers
+  headers.set('cache-control', 'no-store')
+  headers.set('x-robots-tag', 'noindex, nofollow')
+  headers.set('x-frame-options', 'SAMEORIGIN')
+  if (built.kind === 'redirect') {
+    // Redirect internal tetap di dalam pratinjau; tujuan luar dibiarkan.
+    const target = built.location.startsWith('/') ? new URL(`${prefix}${built.location}`, url.origin) : null
+    if (target && draftId) target.searchParams.set('draft', draftId)
+    return sendRedirect(event, target ? `${target.pathname}${target.search}` : built.location, built.status)
+  }
+  event.context.site = site
+  event.context.siteOrigin = `${url.origin}${prefix}`
+  event.context.theme = theme
+  event.context.page = { status: built.status, ...built.page }
+  event.context.themePreview = { draft: Boolean(draft) }
+}
+
+function plain(event: RequestEvent, status: number, text: string) {
+  setResponseStatus(event, status)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  event.res.headers.set('cache-control', 'no-store')
+  return `${text}\n`
+}
+```
+
+`apps/web/server/routes/admin/preview-media/[...key].get.ts`
+
+```ts
+// GET /admin/preview-media/<storage_key>: file media untuk pratinjau tema.
+// Route publik /media hanya melayani domain site, sedangkan pratinjau ada di
+// host admin. Wajib sesi admin; kode site di awal key harus site milik user.
+import { splitStorageKey } from '@framework/core'
+import { defineEventHandler, getRouterParam, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { assertAdminRequest, requireAdmin } from '../../../utils/admin'
+import { mediaSecurityHeaders, readMediaFile } from '../../../utils/media'
+
+export default defineEventHandler(async (event) => {
+  // Galat dijawab teks polos dengan status yang benar: di build produksi,
+  // galat yang dilempar di path /admin/** dirender sebagai halaman SPA.
+  let admin
+  try {
+    assertAdminRequest(event)
+    admin = await requireAdmin(event)
+  } catch (error) {
+    return plain(event, (error as { statusCode?: number }).statusCode ?? 401, 'Tidak diizinkan.')
+  }
+  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
+  const segments = splitStorageKey(key)
+  if (!segments || !admin.sites.some((s) => s.code === segments[0])) return plain(event, 404, 'Media tidak ditemukan.')
+  const file = await readMediaFile(key)
+  if (!file) return plain(event, 404, 'Media tidak ditemukan.')
+  mediaSecurityHeaders(event.res.headers)
+  event.res.headers.set('content-type', file.contentType)
+  event.res.headers.set('cache-control', 'private, no-store')
+  return file.data
+})
+
+function plain(event: RequestEvent, status: number, text: string) {
+  setResponseStatus(event, status)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  event.res.headers.set('cache-control', 'no-store')
+  return `${text}\n`
+}
+```
+
+7. Pasang di aplikasi: middleware site memanggil `preparePreview` untuk path pratinjau (host admin di mode multi, domain site di mode single), `routeRules` `'/admin/preview/**': { ssr: true }` menimpa `ssr: false` admin, dan renderer publik pindah ke komponen `PublicPage` yang dipakai dua halaman. Halaman pratinjau memakai segmen statis, yang selalu menang atas `pages/admin/[site]/*`; tanpa itu, site berkode `media` membuat iframe menampilkan layar admin Media:
+
+`apps/web/app/pages/admin/preview/[...path].vue`
+
+```vue
+<!--
+  Pratinjau tema (M4 4.4): halaman site dengan config draf, dirender di
+  server (routeRules /admin/preview/** ssr: true). Segmen statis "preview"
+  selalu menang atas pages/admin/[site]/*, jadi kode site seperti "media"
+  tidak membuat pratinjau tertukar dengan layar admin.
+-->
+<template>
+  <PublicPage />
+</template>
+```
+
+   Di dalam pratinjau, tautan dan form dimatikan lewat CSS (state `useThemePreview`), agar iframe tidak berpindah ke host admin.
+
+8. Tulis form dari skema. Warna hex menjadi pemilih warna plus isian teks, enum menjadi pilihan, boolean menjadi centang; komponen memanggil dirinya sendiri untuk object bersarang. Di template Vue, `as number | undefined` dibaca ESLint sebagai filter Vue 2, jadi pakai helper:
+
+`apps/web/app/components/admin/SchemaForm.vue`
+
+```vue
+<!--
+  Form yang dibangkitkan dari JSON Schema manifest template (M4 4.4):
+  object -> kelompok, enum -> pilihan, boolean -> centang, angka -> angka,
+  string berpola warna hex -> pemilih warna. Label dari title/description
+  skema (.meta() di manifest), jadi admin tidak menulis ulang daftar field.
+-->
+<script setup lang="ts">
+defineOptions({ name: 'AdminSchemaForm' })
+
+type Schema = Record<string, unknown>
+
+const props = withDefaults(defineProps<{ schema: Schema; path?: string; errors?: Record<string, string> }>(), { path: '', errors: () => ({}) })
+const model = defineModel<Record<string, unknown>>({ required: true })
+
+const fields = computed(() => Object.entries((props.schema['properties'] ?? {}) as Record<string, Schema>))
+const at = (key: string) => (props.path ? `${props.path}.${key}` : key)
+const label = (key: string, s: Schema) => (typeof s['title'] === 'string' ? s['title'] : key)
+const isColor = (s: Schema) => s['type'] === 'string' && typeof s['pattern'] === 'string' && (s['pattern'] as string).includes('#[0-9a-f')
+const kind = (s: Schema) =>
+  s['type'] === 'object' ? 'object'
+    : Array.isArray(s['enum']) ? 'enum'
+      : s['type'] === 'boolean' ? 'boolean'
+        : s['type'] === 'integer' || s['type'] === 'number' ? 'number'
+          : isColor(s) ? 'color'
+            : 'text'
+
+function set(key: string, value: unknown) {
+  const next = { ...model.value }
+  if (value === undefined || value === '') delete next[key]
+  else next[key] = value
+  model.value = next
+}
+const child = (key: string) => (model.value[key] && typeof model.value[key] === 'object' ? (model.value[key] as Record<string, unknown>) : {})
+const num = (s: Schema, key: string) => (typeof s[key] === 'number' ? (s[key] as number) : undefined)
+const err = (key: string) => fieldError(props.errors, at(key))
+</script>
+
+<template>
+  <div class="stack">
+    <template
+      v-for="[key, s] in fields"
+      :key="key"
+    >
+      <fieldset
+        v-if="kind(s) === 'object'"
+        class="adm-fieldset"
+      >
+        <legend>{{ label(key, s) }}</legend>
+        <AdminSchemaForm
+          :schema="s"
+          :path="at(key)"
+          :errors="errors"
+          :model-value="child(key)"
+          @update:model-value="set(key, $event)"
+        />
+      </fieldset>
+
+      <label
+        v-else-if="kind(s) === 'boolean'"
+        class="check"
+      >
+        <input
+          type="checkbox"
+          :checked="Boolean(model[key])"
+          @change="set(key, ($event.target as HTMLInputElement).checked)"
+        >
+        {{ label(key, s) }}
+      </label>
+
+      <label
+        v-else
+        class="field"
+      >
+        <span>{{ label(key, s) }}</span>
+        <select
+          v-if="kind(s) === 'enum'"
+          :value="model[key] ?? s['default'] ?? ''"
+          :aria-invalid="!!err(key) || undefined"
+          @change="set(key, ($event.target as HTMLSelectElement).value)"
+        >
+          <option
+            v-for="option in (s['enum'] as string[])"
+            :key="option"
+            :value="option"
+          >
+            {{ option }}
+          </option>
+        </select>
+        <span
+          v-else-if="kind(s) === 'color'"
+          class="adm-color"
+        >
+          <input
+            type="color"
+            :value="String(model[key] ?? '#000000')"
+            :aria-label="label(key, s)"
+            @input="set(key, ($event.target as HTMLInputElement).value)"
+          >
+          <input
+            type="text"
+            class="mono"
+            :value="String(model[key] ?? '')"
+            :aria-invalid="!!err(key) || undefined"
+            @change="set(key, ($event.target as HTMLInputElement).value.trim())"
+          >
+        </span>
+        <input
+          v-else-if="kind(s) === 'number'"
+          type="number"
+          :min="num(s, 'minimum')"
+          :max="num(s, 'maximum')"
+          :value="model[key] ?? s['default'] ?? ''"
+          :placeholder="s['default'] !== undefined ? String(s['default']) : ''"
+          :aria-invalid="!!err(key) || undefined"
+          @input="set(key, ($event.target as HTMLInputElement).value === '' ? undefined : Number(($event.target as HTMLInputElement).value))"
+        >
+        <input
+          v-else
+          type="text"
+          :value="String(model[key] ?? '')"
+          :aria-invalid="!!err(key) || undefined"
+          @input="set(key, ($event.target as HTMLInputElement).value)"
+        >
+        <span
+          v-if="err(key)"
+          class="field__error"
+        >{{ err(key) }}</span>
+        <span
+          v-else-if="typeof s['description'] === 'string'"
+          class="field__hint"
+        >{{ s['description'] }}</span>
+      </label>
+    </template>
+  </div>
+</template>
+```
+
+`apps/web/app/components/admin/LayoutEditor.vue`
+
+```vue
+<!--
+  Susunan section beranda (ADR-008): bawaan template, tanpa section, atau
+  susunan sendiri. Props tiap section memakai form dari skema section.
+-->
+<script setup lang="ts">
+interface SectionType { type: string; title: string; schema: Record<string, unknown> }
+interface Item { type: string; props: Record<string, unknown> }
+
+const props = withDefaults(defineProps<{ sections: SectionType[]; defaults: Item[]; maxSections: number; errors?: Record<string, string> }>(), { errors: () => ({}) })
+/** undefined = bawaan template; [] = tanpa section; isi = susunan sendiri. */
+const model = defineModel<Item[] | undefined>({ required: true })
+
+const mode = computed({
+  get: () => (model.value === undefined ? 'default' : model.value.length === 0 ? 'none' : 'custom'),
+  set: (value: string) => {
+    if (value === 'default') model.value = undefined
+    else if (value === 'none') model.value = []
+    else model.value = structuredClone(props.defaults.length ? props.defaults : [{ type: props.sections[0]?.type ?? '', props: {} }]).map((i) => ({ type: i.type, props: i.props ?? {} }))
+  },
+})
+
+const titleOf = (type: string) => props.sections.find((s) => s.type === type)?.title ?? type
+const schemaOf = (type: string) => props.sections.find((s) => s.type === type)?.schema ?? {}
+const items = computed(() => model.value ?? [])
+
+function update(index: number, patch: Partial<Item>) {
+  model.value = items.value.map((item, i) => (i === index ? { ...item, ...patch } : item))
+}
+function move(index: number, delta: number) {
+  const next = [...items.value]
+  const [item] = next.splice(index, 1)
+  if (item) next.splice(index + delta, 0, item)
+  model.value = next
+}
+function remove(index: number) {
+  const next = items.value.filter((_, i) => i !== index)
+  model.value = next.length ? next : []
+}
+function add() {
+  model.value = [...items.value, { type: props.sections[0]?.type ?? '', props: {} }]
+}
+</script>
+
+<template>
+  <div class="stack">
+    <div
+      class="adm-segmented"
+      role="radiogroup"
+      aria-label="Susunan beranda"
+    >
+      <label
+        v-for="m in [['default', 'Bawaan template'], ['custom', 'Susunan sendiri'], ['none', 'Tanpa section']]"
+        :key="m[0]"
+        :class="{ 'is-on': mode === m[0] }"
+      >
+        <input
+          v-model="mode"
+          type="radio"
+          name="mode-layout"
+          :value="m[0]"
+        >
+        {{ m[1] }}
+      </label>
+    </div>
+    <p
+      v-if="mode === 'default'"
+      class="field__hint"
+    >
+      Memakai susunan bawaan template: {{ defaults.map((d) => titleOf(d.type)).join(', ') || 'tanpa section' }}.
+    </p>
+    <p
+      v-else-if="mode === 'none'"
+      class="field__hint"
+    >
+      Beranda menampilkan pilihan redaksi dan daftar artikel terbaru, tanpa section.
+    </p>
+    <template v-else>
+      <div
+        v-for="(item, index) in items"
+        :key="index"
+        class="adm-layout-item"
+      >
+        <div class="adm-layout-item__head">
+          <select
+            :value="item.type"
+            :aria-label="`Jenis section ke-${index + 1}`"
+            :aria-invalid="!!fieldError(errors, `layouts.home.${index}.type`) || undefined"
+            @change="update(index, { type: ($event.target as HTMLSelectElement).value, props: {} })"
+          >
+            <option
+              v-for="s in sections"
+              :key="s.type"
+              :value="s.type"
+            >
+              {{ s.title }}
+            </option>
+          </select>
+          <div class="adm-block__tools">
+            <button
+              type="button"
+              :disabled="index === 0"
+              :aria-label="`Naikkan section ke-${index + 1}`"
+              @click="move(index, -1)"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              :disabled="index === items.length - 1"
+              :aria-label="`Turunkan section ke-${index + 1}`"
+              @click="move(index, 1)"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              :aria-label="`Hapus section ke-${index + 1}`"
+              @click="remove(index)"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        <AdminSchemaForm
+          :schema="schemaOf(item.type)"
+          :path="`layouts.home.${index}.props`"
+          :errors="errors"
+          :model-value="item.props"
+          @update:model-value="update(index, { props: $event })"
+        />
+      </div>
+      <div>
+        <button
+          type="button"
+          class="btn btn--small"
+          :disabled="items.length >= maxSections"
+          @click="add"
+        >
+          Tambah section
+        </button>
+      </div>
+    </template>
+  </div>
+</template>
+```
+
+9. Rangkai di layar Tema. Draf disimpan per template (berpindah template tidak membuang perubahan, dan simpan hanya menyelaraskan template yang disimpan), pratinjau diperbarui 600 ms setelah form berhenti berubah, dan perbandingan "belum disimpan" memakai JSON dengan key terurut:
+
+`apps/web/app/pages/admin/[site]/theme.vue`
+
+```vue
+<!--
+  Pengaturan tema (M4 4.4). Kiri: template, token, opsi, dan susunan beranda,
+  semuanya dari skema manifest. Kanan: pratinjau langsung (usulan M4-D):
+  draf dikirim ke sesi admin, iframe merender halaman site dengan draf itu
+  tanpa mengubah theme aktif. Simpan = validasi ketat lalu aktifkan.
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'admin' })
+
+interface Item { type: string; props: Record<string, unknown> }
+interface TemplateInfo {
+  key: string
+  name: string
+  version: string
+  tokens: { schema: Record<string, unknown>; defaults: Record<string, unknown> }
+  options: { schema: Record<string, unknown>; defaults: Record<string, unknown> }
+  sections: { type: string; title: string; schema: Record<string, unknown> }[]
+  defaultLayouts: { home: Item[] }
+  stored: { templateVersion: string; isActive: boolean; updatedAt: string } | null
+  config: { tokens: Record<string, unknown>; options: Record<string, unknown>; layouts: { home?: Item[] } }
+  issues: string[]
+}
+interface Draft { tokens: Record<string, unknown>; options: Record<string, unknown>; home: Item[] | undefined }
+
+const site = useAdminSite()
+const { data, error, refresh } = await useAsyncData(
+  () => `theme-${site.value?.id}`,
+  () => (site.value ? adminApi<{ activeKey: string; limits: { maxSectionsPerPage: number }; templates: TemplateInfo[] }>(site.value.id, 'theme') : Promise.resolve(null)),
+  { server: false },
+)
+
+const selectedKey = ref('')
+/** Draf per template: berpindah template tidak membuang perubahan. */
+const drafts = reactive<Record<string, Draft>>({})
+const errors = ref<Record<string, string>>({})
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref(false)
+
+const fromConfig = (t: TemplateInfo): Draft => ({ tokens: structuredClone(t.config.tokens), options: structuredClone(t.config.options), home: t.config.layouts.home ? structuredClone(t.config.layouts.home) : undefined })
+
+/** Draf template yang belum ada diisi dari config tersimpan; draf yang sedang diedit dibiarkan. */
+function syncDrafts() {
+  for (const t of data.value?.templates ?? []) drafts[t.key] ??= fromConfig(t)
+  selectedKey.value ||= data.value?.activeKey ?? ''
+}
+watch(data, syncDrafts, { immediate: true })
+
+const template = computed(() => data.value?.templates.find((t) => t.key === selectedKey.value) ?? null)
+const draft = computed(() => drafts[selectedKey.value])
+const isActive = computed(() => selectedKey.value === data.value?.activeKey)
+const payloadDraft = () => (draft.value ? { tokens: draft.value.tokens, options: draft.value.options, layouts: draft.value.home === undefined ? {} : { home: draft.value.home } } : null)
+
+/** JSON dengan key terurut: dua object sama walau urutan key berbeda. */
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : v)
+}
+
+// ---------- Pratinjau ----------
+const previewPath = ref('/')
+/** Id draf pratinjau milik tab ini (server menyimpannya per id, bukan per sesi). */
+const draftId = ref<string | null>(null)
+const previewWidth = ref<'desktop' | 'mobile'>('desktop')
+const previewSrc = ref('')
+const previewError = ref<string | null>(null)
+const previewBusy = ref(false)
+
+async function updatePreview() {
+  if (!site.value || !draft.value) return
+  previewBusy.value = true
+  try {
+    const result = await adminApi<{ draftId: string; base: string }>(site.value.id, 'theme/preview', { method: 'POST', body: { templateKey: selectedKey.value, draft: payloadDraft(), draftId: draftId.value ?? undefined } })
+    draftId.value = result.draftId
+    previewError.value = null
+    errors.value = {}
+    const path = previewPath.value.startsWith('/') ? previewPath.value : `/${previewPath.value}`
+    previewSrc.value = `${result.base}${path}${path.includes('?') ? '&' : '?'}draft=${result.draftId}&v=${Date.now()}`
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    previewError.value = apiStatus(e) === 422 ? 'Pratinjau ditunda: ada isian yang belum valid.' : apiErrorMessage(e)
+  } finally {
+    previewBusy.value = false
+  }
+}
+
+let timer: ReturnType<typeof setTimeout> | undefined
+watch([() => JSON.stringify(draft.value), selectedKey, previewPath], () => {
+  clearTimeout(timer)
+  timer = setTimeout(updatePreview, 600)
+})
+onMounted(() => {
+  if (draft.value) void updatePreview()
+})
+onBeforeUnmount(() => {
+  clearTimeout(timer)
+  // Draf pratinjau tidak perlu bertahan setelah halaman ditinggalkan.
+  if (site.value && draftId.value) void adminApi(site.value.id, 'theme/preview', { method: 'DELETE', query: { draftId: draftId.value } }).catch(() => {})
+})
+
+// ---------- Simpan ----------
+async function save() {
+  if (!site.value || !template.value) return
+  if (!isActive.value && !confirm(`Ganti tampilan site ke template ${template.value.name}? Perubahan langsung terlihat pengunjung.`)) return
+  busy.value = true
+  errors.value = {}
+  message.value = null
+  try {
+    await adminApi(site.value.id, 'theme', { method: 'PUT', body: { templateKey: selectedKey.value, draft: payloadDraft(), updatedAt: template.value.stored?.updatedAt ?? null } })
+    await refresh()
+    // Hanya draf template yang disimpan yang diselaraskan; draf template lain tetap.
+    const saved = data.value?.templates.find((t) => t.key === selectedKey.value)
+    if (saved) drafts[saved.key] = fromConfig(saved)
+    message.value = { kind: 'ok', text: `Tema ${template.value.name} disimpan dan aktif di site.` }
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    message.value = { kind: 'error', text: apiStatus(e) === 409 ? 'Tema sudah diubah di tempat lain. Muat ulang halaman ini.' : apiStatus(e) === 422 ? 'Periksa kembali isian yang ditandai.' : apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+function resetSelected() {
+  const t = template.value
+  if (!t) return
+  drafts[t.key] = { tokens: structuredClone(t.tokens.defaults), options: structuredClone(t.options.defaults), home: undefined }
+}
+
+const dirty = computed(() => {
+  const t = template.value
+  if (!t || !draft.value) return false
+  return stable({ tokens: draft.value.tokens, options: draft.value.options, home: draft.value.home }) !== stable({ tokens: t.config.tokens, options: t.config.options, home: t.config.layouts.home })
+})
+</script>
+
+<template>
+  <div v-if="site">
+    <header class="adm-head">
+      <h1>Tema</h1>
+      <span
+        v-if="dirty"
+        class="muted"
+      >Belum disimpan</span>
+      <div class="adm-head__actions">
+        <button
+          type="button"
+          class="btn"
+          :disabled="busy"
+          @click="resetSelected"
+        >
+          Kembalikan bawaan
+        </button>
+        <button
+          type="button"
+          class="btn btn--primary"
+          :disabled="busy || !template"
+          @click="save"
+        >
+          {{ isActive ? 'Simpan' : 'Simpan dan aktifkan' }}
+        </button>
+      </div>
+    </header>
+    <p
+      v-if="error"
+      class="notice notice--error"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <p
+      v-if="message"
+      class="notice"
+      :class="{ 'notice--error': message.kind === 'error' }"
+      role="status"
+    >
+      {{ message.text }}
+    </p>
+
+    <div
+      v-if="template && draft"
+      class="adm-theme"
+    >
+      <div class="adm-theme__form">
+        <section class="adm-panel">
+          <h2>Template</h2>
+          <label class="field">
+            <span>Tampilan site</span>
+            <select v-model="selectedKey">
+              <option
+                v-for="t in data?.templates ?? []"
+                :key="t.key"
+                :value="t.key"
+              >
+                {{ t.name }} {{ t.version }}{{ t.key === data?.activeKey ? ' (aktif)' : '' }}
+              </option>
+            </select>
+            <span class="field__hint">
+              {{ isActive ? 'Template yang sedang tampil di site.' : 'Belum aktif: lihat pratinjau, lalu simpan untuk mengaktifkan.' }}
+              <template v-if="template.stored && template.stored.templateVersion !== template.version">
+                Config tersimpan untuk versi {{ template.stored.templateVersion }}; disimpan ulang sebagai {{ template.version }}.
+              </template>
+            </span>
+          </label>
+          <p
+            v-if="template.issues.length"
+            class="field__error"
+          >
+            Config tersimpan punya nilai yang tidak dikenal; nilai itu diganti bawaan: {{ template.issues.join('; ') }}
+          </p>
+        </section>
+
+        <section class="adm-panel">
+          <h2>Warna, huruf, dan bentuk</h2>
+          <AdminSchemaForm
+            v-model="draft.tokens"
+            :schema="template.tokens.schema"
+            path="tokens"
+            :errors="errors"
+          />
+        </section>
+
+        <section class="adm-panel">
+          <h2>Opsi tampilan</h2>
+          <AdminSchemaForm
+            v-model="draft.options"
+            :schema="template.options.schema"
+            path="options"
+            :errors="errors"
+          />
+        </section>
+
+        <section class="adm-panel">
+          <h2>Susunan beranda</h2>
+          <AdminLayoutEditor
+            v-model="draft.home"
+            :sections="template.sections"
+            :defaults="template.defaultLayouts.home"
+            :max-sections="data?.limits.maxSectionsPerPage ?? 8"
+            :errors="errors"
+          />
+          <p
+            v-if="fieldError(errors, 'layouts')"
+            class="field__error"
+          >
+            {{ fieldError(errors, 'layouts') }}
+          </p>
+        </section>
+      </div>
+
+      <aside class="adm-theme__preview">
+        <div class="adm-preview-bar">
+          <select
+            v-model="previewPath"
+            aria-label="Halaman yang dipratinjau"
+          >
+            <option value="/">
+              Beranda
+            </option>
+            <option value="/?page=2">
+              Arsip terbaru
+            </option>
+            <option value="/search?q=a">
+              Pencarian
+            </option>
+            <option value="/tidak-ada">
+              Halaman 404
+            </option>
+          </select>
+          <div
+            class="adm-segmented"
+            role="radiogroup"
+            aria-label="Lebar pratinjau"
+          >
+            <label :class="{ 'is-on': previewWidth === 'desktop' }"><input
+              v-model="previewWidth"
+              type="radio"
+              value="desktop"
+            >Desktop</label>
+            <label :class="{ 'is-on': previewWidth === 'mobile' }"><input
+              v-model="previewWidth"
+              type="radio"
+              value="mobile"
+            >Ponsel</label>
+          </div>
+          <span
+            class="muted"
+            aria-live="polite"
+          >{{ previewBusy ? 'Memperbarui…' : 'Pratinjau, belum tampil di site' }}</span>
+        </div>
+        <p
+          v-if="previewError"
+          class="field__error"
+        >
+          {{ previewError }}
+        </p>
+        <div
+          class="adm-preview-frame"
+          :class="`is-${previewWidth}`"
+        >
+          <iframe
+            v-if="previewSrc"
+            :src="previewSrc"
+            title="Pratinjau tema"
+          />
+        </div>
+      </aside>
+    </div>
+  </div>
+</template>
+```
+
+10. Uji di gate admin tanpa menyimpan apa pun: deskripsi form ada, draf salah 422, pratinjau memakai draf dan `noindex`, id draf yang tidak dikenal memakai theme aktif, pratinjau dan media pratinjau tanpa sesi 401, dan site publik tidak berubah. Lalu coba di browser: ubah warna aksen, lihat pratinjau, pindah template, pilih "Tanpa section", lihat lebar ponsel, simpan, dan buka site.
 

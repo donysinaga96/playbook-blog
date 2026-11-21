@@ -19,6 +19,7 @@ import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
+import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -34,7 +35,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -48,7 +49,8 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).

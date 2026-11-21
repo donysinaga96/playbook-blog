@@ -204,6 +204,30 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
     })
   })
 
+  describe('tema', () => {
+    const theme = (templateKey: string, primary = '#112233') => ({ templateKey, templateVersion: '1.1.0', tokens: { color: { primary } }, options: {}, layouts: { home: [] } })
+
+    it('simpan + aktifkan; ganti template menonaktifkan yang lama; token kedaluwarsa = conflict', async () => {
+      const a = await editor.saveTheme(SITE, theme('magazine'), null)
+      expect(a).toMatchObject({ templateKey: 'magazine', templateVersion: '1.1.0', isActive: true, layouts: { home: [] } })
+      await rejects(editor.saveTheme(SITE, theme('magazine'), null), 'conflict')
+
+      const b = await editor.saveTheme(SITE, theme('news'), null)
+      expect(b.isActive).toBe(true)
+      const all = await editor.listThemes(SITE)
+      expect(all.map((t) => [t.templateKey, t.isActive])).toEqual([['news', true], ['magazine', false]])
+
+      // Kembali ke magazine dengan token yang benar: config lama dipertahankan, lalu diganti.
+      const magazine = all.find((t) => t.templateKey === 'magazine')
+      const c = await editor.saveTheme(SITE, theme('magazine', '#445566'), magazine?.updatedAt.toISOString() ?? null)
+      expect(c).toMatchObject({ isActive: true, tokens: { color: { primary: '#445566' } } })
+      await rejects(editor.saveTheme(SITE, theme('magazine'), magazine?.updatedAt.toISOString() ?? null), 'conflict')
+      expect((await editor.listThemes(SITE)).filter((t) => t.isActive).map((t) => t.templateKey)).toEqual(['magazine'])
+      expect(await editor.listThemes(OTHER)).not.toEqual([])
+      expect((await editor.listThemes(OTHER)).some((t) => t.tokens['color'] && (t.tokens['color'] as Record<string, unknown>)['primary'] === '#445566')).toBe(false)
+    })
+  })
+
   describe('media', () => {
     const file = (name: string) => ({ storageKey: `uji-${run}/2026/11/${name}.png`, mimeType: 'image/png', sizeBytes: 1234, width: 800, height: 600 })
 

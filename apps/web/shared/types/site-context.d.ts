@@ -18,6 +18,8 @@ declare module 'nuxt/schema' {
     theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
+    /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
+    themePreview?: { draft: boolean }
   }
 }
 

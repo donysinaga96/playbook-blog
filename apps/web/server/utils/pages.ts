@@ -3,6 +3,7 @@ import { createFeedBuilder, createMediaUrlResolver, createPageBuilder } from '@f
 import { useRepositories } from './database'
 
 let pageBuilder: ReturnType<typeof createPageBuilder> | undefined
+let previewBuilder: ReturnType<typeof createPageBuilder> | undefined
 let feedBuilder: ReturnType<typeof createFeedBuilder> | undefined
 
 export function usePageBuilder() {
@@ -10,6 +11,17 @@ export function usePageBuilder() {
     mediaUrl: createMediaUrlResolver({ baseUrl: process.env['MEDIA_BASE_URL'] || '/media' }),
   })
   return pageBuilder
+}
+
+/**
+ * Pembangun halaman untuk pratinjau tema di admin: sama, tetapi URL media
+ * lewat /admin/preview-media (route /media hanya melayani domain site).
+ */
+export function usePreviewPageBuilder() {
+  previewBuilder ??= createPageBuilder(useRepositories(), {
+    mediaUrl: createMediaUrlResolver({ baseUrl: '/admin/preview-media' }),
+  })
+  return previewBuilder
 }
 
 export function useFeedBuilder() {
