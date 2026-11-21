@@ -10,11 +10,11 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M0 — Fondasi | 10 / 10 | ✅ Lulus 17 Nov 2026 — pipeline #3078334327 (commit 9df99b4) |
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
-| M3 — Template kedua (titik evaluasi) | 24 / 25 | ⏳ Lokal hijau 21 Nov 2026; menunggu pipeline CI |
+| M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 0 / 27 | — (draf; usulan A–G menunggu persetujuan) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** push + pipeline CI hijau untuk gate M3, lalu putuskan urutan M4/M5 (evaluasi M3). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026): setujui usulan M4 A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md), lalu kerjakan rincian M4. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -183,13 +183,15 @@ Baris `› Skill` menyebut skill Claude Code yang dipakai untuk task di atasnya 
 
 **3.5 Penutup**
 - [x] Bab tutorial (`docs/tutorial/tutorial.tpl.md` + `pnpm tutorial`), dengan catatan di bab lama yang filenya berubah — 4 bab baru: section home, template kedua, migrasi config, cek hidrasi
-- [ ] Commit, pipeline hijau, retro mini M3, evaluasi urutan M4/M5 — commit dan retro selesai; menunggu push + pipeline, dan keputusan urutan M4/M5
+- [x] Commit, pipeline hijau, retro mini M3, evaluasi urutan M4/M5 — pipeline hijau pada a0b1a23; M4 lebih dulu
 - Code review (level high, 21 Nov 2026, `f2503b4..7043fd6`, 3.2–3.4): semua 8 temuan diperbaiki: versi tersimpan dibaca sebagai angka seperti CHECK database (`1.01.0`), hasil migrasi wajib berisi tokens/options/layouts, setiap mayor yang dilewati wajib punya langkah `X.0.0` (termasuk 0.x → 1.x), `structuredClone` di dalam try, smoke memeriksa template per host (`SMOKE_HOSTS=host=template`, juga di CI), `browser-check` menolak `BASE_URL` tanpa `{host}` dan hanya mengabaikan 404 dokumen sendiri, nama paket `libasound2` untuk Ubuntu lama, teks TASKS "tiga template"
 - › Skill: `/code-review` (level high) untuk seluruh diff M3 sebelum commit
 
 **Gate:** news selesai tanpa mengubah core, atau setiap perubahan core dicatat sebagai ADR perbaikan kontrak.
-Status 21 Nov 2026: news selesai tanpa komponen sendiri dan tanpa mengubah core di 3.2. Perubahan core M3 (eksekusi data section, `excludeIds`, theme diselesaikan sebelum view model, `?page=N` arsip) dicatat di ADR-008. Lokal hijau: `pnpm check` (439 test), build, smoke (`tekno=magazine`, `kuliner=news`), gate 240 request, browser-check 24 halaman. Menunggu pipeline CI.
+Status 21 Nov 2026: news selesai tanpa komponen sendiri dan tanpa mengubah core di 3.2. Perubahan core M3 (eksekusi data section, `excludeIds`, theme diselesaikan sebelum view model, `?page=N` arsip) dicatat di ADR-008. Lokal hijau: `pnpm check` (439 test), build, smoke (`tekno=magazine`, `kuliner=news`), gate 240 request, browser-check 24 halaman.
+✅ Lulus 21 Nov 2026: pipeline hijau (commit a0b1a23).
 **Evaluasi:** apakah admin (M4) atau produksi dengan data seed/manual (M5) yang lebih dulu?
+Keputusan 21 Nov 2026: **M4 dulu.** Tanpa admin, konten site nyata di M5 harus diisi lewat SQL manual; config theme juga baru ditulis dalam versi terpasang saat disimpan dari admin.
 
 Commit M3: f2503b4 (3.0–3.1), 53343bd (3.2), 7a03cb3 (3.3), 7043fd6 (3.4), ditambah commit penutup 3.5.
 
