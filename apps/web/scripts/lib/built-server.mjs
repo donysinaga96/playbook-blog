@@ -63,8 +63,9 @@ export function getWithHost(port, path, host) {
  * Request apa pun dengan header Host tertentu. `body` object dikirim sebagai
  * JSON. Mengembalikan status, header (huruf kecil), dan body teks.
  */
-export function requestWithHost(port, { method = 'GET', path, host, headers = {}, body }) {
-  const payload = body === undefined ? undefined : JSON.stringify(body)
+export function requestWithHost(port, { method = 'GET', path, host, headers = {}, body, rawBody }) {
+  // rawBody: Buffer apa adanya (mis. multipart); header-nya diisi pemanggil.
+  const payload = rawBody ?? (body === undefined ? undefined : JSON.stringify(body))
   return new Promise((resolve, reject) => {
     const req = request(
       {
@@ -72,7 +73,7 @@ export function requestWithHost(port, { method = 'GET', path, host, headers = {}
         port,
         path,
         method,
-        headers: { host, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
+        headers: { host, ...(payload && !rawBody ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
       },
       (res) => {
         let text = ''

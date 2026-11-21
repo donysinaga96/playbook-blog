@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 19 / 27 | — |
+| M4 — Admin minimal | 22 / 27 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, dan 4.2 (22 Nov 2026) selesai; berikutnya 4.3 (media). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, 4.2, dan 4.3 (22 Nov 2026) selesai; berikutnya 4.4 (pengaturan tema). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -251,10 +251,11 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - Code review (level high, 22 Nov 2026, diff 4.2): 10 temuan diperbaiki: simpan halaman/kategori menghapus SEO yang tidak ada di form, logout gagal tetap pindah ke login, target menu artikel di luar 20 terbaru, draf judul saja ditolak (paragraf kosong), detik tanggal terbit terpotong setiap simpan, gambar terpasang di luar 30 media terbaru tampil kosong, galat server di /admin tampil "tidak ada site", galat field ringkasan/tanggal/penulis/tag tidak ditandai, sesi habis tidak kembali ke login, `?page` raksasa = 500. Pesan validasi kini berbahasa Indonesia. Uji browser (Playwright): login, ubah dan simpan, draf judul saja, logout; `gate-admin` 30 pemeriksaan (termasuk user anggota satu site: site lain 404).
 
 **4.3 Media**
-- [ ] Storage adapter sisi tulis (disk lokal, `MEDIA_DIR`); `storage_key` dibuat server
-- [ ] Upload: tipe dari magic bytes (JPEG, PNG, WebP; SVG ditolak), batas ukuran, dimensi, alt text
-- [ ] Pemilih media untuk block gambar dan cover artikel
+- [x] Storage adapter sisi tulis (disk lokal, `MEDIA_DIR`); `storage_key` dibuat server — `core/media/local-storage.ts` (tulis atomik, path dicek), key `<site>/<yyyy>/<mm>/<uuid>.<ext>`
+- [x] Upload: tipe dari magic bytes (JPEG, PNG, WebP; SVG ditolak), batas ukuran, dimensi, alt text — `core/media/image-info.ts` (diuji juga dengan file asli dari Chromium), 10 MB dicek dari Content-Length sebelum body dibaca, alt wajib; layar Media dengan titik fokus; hapus hanya bila tidak dipakai
+- [x] Pemilih media untuk block gambar dan cover artikel — `MediaPicker` (dialog galeri + unggah) untuk block gambar, gambar utama, gambar OG
 - › Skill: `/security-review` (upload adalah input paling berisiko di M4)
+- Security review (22 Nov 2026): tidak ada temuan. Catatan privasi: metadata EXIF (termasuk GPS) belum dibuang dari file yang diunggah (butuh pemrosesan gambar; dicatat di dev-setup). `gate-admin` 36 pemeriksaan (upload asli, SVG menyamar 415, tanpa alt 422, nosniff, media site lain 404, media uji dihapus).
 
 **4.4 Pengaturan tema [D]**
 - [ ] Form dari skema manifest: tokens, options, layout per section

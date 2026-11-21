@@ -156,7 +156,11 @@ multi: buka http://admin.localhost:3000/admin; path admin di domain site dijawab
    editor@local.test --name Editor --site kabar-tekno < /dev/null` (sekali saja), lalu
    `pnpm build` dan `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
 5. Layar admin: Artikel (daftar, editor block, jadwal terbit di zona waktu site), Halaman,
-   Kategori, Tag, Menu. Pemilih gambar menampilkan media yang sudah ada; upload menyusul.
+   Kategori, Tag, Menu, Media.
+6. Upload media butuh `MEDIA_DIR` (path absolut) di `.env`, mis. `<repo>/.data/media`
+   (`.data/` diabaikan Git). JPEG, PNG, WebP maksimal 10 MB; tipe dibaca dari isi file, bukan
+   nama file. Media yang masih dipakai konten tidak bisa dihapus. Metadata EXIF (termasuk lokasi
+   GPS) belum dibuang dari file; hapus dulu dari foto sebelum diunggah bila perlu.
 
 ## Konten contoh
 

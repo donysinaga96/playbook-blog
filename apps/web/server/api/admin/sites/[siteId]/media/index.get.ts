@@ -1,6 +1,6 @@
 // GET ?page= atau ?ids=a,b: media site, terbaru dulu (pemilih gambar; upload di 4.3).
 import { getQuery } from 'nuxt/server'
-import { defineAdminSiteHandler } from '../../../../utils/admin-api'
+import { defineAdminSiteHandler } from '../../../../../utils/admin-api'
 
 export default defineAdminSiteHandler(({ editor, site, event }) => {
   const query = getQuery(event)

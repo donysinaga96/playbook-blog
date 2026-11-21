@@ -204,6 +204,33 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
     })
   })
 
+  describe('media', () => {
+    const file = (name: string) => ({ storageKey: `uji-${run}/2026/11/${name}.png`, mimeType: 'image/png', sizeBytes: 1234, width: 800, height: 600 })
+
+    it('catat, ubah keterangan, pemakaian menghalangi hapus, lalu hapus', async () => {
+      const m = await editor.createMedia(SITE, file('a'), { altText: ' Rendang di piring ', caption: '' }, USER)
+      expect(m).toMatchObject({ altText: 'Rendang di piring', caption: null, focalX: 0.5, width: 800 })
+      await rejects(editor.createMedia(SITE, file('b'), { altText: '' }, USER), 'invalid', 'altText')
+      await expect(editor.createMedia(SITE, { ...file('c'), storageKey: 'dapur-nusantara/2026/11/c.png' }, { altText: 'x' }, USER)).rejects.toThrow(/bukan milik site/)
+
+      const u = await editor.updateMedia(SITE, m.id, { altText: 'Rendang', credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 }, m.updatedAt.toISOString())
+      expect(u).toMatchObject({ credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 })
+      await rejects(editor.updateMedia(SITE, m.id, { altText: 'x' }, m.updatedAt.toISOString()), 'conflict')
+      await rejects(editor.updateMedia(OTHER, m.id, { altText: 'x' }, u.updatedAt.toISOString()), 'not-found')
+
+      // Dipakai sebagai gambar utama, di block gambar, dan sebagai gambar OG.
+      const a = await editor.createArticle(SITE, article({ slug: `pakai-media-${run}`, featuredMediaId: null, body: { version: 1, blocks: [{ type: 'image', mediaId: m.id }] }, seo: { og_image_id: m.id } }), USER)
+      expect(await editor.mediaUsage(SITE, m.id)).toEqual([`artikel "${a.title}"`])
+      await rejects(editor.deleteMedia(SITE, m.id, u.updatedAt.toISOString()), 'invalid')
+
+      await editor.archiveArticle(SITE, a.id, 1, USER) // arsip tetap memakai media
+      await db.delete(articles).where(eq(articles.id, a.id))
+      expect(await editor.mediaUsage(SITE, m.id)).toEqual([])
+      expect(await editor.deleteMedia(SITE, m.id, u.updatedAt.toISOString())).toEqual({ storageKey: file('a').storageKey })
+      expect((await editor.listMedia(SITE, { ids: [m.id] })).items).toEqual([])
+    })
+  })
+
   describe('halaman', () => {
     it('buat, ubah slug halaman terbit -> redirect; updatedAt lama -> conflict', async () => {
       const p = await editor.createPage(SITE, { title: `Halaman ${run}`, slug: `hal-${run}`, body: body(), status: 'PUBLISHED' })

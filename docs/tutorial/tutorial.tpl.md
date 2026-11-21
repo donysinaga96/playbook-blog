@@ -828,7 +828,7 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
 @@include packages/template-kit/src/theme.test.ts ts@@
 
-9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
+9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`; sisi tulis ada di bab "Mengunggah Media"). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
 
 @@include packages/core/src/media/storage.ts ts@@
 
@@ -1693,11 +1693,9 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 @@include apps/web/app/layouts/admin.vue vue@@
 
-10. Tulis komponen. `MediaSelect` memakai `v-model` lewat computed (dengan `:value`, opsi yang dimuat belakangan tidak ikut terpilih) dan `withDefaults` untuk `allowEmpty` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
+10. Tulis komponen. Versi pertama pemilih gambar (`MediaSelect`, sebuah `<select>`) diganti `MediaPicker` dengan pratinjau dan upload di bab "Mengunggah Media". Dua pelajaran dari versi pertama tetap berlaku: `<select>` yang opsinya dimuat belakangan harus memakai `v-model` (dengan `:value`, opsi yang datang kemudian tidak ikut terpilih), dan prop boolean opsional butuh `withDefaults` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
 
 @@include apps/web/app/components/admin/StatusBadge.vue vue@@
-
-@@include apps/web/app/components/admin/MediaSelect.vue vue@@
 
 @@include apps/web/app/components/admin/BlockEditor.vue vue@@
 
@@ -1721,4 +1719,66 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
    Tambahkan perintah `admin:create` yang sama ke job CI `build`, sebelum `gate:admin`.
 
 13. Coba alurnya di browser: login di http://admin.localhost:3000/admin, buka artikel, ubah ringkasan dan simpan, tulis artikel baru dengan judul saja (harus tersimpan sebagai draf), tambahkan daftar, lalu periksa kategori, tag, menu, dan halaman. Jalankan juga `browser-check`: halaman publik harus tetap ter-hydrate tanpa mismatch setelah `app.vue` memakai `<NuxtLayout>`.
+
+# Mengunggah Media
+
+1. Tentukan aturan upload sebelum kode. Upload adalah input paling berisiko di admin:
+   - Tipe file dibaca dari isinya (magic bytes), bukan dari nama file atau `Content-Type` kiriman browser. Hanya JPEG, PNG, dan WebP; SVG ditolak karena bisa memuat script.
+   - `storage_key` dibuat server (`<kode-site>/<yyyy>/<mm>/<uuid>.<ext>`, ekstensi dari tipe hasil deteksi). Nama file pengguna tidak dipakai sama sekali.
+   - Ukuran dicek dari `Content-Length` sebelum body dibaca (maksimal 10 MB), dan teks alternatif wajib.
+   - Media yang masih dipakai konten tidak bisa dihapus.
+
+2. Tulis deteksi tipe dan dimensi dari header gambar. Gambar tidak di-decode; dimensi di luar 1..12000 piksel ditolak:
+
+@@include packages/core/src/media/image-info.ts ts@@
+
+@@include packages/core/src/media/image-info.test.ts ts@@
+
+3. Uji juga dengan file asli, bukan hanya header buatan: buat PNG, JPEG, dan WebP dari canvas Chromium (`canvas.toDataURL('image/webp')`), lalu pastikan `sniffImage` membaca tipe dan dimensinya dengan benar.
+
+4. Tulis sisi tulis storage. Penulisan atomik (file sementara lalu `rename`) agar pembaca tidak pernah melihat file setengah jadi; path dicek tetap di dalam folder dasar:
+
+@@include packages/core/src/media/local-storage.ts ts@@
+
+@@include packages/core/src/media/local-storage.test.ts ts@@
+
+5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form.
+
+6. Satukan logika baca file di server, dipakai route publik `/media` dan API admin. Header `nosniff` dan CSP `sandbox` dipasang untuk semua file media:
+
+@@include apps/web/server/utils/media.ts ts@@
+
+@@include apps/web/server/routes/media/[...key].get.ts ts@@
+
+7. Tulis endpoint upload. `event.req` adalah `Request` Web standar, jadi `formData()` bisa dipakai setelah `Content-Length` dicek. File yang sudah tertulis dihapus lagi bila pencatatan gagal (mis. teks alternatif kosong):
+
+@@include apps/web/server/api/admin/sites/[siteId]/media/index.post.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/media/[id]/file.get.ts ts@@
+
+   Route lain: `media/[id].put.ts` (ubah keterangan), `media/[id].delete.ts` (hapus catatan lalu file), `media/[id]/usage.get.ts`. Pratinjau admin butuh route sendiri karena route publik `/media` hanya melayani domain site, sedangkan admin ada di host admin.
+
+8. Ganti pemilih gambar di admin dengan dialog berisi galeri dan form unggah; gambar yang baru diunggah langsung terpilih:
+
+@@include apps/web/app/composables/useMediaUpload.ts ts@@
+
+@@include apps/web/app/components/admin/MediaUploadForm.vue vue@@
+
+@@include apps/web/app/components/admin/MediaPicker.vue vue@@
+
+9. Tulis layar Media. Titik fokus dipilih dengan mengklik bagian terpenting gambar (atau tombol panah); template memakainya sebagai `object-position` saat gambar dipotong:
+
+@@include apps/web/app/pages/admin/[site]/media.vue vue@@
+
+10. Isi `MEDIA_DIR` di `.env` dengan path absolut ke `<repo>/.data/media` (folder `.data/` diabaikan Git), restart `pnpm dev`, lalu coba: unggah gambar di layar Media, klik titik fokus, simpan, pilih gambar itu sebagai gambar utama artikel, dan buka artikelnya di site. Gambar tampil dari file asli dengan `object-position` sesuai titik fokus.
+
+11. Uji di gate admin (job CI `build` memakai `MEDIA_DIR=/tmp/media`): PNG asli dengan nama `.jpg` tersimpan sebagai `.png`, SVG bernama `.png` ditolak 415, upload tanpa teks alternatif 422, pratinjau memakai `nosniff`, media site lain 404, lalu media uji dihapus agar gate tidak meninggalkan data:
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 36 pemeriksaan admin lulus
+```
+
+12. Catat batasnya: metadata EXIF (termasuk lokasi GPS) belum dibuang dari file yang diunggah, karena itu butuh pemrosesan gambar. Sampai ada, hapus metadata dari foto sebelum diunggah.
 

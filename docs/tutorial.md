@@ -356,9 +356,11 @@ DATABASE_URL=postgres://blog_app:ganti_password_aplikasi@localhost:5432/blog_dev
 SITE_MODE=multi
 # SITE_CODE=kabar-tekno
 
-# --- Media (sisi baca; upload menyusul di M4) ---
-# Folder file media di disk lokal; file dicari di MEDIA_DIR/<storage_key>.
-# Kosong: di dev semua media diganti gambar placeholder, di produksi 404.
+# --- Media ---
+# Folder file media di disk lokal: file dibaca dari dan diunggah ke
+# MEDIA_DIR/<storage_key>. Kosong: upload admin ditolak (503); di dev media
+# yang filenya tidak ada tampil sebagai placeholder, di produksi 404.
+# Dev: pakai folder .data/media di repo (diabaikan Git), path absolut.
 # MEDIA_DIR=/srv/blog/media
 # Awalan URL media. Default /media (dilayani aplikasi). Ganti ke URL CDN bila perlu.
 # MEDIA_BASE_URL=/media
@@ -653,7 +655,11 @@ multi: buka http://admin.localhost:3000/admin; path admin di domain site dijawab
    editor@local.test --name Editor --site kabar-tekno < /dev/null` (sekali saja), lalu
    `pnpm build` dan `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
 5. Layar admin: Artikel (daftar, editor block, jadwal terbit di zona waktu site), Halaman,
-   Kategori, Tag, Menu. Pemilih gambar menampilkan media yang sudah ada; upload menyusul.
+   Kategori, Tag, Menu, Media.
+6. Upload media butuh `MEDIA_DIR` (path absolut) di `.env`, mis. `<repo>/.data/media`
+   (`.data/` diabaikan Git). JPEG, PNG, WebP maksimal 10 MB; tipe dibaca dari isi file, bukan
+   nama file. Media yang masih dipakai konten tidak bisa dihapus. Metadata EXIF (termasuk lokasi
+   GPS) belum dibuang dari file; hapus dulu dari foto sebelum diunggah bila perlu.
 
 ## Konten contoh
 
@@ -4381,6 +4387,8 @@ export * from './editor/editor-repository'
 export * from './editor/errors'
 export * from './editor/inputs'
 export * from './editor/slug'
+export * from './media/image-info'
+export * from './media/local-storage'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -5156,6 +5164,8 @@ build:
     ADMIN_HOST: admin.localhost
     ADMIN_SESSION_SECRET: ci-only-session-secret-bukan-untuk-produksi-0123456789
     ADMIN_PASSWORD: ci-only-admin-password-2026
+    # Upload media (M4 4.3) ke disk sementara job.
+    MEDIA_DIR: /tmp/media
   cache:
     key:
       files:
@@ -7359,7 +7369,7 @@ describe('createTemplateRegistry', () => {
 })
 ```
 
-9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
+9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`; sisi tulis ada di bab "Mengunggah Media"). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
 
 `packages/core/src/media/storage.ts`
 
@@ -9825,81 +9835,34 @@ export default defineNuxtPlugin(() => {
 `apps/web/server/routes/media/[...key].get.ts`
 
 ```ts
-// GET /media/<storage_key>: file media dari disk lokal (sisi baca storage
-// adapter; upload menyusul di M4).
+// GET /media/<storage_key>: file media milik site request ini.
 //
-//  - Hanya media milik site request ini: storage_key wajib diawali kode
-//    site, jadi gambar site lain tidak bisa diambil lewat domain ini.
+//  - storage_key wajib diawali kode site, jadi gambar site lain tidak bisa
+//    diambil lewat domain ini.
 //  - Path dicek ketat (splitStorageKey) agar tidak bisa keluar dari MEDIA_DIR.
-//  - Di dev, file yang tidak ada diganti gambar placeholder SVG, jadi media
-//    seed tampil tanpa menyimpan file gambar di Git.
-import { readFile } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+//  - Di dev, file yang tidak ada diganti placeholder SVG (utils/media.ts).
 import { splitStorageKey } from '@framework/core'
 import { defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
-
-const CONTENT_TYPES: Record<string, string> = {
-  avif: 'image/avif',
-  gif: 'image/gif',
-  jpeg: 'image/jpeg',
-  jpg: 'image/jpeg',
-  png: 'image/png',
-  svg: 'image/svg+xml',
-  webp: 'image/webp',
-}
+import { mediaSecurityHeaders, readMediaFile } from '../../utils/media'
 
 export default defineEventHandler(async (event) => {
   const site = event.context.site
   const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
   const segments = splitStorageKey(key)
-  const extension = key.split('.').pop()?.toLowerCase() ?? ''
-  const contentType = CONTENT_TYPES[extension]
+  if (!site || !segments || segments[0] !== site.code) return notFound(event)
 
-  if (!site || !segments || segments[0] !== site.code || !contentType) return notFound(event)
-
-  const headers = event.res.headers
-  // SVG bisa memuat script; CSP ini mematikannya bila file dibuka langsung.
-  headers.set('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
-  headers.set('x-content-type-options', 'nosniff')
-
-  const dir = process.env['MEDIA_DIR']
-  if (dir) {
-    const base = resolve(dir)
-    const file = join(base, ...segments)
-    if (file.startsWith(base + sep)) {
-      try {
-        const data = await readFile(file)
-        headers.set('content-type', contentType)
-        headers.set('cache-control', 'public, max-age=86400')
-        return data
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      }
-    }
-  }
-
-  if (import.meta.dev) {
-    headers.set('content-type', 'image/svg+xml')
-    headers.set('cache-control', 'no-store')
-    return placeholderSvg(segments.at(-1) ?? key)
-  }
-  return notFound(event)
+  const file = await readMediaFile(key)
+  if (!file) return notFound(event)
+  mediaSecurityHeaders(event.res.headers)
+  event.res.headers.set('content-type', file.contentType)
+  event.res.headers.set('cache-control', file.placeholder ? 'no-store' : 'public, max-age=86400')
+  return file.data
 })
 
 function notFound(event: Parameters<typeof setResponseStatus>[0]) {
   setResponseStatus(event, 404)
   event.res.headers.set('content-type', 'text/plain; charset=utf-8')
   return 'Media tidak ditemukan.\n'
-}
-
-/** Placeholder dev: kotak abu-abu 16:9 bertuliskan nama file. */
-function placeholderSvg(name: string): string {
-  const label = name.replace(/[^a-zA-Z0-9._-]/g, '')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">`
-    + `<rect width="1600" height="900" fill="#d9dde3"/>`
-    + `<path d="M0 0L1600 900M1600 0L0 900" stroke="#c3c9d1" stroke-width="4"/>`
-    + `<text x="800" y="470" font-family="system-ui, sans-serif" font-size="56" fill="#5b6470" text-anchor="middle">${label}</text>`
-    + `</svg>`
 }
 ```
 
@@ -12815,8 +12778,9 @@ export function getWithHost(port, path, host) {
  * Request apa pun dengan header Host tertentu. `body` object dikirim sebagai
  * JSON. Mengembalikan status, header (huruf kecil), dan body teks.
  */
-export function requestWithHost(port, { method = 'GET', path, host, headers = {}, body }) {
-  const payload = body === undefined ? undefined : JSON.stringify(body)
+export function requestWithHost(port, { method = 'GET', path, host, headers = {}, body, rawBody }) {
+  // rawBody: Buffer apa adanya (mis. multipart); header-nya diisi pemanggil.
+  const payload = rawBody ?? (body === undefined ? undefined : JSON.stringify(body))
   return new Promise((resolve, reject) => {
     const req = request(
       {
@@ -12824,7 +12788,7 @@ export function requestWithHost(port, { method = 'GET', path, host, headers = {}
         port,
         path,
         method,
-        headers: { host, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
+        headers: { host, ...(payload && !rawBody ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
       },
       (res) => {
         let text = ''
@@ -16535,6 +16499,34 @@ try {
   r = await admin(`/api/admin/sites/00000000-0000-7000-8000-000000000000/articles`, { cookie: adminCookie })
   check('site tidak dikenal 404', r.status === 404, String(r.status))
 
+  // Upload media (4.3): tipe dari isi file, alt wajib, file palsu ditolak.
+  // Media uji dihapus lagi, jadi gate tidak meninggalkan data.
+  const png1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  const upload = async (file, name, fields) => {
+    const boundary = `gate${Date.now()}`
+    const parts = [
+      ...Object.entries(fields).map(([k, v]) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`)),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: image/png\r\n\r\n`), file, Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]
+    const body = Buffer.concat(parts)
+    return requestWithHost(port, { method: 'POST', path: `/api/admin/sites/${tekno.id}/media`, host, headers: { origin, cookie: adminCookie, 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(body.length) }, rawBody: body })
+  }
+  r = await upload(png1x1, 'gambar.jpg', { altText: 'Uji gate' })
+  const uploadedMedia = r.status === 200 ? JSON.parse(r.body) : null
+  check('upload PNG asli: tipe dan dimensi dari isi file', r.status === 200 && uploadedMedia?.mimeType === 'image/png' && uploadedMedia.width === 1 && uploadedMedia.storageKey.endsWith('.png'), `${r.status} ${r.body.slice(0, 120)}`)
+  r = await upload(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'), 'gambar.png', { altText: 'x' })
+  check('upload SVG bernama .png ditolak 415', r.status === 415, String(r.status))
+  r = await upload(png1x1, 'a.png', {})
+  check('upload tanpa teks alternatif 422', r.status === 422, String(r.status))
+  if (uploadedMedia) {
+    r = await admin(`/api/admin/sites/${tekno.id}/media/${uploadedMedia.id}/file`, { cookie: adminCookie })
+    check('pratinjau admin: file sama, nosniff', r.status === 200 && r.headers['x-content-type-options'] === 'nosniff' && r.headers['content-type'] === 'image/png', `${r.status} ${r.headers['content-type']}`)
+    r = await admin(`/api/admin/sites/${kuliner.id}/media/${uploadedMedia.id}/file`, { cookie: adminCookie })
+    check('media site A lewat URL site B 404', r.status === 404, String(r.status))
+    r = await admin(`/api/admin/sites/${tekno.id}/media/${uploadedMedia.id}?updatedAt=${encodeURIComponent(uploadedMedia.updatedAt)}`, { method: 'DELETE', cookie: adminCookie })
+    check('hapus media uji', r.status === 200, String(r.status))
+  }
+
   // User yang hanya anggota satu site tidak bisa membuka site lain.
   r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })
   const editorCookie = sessionCookie(r)?.header
@@ -16862,6 +16854,18 @@ export const menuItemInputSchema = z
   })
 export type MenuItemInput = z.output<typeof menuItemInputSchema>
 
+/** Keterangan media yang bisa diubah admin (file-nya sendiri tidak bisa diganti). */
+export const mediaMetaSchema = z.strictObject({
+  /** Wajib: dibacakan pembaca layar dan tampil bila gambar gagal dimuat. */
+  altText: z.string().trim().min(1).max(500),
+  caption: optionalText(1_000),
+  credit: optionalText(300),
+  /** Titik fokus 0..1 dari kiri dan atas, dipakai saat gambar dipotong. */
+  focalX: z.number().min(0).max(1).default(0.5),
+  focalY: z.number().min(0).max(1).default(0.5),
+})
+export type MediaMetaInput = z.output<typeof mediaMetaSchema>
+
 /** Token konkurensi: versi artikel, atau updatedAt (ISO) untuk tabel tanpa kolom versi. */
 export const versionSchema = z.number().int().positive()
 export const updatedAtSchema = z.iso.datetime({ offset: true })
@@ -16908,6 +16912,7 @@ import {
   menuItems,
   menus,
   ne,
+  or,
   pages,
   redirects,
   sites,
@@ -16930,6 +16935,7 @@ import {
   categoryInputSchema,
   menuItemInputSchema,
   pageInputSchema,
+  mediaMetaSchema,
   tagInputSchema,
   updatedAtSchema,
   versionSchema,
@@ -16995,10 +17001,25 @@ export interface MediaListItem {
   id: string
   storageKey: string
   mimeType: string
+  sizeBytes: number
   width: number | null
   height: number | null
   altText: string | null
+  caption: string | null
+  credit: string | null
+  focalX: number
+  focalY: number
   createdAt: Date
+  updatedAt: Date
+}
+
+/** File yang sudah disimpan storage, siap dicatat (dari endpoint upload, bukan input bebas). */
+export interface NewMediaFile {
+  storageKey: string
+  mimeType: string
+  sizeBytes: number
+  width: number
+  height: number
 }
 
 export interface RevisionItem {
@@ -17295,13 +17316,87 @@ export function createEditorRepository(ctx: RepositoryContext) {
       const where = query.ids ? and(eq(media.siteId, siteId), inArray(media.id, ids.length ? ids : ['00000000-0000-0000-0000-000000000000'])) : eq(media.siteId, siteId)
       const [total] = await db.select({ n: count() }).from(media).where(where)
       const rows = await db
-        .select({ id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height, altText: media.altText, createdAt: media.createdAt })
+        .select(mediaListColumns)
         .from(media)
         .where(where)
         .orderBy(desc(media.createdAt), desc(media.id))
         .limit(paging.pageSize)
         .offset(paging.offset)
       return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    // ======================= Media =======================
+
+    /**
+     * Catat file yang baru disimpan storage. storage_key wajib diawali kode
+     * site ini (dibuat server, bukan dari nama file pengguna).
+     */
+    async createMedia(siteId: SiteId, file: NewMediaFile, raw: unknown, userId: string | null): Promise<MediaListItem> {
+      const meta = parse(mediaMetaSchema, raw)
+      const [site] = await db.select({ code: sites.code }).from(sites).where(eq(sites.id, siteId)).limit(1)
+      if (!site) throw notFound('Site')
+      if (!file.storageKey.startsWith(`${site.code}/`)) throw new Error(`storage_key ${file.storageKey} bukan milik site ${site.code}`)
+      const [row] = await db
+        .insert(media)
+        .values({ siteId, ...file, altText: meta.altText, caption: meta.caption, credit: meta.credit, focalX: meta.focalX, focalY: meta.focalY, createdBy: userId })
+        .returning(mediaListColumns)
+      if (!row) throw new Error('insert media tidak mengembalikan baris')
+      return row
+    },
+
+    async updateMedia(siteId: SiteId, id: string, raw: unknown, expectedUpdatedAt: string): Promise<MediaListItem> {
+      const mediaId = asId(id, 'Media')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const meta = parse(mediaMetaSchema, raw)
+      return guardedUpdate(
+        () => db.update(media).set({ ...meta, updatedAt: sql`now()` })
+          .where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning(mediaListColumns),
+        async () => Boolean((await db.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).limit(1))[0]),
+        'Media',
+      )
+    },
+
+    /** Tempat media dipakai; kosong = boleh dihapus. */
+    async mediaUsage(siteId: SiteId, id: string): Promise<string[]> {
+      const mediaId = asId(id, 'Media')
+      const imageBlock = JSON.stringify([{ type: 'image', mediaId }])
+      const [articleRows, pageRows, categoryRows, authorRows, siteRows] = await Promise.all([
+        db.select({ title: articles.title }).from(articles).where(and(eq(articles.siteId, siteId), or(
+          eq(articles.featuredMediaId, mediaId),
+          sql`${articles.seo}->>'og_image_id' = ${mediaId}`,
+          sql`${articles.body}->'blocks' @> ${imageBlock}::jsonb`,
+        ))).limit(20),
+        db.select({ title: pages.title }).from(pages).where(and(eq(pages.siteId, siteId), or(
+          sql`${pages.seo}->>'og_image_id' = ${mediaId}`,
+          sql`${pages.body}->'blocks' @> ${imageBlock}::jsonb`,
+        ))).limit(20),
+        db.select({ name: categories.name }).from(categories).where(and(eq(categories.siteId, siteId), sql`${categories.seo}->>'og_image_id' = ${mediaId}`)).limit(20),
+        db.select({ name: authors.name }).from(authors).where(and(eq(authors.siteId, siteId), eq(authors.avatarMediaId, mediaId))).limit(20),
+        db.select({ name: sites.name }).from(sites).where(and(eq(sites.id, siteId), or(eq(sites.logoMediaId, mediaId), eq(sites.faviconMediaId, mediaId)))),
+      ])
+      return [
+        ...articleRows.map((r) => `artikel "${r.title}"`),
+        ...pageRows.map((r) => `halaman "${r.title}"`),
+        ...categoryRows.map((r) => `kategori "${r.name}"`),
+        ...authorRows.map((r) => `avatar penulis ${r.name}`),
+        ...siteRows.map(() => 'logo/favicon site'),
+      ]
+    },
+
+    /**
+     * Hapus catatan media yang tidak dipakai di mana pun; mengembalikan
+     * storage_key agar file-nya dihapus pemanggil. Dipakai = invalid.
+     */
+    async deleteMedia(siteId: SiteId, id: string, expectedUpdatedAt: string): Promise<{ storageKey: string }> {
+      const mediaId = asId(id, 'Media')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const usage = await api.mediaUsage(siteId, mediaId)
+      if (usage.length) throw invalid([{ field: '', message: `media masih dipakai: ${usage.join(', ')}` }])
+      return guardedUpdate(
+        () => db.delete(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning({ storageKey: media.storageKey }),
+        async () => Boolean((await db.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).limit(1))[0]),
+        'Media',
+      )
     },
 
     // ======================= Artikel =======================
@@ -17648,6 +17743,12 @@ async function withSlugConflict<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+const mediaListColumns = {
+  id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, sizeBytes: media.sizeBytes, width: media.width, height: media.height,
+  altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+  createdAt: media.createdAt, updatedAt: media.updatedAt,
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Id dari URL request: bukan uuid = tidak ditemukan (bukan error database). */
@@ -17870,6 +17971,33 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
 
     it('gambar OG halaman dari site lain dilaporkan di seo.og_image_id', async () => {
       await rejects(editor.createPage(SITE, { title: 'x', body: body(), seo: { og_image_id: OTHER_MEDIA } }), 'invalid', 'seo.og_image_id')
+    })
+  })
+
+  describe('media', () => {
+    const file = (name: string) => ({ storageKey: `uji-${run}/2026/11/${name}.png`, mimeType: 'image/png', sizeBytes: 1234, width: 800, height: 600 })
+
+    it('catat, ubah keterangan, pemakaian menghalangi hapus, lalu hapus', async () => {
+      const m = await editor.createMedia(SITE, file('a'), { altText: ' Rendang di piring ', caption: '' }, USER)
+      expect(m).toMatchObject({ altText: 'Rendang di piring', caption: null, focalX: 0.5, width: 800 })
+      await rejects(editor.createMedia(SITE, file('b'), { altText: '' }, USER), 'invalid', 'altText')
+      await expect(editor.createMedia(SITE, { ...file('c'), storageKey: 'dapur-nusantara/2026/11/c.png' }, { altText: 'x' }, USER)).rejects.toThrow(/bukan milik site/)
+
+      const u = await editor.updateMedia(SITE, m.id, { altText: 'Rendang', credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 }, m.updatedAt.toISOString())
+      expect(u).toMatchObject({ credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 })
+      await rejects(editor.updateMedia(SITE, m.id, { altText: 'x' }, m.updatedAt.toISOString()), 'conflict')
+      await rejects(editor.updateMedia(OTHER, m.id, { altText: 'x' }, u.updatedAt.toISOString()), 'not-found')
+
+      // Dipakai sebagai gambar utama, di block gambar, dan sebagai gambar OG.
+      const a = await editor.createArticle(SITE, article({ slug: `pakai-media-${run}`, featuredMediaId: null, body: { version: 1, blocks: [{ type: 'image', mediaId: m.id }] }, seo: { og_image_id: m.id } }), USER)
+      expect(await editor.mediaUsage(SITE, m.id)).toEqual([`artikel "${a.title}"`])
+      await rejects(editor.deleteMedia(SITE, m.id, u.updatedAt.toISOString()), 'invalid')
+
+      await editor.archiveArticle(SITE, a.id, 1, USER) // arsip tetap memakai media
+      await db.delete(articles).where(eq(articles.id, a.id))
+      expect(await editor.mediaUsage(SITE, m.id)).toEqual([])
+      expect(await editor.deleteMedia(SITE, m.id, u.updatedAt.toISOString())).toEqual({ storageKey: file('a').storageKey })
+      expect((await editor.listMedia(SITE, { ids: [m.id] })).items).toEqual([])
     })
   })
 
@@ -18835,6 +18963,146 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
   color: var(--ink-3);
 }
 
+/* ---------- Media: pemilih, galeri, dialog -------------------------- */
+
+.adm-picker {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.adm-picker.is-invalid .adm-picker__current,
+.adm-picker.is-invalid > p {
+  outline: 1px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.adm-picker__current {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.adm-picker__current img {
+  width: 5rem;
+  height: 3.5rem;
+  border-radius: var(--radius);
+  background: var(--paper);
+  object-fit: cover;
+}
+
+.adm-picker__name {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adm-picker__actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.adm-dialog {
+  width: min(56rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.adm-dialog::backdrop {
+  background: rgb(28 32 35 / 0.45);
+}
+
+.adm-dialog__upload {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.adm-dialog__upload summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.adm-dialog__upload[open] summary {
+  margin-bottom: 0.75rem;
+}
+
+.adm-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.adm-gallery__item {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.375rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.adm-gallery__item:hover {
+  border-color: var(--ink-3);
+}
+
+.adm-gallery__item.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.adm-gallery__item img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--paper);
+  object-fit: cover;
+}
+
+.adm-gallery__item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pemilih titik fokus: klik di gambar untuk menaruh titik. */
+.adm-focal {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--paper);
+  cursor: crosshair;
+}
+
+.adm-focal img {
+  display: block;
+  width: 100%;
+}
+
+.adm-focal__dot {
+  position: absolute;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.75rem 0 0 -0.75rem;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px rgb(28 32 35 / 0.18);
+  pointer-events: none;
+}
+
 /* ---------- Pohon (kategori, menu) --------------------------------- */
 
 .adm-split {
@@ -18914,6 +19182,7 @@ const nav = [
   { to: 'categories', label: 'Kategori' },
   { to: 'tags', label: 'Tag' },
   { to: 'menus', label: 'Menu' },
+  { to: 'media', label: 'Media' },
 ]
 
 /** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */
@@ -19008,7 +19277,7 @@ useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), h
 </template>
 ```
 
-10. Tulis komponen. `MediaSelect` memakai `v-model` lewat computed (dengan `:value`, opsi yang dimuat belakangan tidak ikut terpilih) dan `withDefaults` untuk `allowEmpty` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
+10. Tulis komponen. Versi pertama pemilih gambar (`MediaSelect`, sebuah `<select>`) diganti `MediaPicker` dengan pratinjau dan upload di bab "Mengunggah Media". Dua pelajaran dari versi pertama tetap berlaku: `<select>` yang opsinya dimuat belakangan harus memakai `v-model` (dengan `:value`, opsi yang datang kemudian tidak ikut terpilih), dan prop boolean opsional butuh `withDefaults` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
 
 `apps/web/app/components/admin/StatusBadge.vue`
 
@@ -19024,71 +19293,6 @@ const shown = computed(() => displayStatus(props.status, props.publishedAt ?? nu
     class="status"
     :class="`status--${shown.key}`"
   >{{ shown.label }}</span>
-</template>
-```
-
-`apps/web/app/components/admin/MediaSelect.vue`
-
-```vue
-<!--
-  Pilih media milik site (daftar terbaru). Upload dan pratinjau gambar
-  ditambahkan di 4.3; sampai saat itu media dikenali dari nama file dan alt.
--->
-<script setup lang="ts">
-import type { MediaListItem, Page } from '@framework/core'
-
-// allowEmpty default true: prop boolean yang tidak dikirim dianggap false oleh Vue.
-const props = withDefaults(defineProps<{ siteId: string; id?: string; invalid?: boolean; allowEmpty?: boolean }>(), { id: undefined, invalid: false, allowEmpty: true })
-const model = defineModel<string | null>({ required: true })
-
-const { data } = useAsyncData(`media-${props.siteId}`, () => adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media'), { server: false })
-
-// Media yang sedang terpasang tetapi di luar halaman pertama tetap harus
-// muncul sebagai pilihan; tanpa ini select tampil "Tanpa gambar".
-const missing = computed(() => (model.value && data.value && !data.value.items.some((m) => m.id === model.value) ? model.value : null))
-const { data: extra } = useAsyncData(
-  () => `media-${props.siteId}-${missing.value ?? ''}`,
-  () => (missing.value ? adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media', { query: { ids: missing.value } }) : Promise.resolve(null)),
-  { server: false },
-)
-const options = computed(() => [...(extra.value?.items ?? []), ...(data.value?.items ?? [])])
-
-// v-model lewat computed: dengan :value, pilihan yang dimuat belakangan tidak
-// ikut terpilih (select dirender sebelum opsinya ada).
-const selected = computed({
-  get: () => model.value ?? '',
-  set: (value: string) => {
-    model.value = value || null
-  },
-})
-
-const label = (m: Json<MediaListItem>) => {
-  const file = m.storageKey.split('/').at(-1) ?? m.storageKey
-  const size = m.width && m.height ? ` (${m.width}×${m.height})` : ''
-  return `${file}${size}${m.altText ? ` · ${m.altText}` : ''}`
-}
-</script>
-
-<template>
-  <select
-    :id="id"
-    v-model="selected"
-    :aria-invalid="invalid || undefined"
-  >
-    <option
-      v-if="allowEmpty"
-      value=""
-    >
-      Tanpa gambar
-    </option>
-    <option
-      v-for="m in options"
-      :key="m.id"
-      :value="m.id"
-    >
-      {{ label(m) }}
-    </option>
-  </select>
 </template>
 ```
 
@@ -19242,11 +19446,11 @@ const EMBED_HINT: Record<string, string> = {
         </div>
 
         <template v-else-if="block.type === 'image'">
-          <AdminMediaSelect
+          <AdminMediaPicker
             :site-id="siteId"
             :model-value="block.mediaId || null"
             :allow-empty="false"
-            aria-label="Gambar"
+            :invalid="!!err(index)"
             @update:model-value="update(index, { mediaId: $event ?? '' })"
           />
           <input
@@ -20018,11 +20222,11 @@ onBeforeRouteLeave(() => {
 
         <section class="adm-panel">
           <h2>Gambar utama</h2>
-          <AdminMediaSelect
+          <AdminMediaPicker
             v-model="form.featuredMediaId"
             :site-id="site.id"
             :invalid="!!err('featuredMediaId')"
-            aria-label="Gambar utama"
+            label="Gambar utama"
           />
           <span
             v-if="err('featuredMediaId')"
@@ -20053,10 +20257,11 @@ onBeforeRouteLeave(() => {
           </label>
           <label class="field">
             <span>Gambar saat dibagikan</span>
-            <AdminMediaSelect
+            <AdminMediaPicker
               v-model="form.seo.og_image_id"
               :site-id="site.id"
               :invalid="!!err('seo.og_image_id')"
+              label="Gambar saat dibagikan"
             />
             <span class="field__hint">Kosong: memakai gambar utama.</span>
           </label>
@@ -20121,4 +20326,1082 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
    Tambahkan perintah `admin:create` yang sama ke job CI `build`, sebelum `gate:admin`.
 
 13. Coba alurnya di browser: login di http://admin.localhost:3000/admin, buka artikel, ubah ringkasan dan simpan, tulis artikel baru dengan judul saja (harus tersimpan sebagai draf), tambahkan daftar, lalu periksa kategori, tag, menu, dan halaman. Jalankan juga `browser-check`: halaman publik harus tetap ter-hydrate tanpa mismatch setelah `app.vue` memakai `<NuxtLayout>`.
+
+# Mengunggah Media
+
+1. Tentukan aturan upload sebelum kode. Upload adalah input paling berisiko di admin:
+   - Tipe file dibaca dari isinya (magic bytes), bukan dari nama file atau `Content-Type` kiriman browser. Hanya JPEG, PNG, dan WebP; SVG ditolak karena bisa memuat script.
+   - `storage_key` dibuat server (`<kode-site>/<yyyy>/<mm>/<uuid>.<ext>`, ekstensi dari tipe hasil deteksi). Nama file pengguna tidak dipakai sama sekali.
+   - Ukuran dicek dari `Content-Length` sebelum body dibaca (maksimal 10 MB), dan teks alternatif wajib.
+   - Media yang masih dipakai konten tidak bisa dihapus.
+
+2. Tulis deteksi tipe dan dimensi dari header gambar. Gambar tidak di-decode; dimensi di luar 1..12000 piksel ditolak:
+
+`packages/core/src/media/image-info.ts`
+
+```ts
+// Tipe dan dimensi gambar dari ISI file (magic bytes), bukan dari nama file
+// atau Content-Type kiriman browser (M4 4.3). Hanya JPEG, PNG, dan WebP:
+// SVG ditolak karena bisa memuat script, format lain belum dibutuhkan.
+// Gambar tidak di-decode; hanya header yang dibaca.
+
+export interface ImageInfo {
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+  /** Ekstensi untuk storage_key, dari tipe hasil deteksi. */
+  extension: 'jpg' | 'png' | 'webp'
+  width: number
+  height: number
+}
+
+/** Batas dimensi agar file "gambar" berukuran raksasa ditolak. */
+export const MAX_IMAGE_SIDE = 12_000
+
+const ascii = (b: Uint8Array, at: number, text: string) => [...text].every((c, i) => b[at + i] === c.charCodeAt(0))
+const u16be = (b: Uint8Array, at: number) => ((b[at] ?? 0) << 8) | (b[at + 1] ?? 0)
+const u32be = (b: Uint8Array, at: number) => ((b[at] ?? 0) * 2 ** 24) + ((b[at + 1] ?? 0) << 16) + ((b[at + 2] ?? 0) << 8) + (b[at + 3] ?? 0)
+const u16le = (b: Uint8Array, at: number) => (b[at] ?? 0) | ((b[at + 1] ?? 0) << 8)
+const u24le = (b: Uint8Array, at: number) => (b[at] ?? 0) | ((b[at + 1] ?? 0) << 8) | ((b[at + 2] ?? 0) << 16)
+
+function png(b: Uint8Array): ImageInfo | null {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (!signature.every((v, i) => b[i] === v) || !ascii(b, 12, 'IHDR')) return null
+  return { mimeType: 'image/png', extension: 'png', width: u32be(b, 16), height: u32be(b, 20) }
+}
+
+function jpeg(b: Uint8Array): ImageInfo | null {
+  if (b[0] !== 0xff || b[1] !== 0xd8 || b[2] !== 0xff) return null
+  let at = 2
+  while (at + 9 < b.length) {
+    if (b[at] !== 0xff) return null
+    const marker = b[at + 1] ?? 0
+    // Padding 0xFF berulang di antara segmen.
+    if (marker === 0xff) {
+      at++
+      continue
+    }
+    // Segmen tanpa panjang: SOI, EOI, RSTn, TEM.
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      at += 2
+      continue
+    }
+    if (marker === 0xd9 || marker === 0xda) return null // EOI / SOS sebelum SOF: tidak ada dimensi
+    const length = u16be(b, at + 2)
+    if (length < 2) return null
+    // SOF0..SOF15 kecuali DHT (C4), JPG (C8), DAC (CC).
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { mimeType: 'image/jpeg', extension: 'jpg', width: u16be(b, at + 7), height: u16be(b, at + 5) }
+    }
+    at += 2 + length
+  }
+  return null
+}
+
+function webp(b: Uint8Array): ImageInfo | null {
+  if (!ascii(b, 0, 'RIFF') || !ascii(b, 8, 'WEBP')) return null
+  const base = { mimeType: 'image/webp', extension: 'webp' } as const
+  if (ascii(b, 12, 'VP8 ')) {
+    // Frame lossy: kode awal 9d 01 2a, lalu lebar/tinggi 14 bit.
+    if (b[23] !== 0x9d || b[24] !== 0x01 || b[25] !== 0x2a) return null
+    return { ...base, width: u16le(b, 26) & 0x3fff, height: u16le(b, 28) & 0x3fff }
+  }
+  if (ascii(b, 12, 'VP8L')) {
+    if (b[20] !== 0x2f) return null
+    const bits = (b[21] ?? 0) | ((b[22] ?? 0) << 8) | ((b[23] ?? 0) << 16) | ((b[24] ?? 0) << 24)
+    return { ...base, width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 }
+  }
+  if (ascii(b, 12, 'VP8X')) return { ...base, width: u24le(b, 24) + 1, height: u24le(b, 27) + 1 }
+  return null
+}
+
+/** Info gambar, atau null bila bukan JPEG/PNG/WebP yang sah atau dimensinya di luar batas. */
+export function sniffImage(bytes: Uint8Array): ImageInfo | null {
+  const info = png(bytes) ?? jpeg(bytes) ?? webp(bytes)
+  if (!info) return null
+  const ok = (n: number) => Number.isInteger(n) && n >= 1 && n <= MAX_IMAGE_SIDE
+  return ok(info.width) && ok(info.height) ? info : null
+}
+```
+
+`packages/core/src/media/image-info.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { sniffImage } from './image-info'
+
+const bytes = (...parts: (number[] | string)[]) =>
+  new Uint8Array(parts.flatMap((p) => (typeof p === 'string' ? [...p].map((c) => c.charCodeAt(0)) : p)))
+const be32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]
+const be16 = (n: number) => [(n >>> 8) & 255, n & 255]
+const le16 = (n: number) => [n & 255, (n >>> 8) & 255]
+const le24 = (n: number) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255]
+
+const PNG = (w: number, h: number) => bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], be32(13), 'IHDR', be32(w), be32(h), [8, 6, 0, 0, 0])
+// JPEG: SOI, APP0 (panjang 16), SOF0.
+const JPEG = (w: number, h: number) => bytes([0xff, 0xd8], [0xff, 0xe0], be16(16), 'JFIF', [0, 1, 1, 0, 0, 1, 0, 1, 0, 0], [0xff, 0xc0], be16(17), [8], be16(h), be16(w), [3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1])
+const WEBP_LOSSY = (w: number, h: number) => bytes('RIFF', [0, 0, 0, 0], 'WEBP', 'VP8 ', [0, 0, 0, 0], [0, 0, 0], [0x9d, 0x01, 0x2a], le16(w), le16(h))
+const WEBP_EXT = (w: number, h: number) => bytes('RIFF', [0, 0, 0, 0], 'WEBP', 'VP8X', [10, 0, 0, 0], [0, 0, 0, 0], le24(w - 1), le24(h - 1))
+
+describe('sniffImage', () => {
+  it.each([
+    ['PNG', PNG(1600, 900), { mimeType: 'image/png', extension: 'png', width: 1600, height: 900 }],
+    ['JPEG', JPEG(1200, 800), { mimeType: 'image/jpeg', extension: 'jpg', width: 1200, height: 800 }],
+    ['WebP lossy', WEBP_LOSSY(640, 480), { mimeType: 'image/webp', extension: 'webp', width: 640, height: 480 }],
+    ['WebP extended', WEBP_EXT(4000, 3000), { mimeType: 'image/webp', extension: 'webp', width: 4000, height: 3000 }],
+  ])('%s: tipe dan dimensi dari isi file', (_label, data, expected) => {
+    expect(sniffImage(data)).toEqual(expected)
+  })
+
+  it.each([
+    ['SVG', bytes('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')],
+    ['HTML berpura-pura gambar', bytes('<!doctype html><img src=x onerror=alert(1)>')],
+    ['GIF (belum didukung)', bytes('GIF89a', le16(10), le16(10))],
+    ['kosong', new Uint8Array()],
+    ['PNG terpotong', PNG(10, 10).slice(0, 12)],
+    ['dimensi nol', PNG(0, 10)],
+    ['dimensi raksasa', PNG(50_000, 50_000)],
+    ['JPEG tanpa SOF', bytes([0xff, 0xd8, 0xff, 0xd9])],
+  ])('menolak %s', (_label, data) => {
+    expect(sniffImage(data)).toBeNull()
+  })
+})
+```
+
+3. Uji juga dengan file asli, bukan hanya header buatan: buat PNG, JPEG, dan WebP dari canvas Chromium (`canvas.toDataURL('image/webp')`), lalu pastikan `sniffImage` membaca tipe dan dimensinya dengan benar.
+
+4. Tulis sisi tulis storage. Penulisan atomik (file sementara lalu `rename`) agar pembaca tidak pernah melihat file setengah jadi; path dicek tetap di dalam folder dasar:
+
+`packages/core/src/media/local-storage.ts`
+
+```ts
+// Sisi TULIS storage media di disk lokal (M4 4.3). Adapter yang sama nanti
+// bisa diganti R2/S3 (M5) tanpa mengubah pemanggil: put, read, delete.
+//
+//  - storage_key dibuat server (newStorageKey), tidak pernah dari nama file
+//    kiriman pengguna; path dicek ketat agar tidak keluar dari folder dasar.
+//  - Tulis atomik: file sementara di folder yang sama, lalu rename, sehingga
+//    pembaca tidak pernah melihat file setengah jadi.
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve, sep } from 'node:path'
+import { splitStorageKey } from './storage'
+
+export interface MediaStorage {
+  put(storageKey: string, data: Uint8Array): Promise<void>
+  /** Isi file; null bila tidak ada. */
+  read(storageKey: string): Promise<Uint8Array | null>
+  /** Hapus file; tidak error bila sudah tidak ada. */
+  delete(storageKey: string): Promise<void>
+}
+
+/** storage_key baru: <kode-site>/<yyyy>/<mm>/<uuid>.<ext>. */
+export function newStorageKey(siteCode: string, extension: string, now = new Date()): string {
+  const yyyy = String(now.getUTCFullYear())
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0')
+  const key = `${siteCode}/${yyyy}/${mm}/${randomUUID()}.${extension}`
+  if (!splitStorageKey(key)) throw new Error(`storage_key tidak valid: ${key}`)
+  return key
+}
+
+export function createLocalMediaStorage(directory: string): MediaStorage {
+  const base = resolve(directory)
+
+  function pathOf(storageKey: string): string {
+    const segments = splitStorageKey(storageKey)
+    const file = segments ? join(base, ...segments) : ''
+    if (!segments || !file.startsWith(base + sep)) throw new Error(`storage_key tidak valid: ${JSON.stringify(storageKey)}`)
+    return file
+  }
+
+  return {
+    async put(storageKey, data) {
+      const file = pathOf(storageKey)
+      await mkdir(dirname(file), { recursive: true })
+      const temp = `${file}.${randomUUID()}.tmp`
+      try {
+        // 'wx': gagal bila file sementara sudah ada (tidak pernah menimpa).
+        await writeFile(temp, data, { flag: 'wx' })
+        await rename(temp, file)
+      } catch (error) {
+        await rm(temp, { force: true })
+        throw error
+      }
+    },
+    async read(storageKey) {
+      try {
+        return new Uint8Array(await readFile(pathOf(storageKey)))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    },
+    async delete(storageKey) {
+      await rm(pathOf(storageKey), { force: true })
+    },
+  }
+}
+```
+
+`packages/core/src/media/local-storage.test.ts`
+
+```ts
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createLocalMediaStorage, newStorageKey } from './local-storage'
+
+describe('storage media lokal', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'media-'))
+  const storage = createLocalMediaStorage(dir)
+  afterAll(() => rm(dir, { recursive: true, force: true }))
+
+  it('storage_key dibuat server: kode site, tahun/bulan UTC, uuid, ekstensi', () => {
+    expect(newStorageKey('dapur-nusantara', 'webp', new Date('2026-11-30T20:00:00Z'))).toMatch(/^dapur-nusantara\/2026\/11\/[0-9a-f-]{36}\.webp$/)
+    expect(newStorageKey('a', 'png')).not.toBe(newStorageKey('a', 'png'))
+  })
+
+  it('tulis, baca, hapus; tanpa file sementara tersisa', async () => {
+    const key = newStorageKey('uji', 'png')
+    await storage.put(key, new Uint8Array([1, 2, 3]))
+    expect(await storage.read(key)).toEqual(new Uint8Array([1, 2, 3]))
+    const folder = join(dir, ...key.split('/').slice(0, -1))
+    expect((await readdir(folder)).filter((f) => f.endsWith('.tmp'))).toEqual([])
+    await storage.delete(key)
+    expect(await storage.read(key)).toBeNull()
+    await storage.delete(key) // sudah tidak ada: tidak error
+  })
+
+  it.each(['../luar.png', 'uji/../../luar.png', 'uji//a.png', '/abs/a.png', 'satu-segmen.png', 'uji/a b.png'])('menolak key %j', async (key) => {
+    await expect(storage.put(key, new Uint8Array([1]))).rejects.toThrow(/storage_key tidak valid/)
+    await expect(storage.read(key)).rejects.toThrow(/storage_key tidak valid/)
+  })
+})
+```
+
+5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form.
+
+6. Satukan logika baca file di server, dipakai route publik `/media` dan API admin. Header `nosniff` dan CSP `sandbox` dipasang untuk semua file media:
+
+`apps/web/server/utils/media.ts`
+
+```ts
+// Storage media di server (M4 4.3): disk lokal di MEDIA_DIR. Dipakai route
+// publik /media (baca) dan API admin (upload, hapus, pratinjau).
+import { createLocalMediaStorage, splitStorageKey, type MediaStorage } from '@framework/core'
+
+/** Batas ukuran satu file upload. */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+let storage: MediaStorage | null | undefined
+
+/** Null bila MEDIA_DIR belum diatur (upload ditolak; di dev media seed tampil sebagai placeholder). */
+export function useMediaStorage(): MediaStorage | null {
+  if (storage === undefined) {
+    const dir = process.env['MEDIA_DIR']?.trim()
+    storage = dir ? createLocalMediaStorage(dir) : null
+  }
+  return storage
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  avif: 'image/avif',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+}
+
+/** Content-Type dari ekstensi storage_key; null bila bukan gambar yang dikenal. */
+export function mediaContentType(storageKey: string): string | null {
+  return CONTENT_TYPES[storageKey.split('.').pop()?.toLowerCase() ?? ''] ?? null
+}
+
+export interface MediaFile {
+  data: Uint8Array | string
+  contentType: string
+  /** true = placeholder dev, bukan file sungguhan. */
+  placeholder: boolean
+}
+
+/** Isi file media; di dev, file yang tidak ada diganti placeholder SVG. Null = tidak ada. */
+export async function readMediaFile(storageKey: string): Promise<MediaFile | null> {
+  const segments = splitStorageKey(storageKey)
+  const contentType = mediaContentType(storageKey)
+  if (!segments || !contentType) return null
+  const data = await useMediaStorage()?.read(storageKey)
+  if (data) return { data, contentType, placeholder: false }
+  if (import.meta.dev) return { data: placeholderSvg(segments.at(-1) ?? storageKey), contentType: 'image/svg+xml', placeholder: true }
+  return null
+}
+
+/** Header aman untuk file media: SVG tidak bisa menjalankan script, tipe tidak ditebak browser. */
+export function mediaSecurityHeaders(headers: Headers) {
+  headers.set('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+  headers.set('x-content-type-options', 'nosniff')
+}
+
+/** Placeholder dev: kotak abu-abu 16:9 bertuliskan nama file. */
+function placeholderSvg(name: string): string {
+  const label = name.replace(/[^a-zA-Z0-9._-]/g, '')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">`
+    + `<rect width="1600" height="900" fill="#d9dde3"/>`
+    + `<path d="M0 0L1600 900M1600 0L0 900" stroke="#c3c9d1" stroke-width="4"/>`
+    + `<text x="800" y="470" font-family="system-ui, sans-serif" font-size="56" fill="#5b6470" text-anchor="middle">${label}</text>`
+    + `</svg>`
+}
+```
+
+`apps/web/server/routes/media/[...key].get.ts`
+
+```ts
+// GET /media/<storage_key>: file media milik site request ini.
+//
+//  - storage_key wajib diawali kode site, jadi gambar site lain tidak bisa
+//    diambil lewat domain ini.
+//  - Path dicek ketat (splitStorageKey) agar tidak bisa keluar dari MEDIA_DIR.
+//  - Di dev, file yang tidak ada diganti placeholder SVG (utils/media.ts).
+import { splitStorageKey } from '@framework/core'
+import { defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
+import { mediaSecurityHeaders, readMediaFile } from '../../utils/media'
+
+export default defineEventHandler(async (event) => {
+  const site = event.context.site
+  const key = decodeURIComponent(getRouterParam(event, 'key') ?? '')
+  const segments = splitStorageKey(key)
+  if (!site || !segments || segments[0] !== site.code) return notFound(event)
+
+  const file = await readMediaFile(key)
+  if (!file) return notFound(event)
+  mediaSecurityHeaders(event.res.headers)
+  event.res.headers.set('content-type', file.contentType)
+  event.res.headers.set('cache-control', file.placeholder ? 'no-store' : 'public, max-age=86400')
+  return file.data
+})
+
+function notFound(event: Parameters<typeof setResponseStatus>[0]) {
+  setResponseStatus(event, 404)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  return 'Media tidak ditemukan.\n'
+}
+```
+
+7. Tulis endpoint upload. `event.req` adalah `Request` Web standar, jadi `formData()` bisa dipakai setelah `Content-Length` dicek. File yang sudah tertulis dihapus lagi bila pencatatan gagal (mis. teks alternatif kosong):
+
+`apps/web/server/api/admin/sites/[siteId]/media/index.post.ts`
+
+```ts
+// POST multipart (file, altText, caption?, credit?): unggah gambar (M4 4.3).
+//
+//  - Ukuran dicek dari Content-Length SEBELUM body dibaca (maks. 10 MB).
+//  - Tipe dan dimensi dari isi file (magic bytes): hanya JPEG, PNG, WebP.
+//    Nama file dan Content-Type kiriman browser tidak dipakai.
+//  - storage_key dibuat server; file dihapus lagi bila pencatatan gagal.
+import { newStorageKey, sniffImage } from '@framework/core'
+import { createError } from 'nuxt/server'
+import { defineAdminSiteHandler } from '../../../../../utils/admin-api'
+import { MAX_UPLOAD_BYTES, useMediaStorage } from '../../../../../utils/media'
+
+/** Kelonggaran untuk pembatas dan field multipart selain file. */
+const MULTIPART_OVERHEAD = 64 * 1024
+
+export default defineAdminSiteHandler(async ({ event, editor, site, admin }) => {
+  const storage = useMediaStorage()
+  if (!storage) throw createError({ statusCode: 503, statusMessage: 'Upload belum diaktifkan: MEDIA_DIR belum diatur di server' })
+
+  const length = Number(event.req.headers.get('content-length'))
+  if (!Number.isFinite(length) || length <= 0) throw createError({ statusCode: 411, statusMessage: 'Content-Length wajib diisi' })
+  if (length > MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD) throw tooLarge()
+
+  const form = await event.req.formData().catch(() => {
+    throw createError({ statusCode: 400, statusMessage: 'Body harus multipart/form-data' })
+  })
+  const file = form.get('file')
+  if (!(file instanceof Blob)) throw createError({ statusCode: 422, statusMessage: 'Pilih file gambar', data: { kind: 'invalid', issues: [{ field: 'file', message: 'Pilih file gambar' }] } })
+  if (file.size > MAX_UPLOAD_BYTES) throw tooLarge()
+
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  const info = sniffImage(bytes)
+  if (!info) {
+    throw createError({ statusCode: 415, statusMessage: 'Hanya gambar JPEG, PNG, atau WebP (maks. 12000 piksel per sisi)', data: { kind: 'invalid', issues: [{ field: 'file', message: 'Hanya gambar JPEG, PNG, atau WebP' }] } })
+  }
+
+  const storageKey = newStorageKey(site.code, info.extension)
+  await storage.put(storageKey, bytes)
+  try {
+    const text = (name: string) => {
+      const value = form.get(name)
+      return typeof value === 'string' ? value : undefined
+    }
+    return await editor.createMedia(
+      site.id,
+      { storageKey, mimeType: info.mimeType, sizeBytes: bytes.byteLength, width: info.width, height: info.height },
+      { altText: text('altText') ?? '', caption: text('caption'), credit: text('credit') },
+      admin.user.id,
+    )
+  } catch (error) {
+    await storage.delete(storageKey)
+    throw error
+  }
+})
+
+function tooLarge() {
+  return createError({ statusCode: 413, statusMessage: `File terlalu besar (maks. ${MAX_UPLOAD_BYTES / 1024 / 1024} MB)` })
+}
+```
+
+`apps/web/server/api/admin/sites/[siteId]/media/[id]/file.get.ts`
+
+```ts
+// GET: isi file media untuk pratinjau di admin. Route publik /media hanya
+// melayani domain site, sedangkan admin ada di host admin (ADR-009).
+import { createError } from 'nuxt/server'
+import { defineAdminSiteHandler, param } from '../../../../../../utils/admin-api'
+import { mediaSecurityHeaders, readMediaFile } from '../../../../../../utils/media'
+
+export default defineAdminSiteHandler(async ({ editor, site, event }) => {
+  const [item] = (await editor.listMedia(site.id, { ids: [param(event, 'id')] })).items
+  const file = item ? await readMediaFile(item.storageKey) : null
+  if (!file) throw createError({ statusCode: 404, statusMessage: 'Media tidak ditemukan' })
+  mediaSecurityHeaders(event.res.headers)
+  event.res.headers.set('content-type', file.contentType)
+  // Admin saja dan bisa dihapus kapan pun: simpan di browser, jangan di proxy.
+  event.res.headers.set('cache-control', file.placeholder ? 'no-store' : 'private, max-age=3600')
+  return file.data
+})
+```
+
+   Route lain: `media/[id].put.ts` (ubah keterangan), `media/[id].delete.ts` (hapus catatan lalu file), `media/[id]/usage.get.ts`. Pratinjau admin butuh route sendiri karena route publik `/media` hanya melayani domain site, sedangkan admin ada di host admin.
+
+8. Ganti pemilih gambar di admin dengan dialog berisi galeri dan form unggah; gambar yang baru diunggah langsung terpilih:
+
+`apps/web/app/composables/useMediaUpload.ts`
+
+```ts
+// Unggah gambar ke /api/admin/sites/:siteId/media (multipart). Batas dan
+// tipe file diperiksa server; pengecekan di sini hanya agar pesan cepat.
+import type { MediaListItem } from '@framework/core'
+
+export const UPLOAD_ACCEPT = 'image/jpeg,image/png,image/webp'
+export const UPLOAD_MAX_MB = 10
+
+export async function uploadMedia(siteId: string, file: File, meta: { altText: string; caption?: string; credit?: string }): Promise<Json<MediaListItem>> {
+  if (file.size > UPLOAD_MAX_MB * 1024 * 1024) throw new Error(`File terlalu besar (maks. ${UPLOAD_MAX_MB} MB)`)
+  const form = new FormData()
+  form.append('file', file)
+  form.append('altText', meta.altText)
+  if (meta.caption) form.append('caption', meta.caption)
+  if (meta.credit) form.append('credit', meta.credit)
+  return adminApi<Json<MediaListItem>>(siteId, 'media', { method: 'POST', body: form })
+}
+
+/** URL pratinjau di host admin (route publik /media hanya di domain site). */
+export const mediaFileUrl = (siteId: string, mediaId: string) => `/api/admin/sites/${siteId}/media/${mediaId}/file`
+
+export const mediaName = (m: { storageKey: string }) => m.storageKey.split('/').at(-1) ?? m.storageKey
+```
+
+`apps/web/app/components/admin/MediaUploadForm.vue`
+
+```vue
+<!-- Form unggah satu gambar: file + teks alternatif (wajib) + keterangan. -->
+<script setup lang="ts">
+import type { MediaListItem } from '@framework/core'
+
+const props = defineProps<{ siteId: string }>()
+const emit = defineEmits<{ uploaded: [media: Json<MediaListItem>] }>()
+
+const file = ref<File | null>(null)
+const altText = ref('')
+const caption = ref('')
+const credit = ref('')
+const busy = ref(false)
+const error = ref<string | null>(null)
+const errors = ref<Record<string, string>>({})
+const input = ref<HTMLInputElement | null>(null)
+
+async function submit() {
+  if (!file.value) {
+    errors.value = { file: 'Pilih file gambar' }
+    return
+  }
+  busy.value = true
+  error.value = null
+  errors.value = {}
+  try {
+    const media = await uploadMedia(props.siteId, file.value, { altText: altText.value, caption: caption.value, credit: credit.value })
+    emit('uploaded', media)
+    file.value = null
+    altText.value = caption.value = credit.value = ''
+    if (input.value) input.value.value = ''
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    error.value = e instanceof Error && !apiStatus(e) ? e.message : apiErrorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <form
+    class="stack"
+    @submit.prevent="submit"
+  >
+    <label class="field">
+      <span>File gambar</span>
+      <input
+        ref="input"
+        type="file"
+        :accept="UPLOAD_ACCEPT"
+        :aria-invalid="!!errors.file || undefined"
+        @change="file = ($event.target as HTMLInputElement).files?.[0] ?? null"
+      >
+      <span class="field__hint">JPEG, PNG, atau WebP, maksimal {{ UPLOAD_MAX_MB }} MB.</span>
+      <span
+        v-if="errors.file"
+        class="field__error"
+      >{{ errors.file }}</span>
+    </label>
+    <label class="field">
+      <span>Teks alternatif</span>
+      <input
+        v-model="altText"
+        type="text"
+        placeholder="Apa yang terlihat di gambar"
+        :aria-invalid="!!errors.altText || undefined"
+      >
+      <span
+        v-if="errors.altText"
+        class="field__error"
+      >{{ errors.altText }}</span>
+      <span
+        v-else
+        class="field__hint"
+      >Dibacakan pembaca layar dan tampil bila gambar gagal dimuat.</span>
+    </label>
+    <div class="row">
+      <label class="field">
+        <span>Keterangan</span>
+        <input
+          v-model="caption"
+          type="text"
+          placeholder="Opsional"
+        >
+      </label>
+      <label class="field">
+        <span>Kredit</span>
+        <input
+          v-model="credit"
+          type="text"
+          placeholder="Mis. Foto: Redaksi"
+        >
+      </label>
+    </div>
+    <p
+      v-if="error"
+      class="field__error"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+    <div>
+      <button
+        type="submit"
+        class="btn btn--primary"
+        :disabled="busy"
+      >
+        {{ busy ? 'Mengunggah…' : 'Unggah' }}
+      </button>
+    </div>
+  </form>
+</template>
+```
+
+`apps/web/app/components/admin/MediaPicker.vue`
+
+```vue
+<!--
+  Pemilih gambar (M4 4.3) untuk gambar utama, gambar OG, dan block gambar:
+  pratinjau pilihan saat ini, lalu dialog berisi galeri media site dan form
+  unggah. Gambar yang baru diunggah langsung terpilih.
+-->
+<script setup lang="ts">
+import type { MediaListItem, Page } from '@framework/core'
+
+const props = withDefaults(defineProps<{ siteId: string; invalid?: boolean; allowEmpty?: boolean; label?: string }>(), {
+  invalid: false, allowEmpty: true, label: 'Gambar',
+})
+const model = defineModel<string | null>({ required: true })
+
+const dialog = ref<HTMLDialogElement | null>(null)
+const page = ref(1)
+const items = ref<Json<MediaListItem>[]>([])
+const total = ref(0)
+const loading = ref(false)
+
+/** Media terpilih (bisa di luar halaman galeri yang sudah dimuat). */
+const { data: current, refresh: refreshCurrent } = useAsyncData(
+  () => `media-one-${props.siteId}-${model.value ?? ''}`,
+  async () => (model.value ? (await adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media', { query: { ids: model.value } })).items[0] ?? null : null),
+  { server: false },
+)
+
+async function loadPage(n: number) {
+  loading.value = true
+  try {
+    const result = await adminApi<Json<Page<MediaListItem>>>(props.siteId, 'media', { query: { page: n } })
+    items.value = n === 1 ? result.items : [...items.value, ...result.items]
+    total.value = result.total
+    page.value = n
+  } finally {
+    loading.value = false
+  }
+}
+
+async function open() {
+  dialog.value?.showModal()
+  if (items.value.length === 0) await loadPage(1)
+}
+
+function choose(id: string | null) {
+  model.value = id
+  dialog.value?.close()
+}
+
+async function uploaded(media: Json<MediaListItem>) {
+  items.value = [media, ...items.value]
+  total.value++
+  choose(media.id)
+  await refreshCurrent()
+}
+</script>
+
+<template>
+  <div
+    class="adm-picker"
+    :class="{ 'is-invalid': invalid }"
+  >
+    <div
+      v-if="current"
+      class="adm-picker__current"
+    >
+      <img
+        :src="mediaFileUrl(siteId, current.id)"
+        :alt="current.altText ?? ''"
+        loading="lazy"
+      >
+      <div>
+        <div class="adm-picker__name">
+          {{ current.altText || mediaName(current) }}
+        </div>
+        <div class="muted mono">
+          {{ mediaName(current) }}{{ current.width ? `, ${current.width}×${current.height}` : '' }}
+        </div>
+      </div>
+    </div>
+    <p
+      v-else-if="model"
+      class="muted"
+    >
+      Memuat gambar…
+    </p>
+    <p
+      v-else
+      class="muted"
+    >
+      Belum ada gambar.
+    </p>
+    <div class="adm-picker__actions">
+      <button
+        type="button"
+        class="btn btn--small"
+        @click="open"
+      >
+        {{ model ? 'Ganti gambar' : 'Pilih gambar' }}
+      </button>
+      <button
+        v-if="model && allowEmpty"
+        type="button"
+        class="btn btn--small btn--ghost"
+        @click="choose(null)"
+      >
+        Lepas
+      </button>
+    </div>
+
+    <dialog
+      ref="dialog"
+      class="adm-dialog"
+      :aria-label="`Pilih ${label.toLowerCase()}`"
+    >
+      <header class="adm-head">
+        <h2>Pilih {{ label.toLowerCase() }}</h2>
+        <div class="adm-head__actions">
+          <button
+            type="button"
+            class="btn btn--small"
+            @click="dialog?.close()"
+          >
+            Tutup
+          </button>
+        </div>
+      </header>
+      <details class="adm-dialog__upload">
+        <summary>Unggah gambar baru</summary>
+        <AdminMediaUploadForm
+          :site-id="siteId"
+          @uploaded="uploaded"
+        />
+      </details>
+      <div class="adm-gallery">
+        <button
+          v-for="m in items"
+          :key="m.id"
+          type="button"
+          class="adm-gallery__item"
+          :class="{ 'is-selected': m.id === model }"
+          :aria-pressed="m.id === model"
+          @click="choose(m.id)"
+        >
+          <img
+            :src="mediaFileUrl(siteId, m.id)"
+            :alt="m.altText ?? ''"
+            loading="lazy"
+          >
+          <span>{{ m.altText || mediaName(m) }}</span>
+        </button>
+      </div>
+      <p
+        v-if="!loading && items.length === 0"
+        class="muted"
+      >
+        Belum ada media. Unggah gambar pertama di atas.
+      </p>
+      <button
+        v-if="items.length < total"
+        type="button"
+        class="btn btn--small"
+        :disabled="loading"
+        @click="loadPage(page + 1)"
+      >
+        Muat lagi
+      </button>
+    </dialog>
+  </div>
+</template>
+```
+
+9. Tulis layar Media. Titik fokus dipilih dengan mengklik bagian terpenting gambar (atau tombol panah); template memakainya sebagai `object-position` saat gambar dipotong:
+
+`apps/web/app/pages/admin/[site]/media.vue`
+
+```vue
+<!--
+  Media site (M4 4.3): unggah, galeri, ubah keterangan dan titik fokus
+  (klik di gambar), hapus bila tidak dipakai di mana pun.
+-->
+<script setup lang="ts">
+import type { MediaListItem, Page } from '@framework/core'
+
+definePageMeta({ layout: 'admin' })
+
+const site = useAdminSite()
+const items = ref<Json<MediaListItem>[]>([])
+const total = ref(0)
+const page = ref(1)
+const loading = ref(false)
+const loadError = ref<string | null>(null)
+
+async function loadPage(n: number) {
+  if (!site.value) return
+  loading.value = true
+  try {
+    const result = await adminApi<Json<Page<MediaListItem>>>(site.value.id, 'media', { query: { page: n } })
+    items.value = n === 1 ? result.items : [...items.value, ...result.items]
+    total.value = result.total
+    page.value = n
+  } catch (e) {
+    loadError.value = apiErrorMessage(e)
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(() => loadPage(1))
+watch(site, () => {
+  selected.value = null
+  void loadPage(1)
+})
+
+const selected = ref<Json<MediaListItem> | null>(null)
+const form = reactive({ altText: '', caption: '', credit: '', focalX: 0.5, focalY: 0.5 })
+const usage = ref<string[] | null>(null)
+const errors = ref<Record<string, string>>({})
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref(false)
+
+async function edit(m: Json<MediaListItem>) {
+  selected.value = m
+  errors.value = {}
+  message.value = null
+  Object.assign(form, { altText: m.altText ?? '', caption: m.caption ?? '', credit: m.credit ?? '', focalX: m.focalX, focalY: m.focalY })
+  usage.value = null
+  if (site.value) usage.value = await adminApi<string[]>(site.value.id, `media/${m.id}/usage`).catch(() => null)
+}
+
+function setFocal(event: MouseEvent) {
+  const box = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const clamp = (v: number) => Math.round(Math.min(Math.max(v, 0), 1) * 1000) / 1000
+  form.focalX = clamp((event.clientX - box.left) / box.width)
+  form.focalY = clamp((event.clientY - box.top) / box.height)
+}
+
+/** Panah menggeser titik fokus 5% (agar bisa tanpa mouse). */
+function nudgeFocal(event: KeyboardEvent) {
+  const step = 0.05
+  const delta: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
+  const move = delta[event.key]
+  if (!move) return
+  event.preventDefault()
+  const clamp = (v: number) => Math.round(Math.min(Math.max(v, 0), 1) * 1000) / 1000
+  form.focalX = clamp(form.focalX + move[0])
+  form.focalY = clamp(form.focalY + move[1])
+}
+
+function replace(updated: Json<MediaListItem>) {
+  items.value = items.value.map((m) => (m.id === updated.id ? updated : m))
+  selected.value = updated
+}
+
+async function save() {
+  if (!site.value || !selected.value) return
+  busy.value = true
+  errors.value = {}
+  message.value = null
+  try {
+    replace(await adminApi<Json<MediaListItem>>(site.value.id, `media/${selected.value.id}`, {
+      method: 'PUT',
+      body: { media: { altText: form.altText, caption: form.caption || null, credit: form.credit || null, focalX: form.focalX, focalY: form.focalY }, updatedAt: selected.value.updatedAt },
+    }))
+    message.value = { kind: 'ok', text: 'Keterangan media disimpan.' }
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    message.value = { kind: 'error', text: apiStatus(e) === 409 ? 'Media sudah diubah di tempat lain; pilih lagi dari galeri.' : apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+async function remove() {
+  if (!site.value || !selected.value) return
+  if (!confirm('Hapus gambar ini beserta file-nya? Tindakan ini tidak bisa dibatalkan.')) return
+  busy.value = true
+  try {
+    await adminApi(site.value.id, `media/${selected.value.id}`, { method: 'DELETE', query: { updatedAt: selected.value.updatedAt } })
+    items.value = items.value.filter((m) => m.id !== selected.value?.id)
+    total.value--
+    selected.value = null
+    message.value = { kind: 'ok', text: 'Gambar dihapus.' }
+  } catch (e) {
+    message.value = { kind: 'error', text: apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+function uploaded(m: Json<MediaListItem>) {
+  items.value = [m, ...items.value]
+  total.value++
+  void edit(m)
+  message.value = { kind: 'ok', text: 'Gambar diunggah.' }
+}
+
+const sizeLabel = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`)
+const err = (field: string) => fieldError(errors.value, field)
+</script>
+
+<template>
+  <div v-if="site">
+    <header class="adm-head">
+      <h1>Media</h1>
+      <span class="muted">{{ total }} gambar</span>
+    </header>
+    <p
+      v-if="loadError"
+      class="notice notice--error"
+    >
+      {{ loadError }}
+    </p>
+    <p
+      v-if="message"
+      class="notice"
+      :class="{ 'notice--error': message.kind === 'error' }"
+      role="status"
+    >
+      {{ message.text }}
+    </p>
+
+    <div class="adm-split">
+      <div>
+        <details class="adm-dialog__upload">
+          <summary>Unggah gambar</summary>
+          <AdminMediaUploadForm
+            :site-id="site.id"
+            @uploaded="uploaded"
+          />
+        </details>
+        <div class="adm-gallery">
+          <button
+            v-for="m in items"
+            :key="m.id"
+            type="button"
+            class="adm-gallery__item"
+            :class="{ 'is-selected': m.id === selected?.id }"
+            :aria-pressed="m.id === selected?.id"
+            @click="edit(m)"
+          >
+            <img
+              :src="mediaFileUrl(site.id, m.id)"
+              :alt="m.altText ?? ''"
+              loading="lazy"
+            >
+            <span>{{ m.altText || mediaName(m) }}</span>
+          </button>
+        </div>
+        <p
+          v-if="!loading && items.length === 0"
+          class="muted"
+        >
+          Belum ada media. Unggah gambar pertama.
+        </p>
+        <button
+          v-if="items.length < total"
+          type="button"
+          class="btn btn--small"
+          :disabled="loading"
+          @click="loadPage(page + 1)"
+        >
+          Muat lagi
+        </button>
+      </div>
+
+      <form
+        v-if="selected"
+        class="adm-panel"
+        @submit.prevent="save"
+      >
+        <h2>{{ mediaName(selected) }}</h2>
+        <div
+          class="adm-focal"
+          role="button"
+          tabindex="0"
+          :aria-label="`Titik fokus ${Math.round(form.focalX * 100)}% dari kiri, ${Math.round(form.focalY * 100)}% dari atas. Klik gambar atau pakai tombol panah.`"
+          @click="setFocal"
+          @keydown="nudgeFocal"
+        >
+          <img
+            :src="mediaFileUrl(site.id, selected.id)"
+            :alt="selected.altText ?? ''"
+          >
+          <span
+            class="adm-focal__dot"
+            :style="{ left: `${form.focalX * 100}%`, top: `${form.focalY * 100}%` }"
+          />
+        </div>
+        <p class="field__hint">
+          Klik bagian terpenting gambar. Saat gambar dipotong untuk kartu atau layar kecil, titik ini tetap terlihat.
+        </p>
+        <p class="muted">
+          {{ selected.mimeType }}, {{ selected.width }}×{{ selected.height }}, {{ sizeLabel(selected.sizeBytes) }}
+        </p>
+        <label class="field">
+          <span>Teks alternatif</span>
+          <input
+            v-model="form.altText"
+            type="text"
+            :aria-invalid="!!err('altText') || undefined"
+          >
+          <span
+            v-if="err('altText')"
+            class="field__error"
+          >{{ err('altText') }}</span>
+        </label>
+        <label class="field">
+          <span>Keterangan</span>
+          <input
+            v-model="form.caption"
+            type="text"
+          >
+        </label>
+        <label class="field">
+          <span>Kredit</span>
+          <input
+            v-model="form.credit"
+            type="text"
+          >
+        </label>
+        <div class="field">
+          <span>Dipakai di</span>
+          <span
+            v-if="usage === null"
+            class="muted"
+          >Memeriksa…</span>
+          <span
+            v-else-if="usage.length === 0"
+            class="muted"
+          >Belum dipakai; boleh dihapus.</span>
+          <ul
+            v-else
+            style="margin: 0; padding-left: 1.25rem"
+          >
+            <li
+              v-for="u in usage"
+              :key="u"
+            >
+              {{ u }}
+            </li>
+          </ul>
+        </div>
+        <div class="adm-head__actions">
+          <button
+            type="button"
+            class="btn btn--danger"
+            :disabled="busy || !usage || usage.length > 0"
+            :title="usage?.length ? 'Lepas dulu dari konten yang memakainya' : undefined"
+            @click="remove"
+          >
+            Hapus
+          </button>
+          <button
+            type="submit"
+            class="btn btn--primary"
+            :disabled="busy"
+          >
+            Simpan
+          </button>
+        </div>
+      </form>
+      <p
+        v-else
+        class="muted"
+      >
+        Pilih gambar di galeri untuk mengubah teks alternatif, keterangan, dan titik fokus.
+      </p>
+    </div>
+  </div>
+</template>
+```
+
+10. Isi `MEDIA_DIR` di `.env` dengan path absolut ke `<repo>/.data/media` (folder `.data/` diabaikan Git), restart `pnpm dev`, lalu coba: unggah gambar di layar Media, klik titik fokus, simpan, pilih gambar itu sebagai gambar utama artikel, dan buka artikelnya di site. Gambar tampil dari file asli dengan `object-position` sesuai titik fokus.
+
+11. Uji di gate admin (job CI `build` memakai `MEDIA_DIR=/tmp/media`): PNG asli dengan nama `.jpg` tersimpan sebagai `.png`, SVG bernama `.png` ditolak 415, upload tanpa teks alternatif 422, pratinjau memakai `nosniff`, media site lain 404, lalu media uji dihapus agar gate tidak meninggalkan data:
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 36 pemeriksaan admin lulus
+```
+
+12. Catat batasnya: metadata EXIF (termasuk lokasi GPS) belum dibuang dari file yang diunggah, karena itu butuh pemrosesan gambar. Sampai ada, hapus metadata dari foto sebelum diunggah.
 

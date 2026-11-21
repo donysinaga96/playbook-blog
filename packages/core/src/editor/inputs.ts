@@ -107,6 +107,18 @@ export const menuItemInputSchema = z
   })
 export type MenuItemInput = z.output<typeof menuItemInputSchema>
 
+/** Keterangan media yang bisa diubah admin (file-nya sendiri tidak bisa diganti). */
+export const mediaMetaSchema = z.strictObject({
+  /** Wajib: dibacakan pembaca layar dan tampil bila gambar gagal dimuat. */
+  altText: z.string().trim().min(1).max(500),
+  caption: optionalText(1_000),
+  credit: optionalText(300),
+  /** Titik fokus 0..1 dari kiri dan atas, dipakai saat gambar dipotong. */
+  focalX: z.number().min(0).max(1).default(0.5),
+  focalY: z.number().min(0).max(1).default(0.5),
+})
+export type MediaMetaInput = z.output<typeof mediaMetaSchema>
+
 /** Token konkurensi: versi artikel, atau updatedAt (ISO) untuk tabel tanpa kolom versi. */
 export const versionSchema = z.number().int().positive()
 export const updatedAtSchema = z.iso.datetime({ offset: true })

@@ -91,6 +91,8 @@ build:
     ADMIN_HOST: admin.localhost
     ADMIN_SESSION_SECRET: ci-only-session-secret-bukan-untuk-produksi-0123456789
     ADMIN_PASSWORD: ci-only-admin-password-2026
+    # Upload media (M4 4.3) ke disk sementara job.
+    MEDIA_DIR: /tmp/media
   cache:
     key:
       files:

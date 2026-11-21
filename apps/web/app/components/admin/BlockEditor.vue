@@ -145,11 +145,11 @@ const EMBED_HINT: Record<string, string> = {
         </div>
 
         <template v-else-if="block.type === 'image'">
-          <AdminMediaSelect
+          <AdminMediaPicker
             :site-id="siteId"
             :model-value="block.mediaId || null"
             :allow-empty="false"
-            aria-label="Gambar"
+            :invalid="!!err(index)"
             @update:model-value="update(index, { mediaId: $event ?? '' })"
           />
           <input

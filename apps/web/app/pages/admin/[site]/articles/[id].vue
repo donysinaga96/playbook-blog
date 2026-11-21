@@ -483,11 +483,11 @@ onBeforeRouteLeave(() => {
 
         <section class="adm-panel">
           <h2>Gambar utama</h2>
-          <AdminMediaSelect
+          <AdminMediaPicker
             v-model="form.featuredMediaId"
             :site-id="site.id"
             :invalid="!!err('featuredMediaId')"
-            aria-label="Gambar utama"
+            label="Gambar utama"
           />
           <span
             v-if="err('featuredMediaId')"
@@ -518,10 +518,11 @@ onBeforeRouteLeave(() => {
           </label>
           <label class="field">
             <span>Gambar saat dibagikan</span>
-            <AdminMediaSelect
+            <AdminMediaPicker
               v-model="form.seo.og_image_id"
               :site-id="site.id"
               :invalid="!!err('seo.og_image_id')"
+              label="Gambar saat dibagikan"
             />
             <span class="field__hint">Kosong: memakai gambar utama.</span>
           </label>

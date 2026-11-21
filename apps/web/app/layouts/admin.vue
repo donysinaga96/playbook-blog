@@ -24,6 +24,7 @@ const nav = [
   { to: 'categories', label: 'Kategori' },
   { to: 'tags', label: 'Tag' },
   { to: 'menus', label: 'Menu' },
+  { to: 'media', label: 'Media' },
 ]
 
 /** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */

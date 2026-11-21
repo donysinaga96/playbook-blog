@@ -130,6 +130,34 @@ try {
   r = await admin(`/api/admin/sites/00000000-0000-7000-8000-000000000000/articles`, { cookie: adminCookie })
   check('site tidak dikenal 404', r.status === 404, String(r.status))
 
+  // Upload media (4.3): tipe dari isi file, alt wajib, file palsu ditolak.
+  // Media uji dihapus lagi, jadi gate tidak meninggalkan data.
+  const png1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  const upload = async (file, name, fields) => {
+    const boundary = `gate${Date.now()}`
+    const parts = [
+      ...Object.entries(fields).map(([k, v]) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`)),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: image/png\r\n\r\n`), file, Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]
+    const body = Buffer.concat(parts)
+    return requestWithHost(port, { method: 'POST', path: `/api/admin/sites/${tekno.id}/media`, host, headers: { origin, cookie: adminCookie, 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(body.length) }, rawBody: body })
+  }
+  r = await upload(png1x1, 'gambar.jpg', { altText: 'Uji gate' })
+  const uploadedMedia = r.status === 200 ? JSON.parse(r.body) : null
+  check('upload PNG asli: tipe dan dimensi dari isi file', r.status === 200 && uploadedMedia?.mimeType === 'image/png' && uploadedMedia.width === 1 && uploadedMedia.storageKey.endsWith('.png'), `${r.status} ${r.body.slice(0, 120)}`)
+  r = await upload(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'), 'gambar.png', { altText: 'x' })
+  check('upload SVG bernama .png ditolak 415', r.status === 415, String(r.status))
+  r = await upload(png1x1, 'a.png', {})
+  check('upload tanpa teks alternatif 422', r.status === 422, String(r.status))
+  if (uploadedMedia) {
+    r = await admin(`/api/admin/sites/${tekno.id}/media/${uploadedMedia.id}/file`, { cookie: adminCookie })
+    check('pratinjau admin: file sama, nosniff', r.status === 200 && r.headers['x-content-type-options'] === 'nosniff' && r.headers['content-type'] === 'image/png', `${r.status} ${r.headers['content-type']}`)
+    r = await admin(`/api/admin/sites/${kuliner.id}/media/${uploadedMedia.id}/file`, { cookie: adminCookie })
+    check('media site A lewat URL site B 404', r.status === 404, String(r.status))
+    r = await admin(`/api/admin/sites/${tekno.id}/media/${uploadedMedia.id}?updatedAt=${encodeURIComponent(uploadedMedia.updatedAt)}`, { method: 'DELETE', cookie: adminCookie })
+    check('hapus media uji', r.status === 200, String(r.status))
+  }
+
   // User yang hanya anggota satu site tidak bisa membuka site lain.
   r = await admin('/api/admin/login', { method: 'POST', body: { email: editorEmail, password } })
   const editorCookie = sessionCookie(r)?.header

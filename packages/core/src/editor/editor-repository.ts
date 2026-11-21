@@ -29,6 +29,7 @@ import {
   menuItems,
   menus,
   ne,
+  or,
   pages,
   redirects,
   sites,
@@ -51,6 +52,7 @@ import {
   categoryInputSchema,
   menuItemInputSchema,
   pageInputSchema,
+  mediaMetaSchema,
   tagInputSchema,
   updatedAtSchema,
   versionSchema,
@@ -116,10 +118,25 @@ export interface MediaListItem {
   id: string
   storageKey: string
   mimeType: string
+  sizeBytes: number
   width: number | null
   height: number | null
   altText: string | null
+  caption: string | null
+  credit: string | null
+  focalX: number
+  focalY: number
   createdAt: Date
+  updatedAt: Date
+}
+
+/** File yang sudah disimpan storage, siap dicatat (dari endpoint upload, bukan input bebas). */
+export interface NewMediaFile {
+  storageKey: string
+  mimeType: string
+  sizeBytes: number
+  width: number
+  height: number
 }
 
 export interface RevisionItem {
@@ -416,13 +433,87 @@ export function createEditorRepository(ctx: RepositoryContext) {
       const where = query.ids ? and(eq(media.siteId, siteId), inArray(media.id, ids.length ? ids : ['00000000-0000-0000-0000-000000000000'])) : eq(media.siteId, siteId)
       const [total] = await db.select({ n: count() }).from(media).where(where)
       const rows = await db
-        .select({ id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height, altText: media.altText, createdAt: media.createdAt })
+        .select(mediaListColumns)
         .from(media)
         .where(where)
         .orderBy(desc(media.createdAt), desc(media.id))
         .limit(paging.pageSize)
         .offset(paging.offset)
       return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    // ======================= Media =======================
+
+    /**
+     * Catat file yang baru disimpan storage. storage_key wajib diawali kode
+     * site ini (dibuat server, bukan dari nama file pengguna).
+     */
+    async createMedia(siteId: SiteId, file: NewMediaFile, raw: unknown, userId: string | null): Promise<MediaListItem> {
+      const meta = parse(mediaMetaSchema, raw)
+      const [site] = await db.select({ code: sites.code }).from(sites).where(eq(sites.id, siteId)).limit(1)
+      if (!site) throw notFound('Site')
+      if (!file.storageKey.startsWith(`${site.code}/`)) throw new Error(`storage_key ${file.storageKey} bukan milik site ${site.code}`)
+      const [row] = await db
+        .insert(media)
+        .values({ siteId, ...file, altText: meta.altText, caption: meta.caption, credit: meta.credit, focalX: meta.focalX, focalY: meta.focalY, createdBy: userId })
+        .returning(mediaListColumns)
+      if (!row) throw new Error('insert media tidak mengembalikan baris')
+      return row
+    },
+
+    async updateMedia(siteId: SiteId, id: string, raw: unknown, expectedUpdatedAt: string): Promise<MediaListItem> {
+      const mediaId = asId(id, 'Media')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const meta = parse(mediaMetaSchema, raw)
+      return guardedUpdate(
+        () => db.update(media).set({ ...meta, updatedAt: sql`now()` })
+          .where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning(mediaListColumns),
+        async () => Boolean((await db.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).limit(1))[0]),
+        'Media',
+      )
+    },
+
+    /** Tempat media dipakai; kosong = boleh dihapus. */
+    async mediaUsage(siteId: SiteId, id: string): Promise<string[]> {
+      const mediaId = asId(id, 'Media')
+      const imageBlock = JSON.stringify([{ type: 'image', mediaId }])
+      const [articleRows, pageRows, categoryRows, authorRows, siteRows] = await Promise.all([
+        db.select({ title: articles.title }).from(articles).where(and(eq(articles.siteId, siteId), or(
+          eq(articles.featuredMediaId, mediaId),
+          sql`${articles.seo}->>'og_image_id' = ${mediaId}`,
+          sql`${articles.body}->'blocks' @> ${imageBlock}::jsonb`,
+        ))).limit(20),
+        db.select({ title: pages.title }).from(pages).where(and(eq(pages.siteId, siteId), or(
+          sql`${pages.seo}->>'og_image_id' = ${mediaId}`,
+          sql`${pages.body}->'blocks' @> ${imageBlock}::jsonb`,
+        ))).limit(20),
+        db.select({ name: categories.name }).from(categories).where(and(eq(categories.siteId, siteId), sql`${categories.seo}->>'og_image_id' = ${mediaId}`)).limit(20),
+        db.select({ name: authors.name }).from(authors).where(and(eq(authors.siteId, siteId), eq(authors.avatarMediaId, mediaId))).limit(20),
+        db.select({ name: sites.name }).from(sites).where(and(eq(sites.id, siteId), or(eq(sites.logoMediaId, mediaId), eq(sites.faviconMediaId, mediaId)))),
+      ])
+      return [
+        ...articleRows.map((r) => `artikel "${r.title}"`),
+        ...pageRows.map((r) => `halaman "${r.title}"`),
+        ...categoryRows.map((r) => `kategori "${r.name}"`),
+        ...authorRows.map((r) => `avatar penulis ${r.name}`),
+        ...siteRows.map(() => 'logo/favicon site'),
+      ]
+    },
+
+    /**
+     * Hapus catatan media yang tidak dipakai di mana pun; mengembalikan
+     * storage_key agar file-nya dihapus pemanggil. Dipakai = invalid.
+     */
+    async deleteMedia(siteId: SiteId, id: string, expectedUpdatedAt: string): Promise<{ storageKey: string }> {
+      const mediaId = asId(id, 'Media')
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      const usage = await api.mediaUsage(siteId, mediaId)
+      if (usage.length) throw invalid([{ field: '', message: `media masih dipakai: ${usage.join(', ')}` }])
+      return guardedUpdate(
+        () => db.delete(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId), sameMillis(media.updatedAt, token))).returning({ storageKey: media.storageKey }),
+        async () => Boolean((await db.select({ id: media.id }).from(media).where(and(eq(media.siteId, siteId), eq(media.id, mediaId))).limit(1))[0]),
+        'Media',
+      )
     },
 
     // ======================= Artikel =======================
@@ -767,6 +858,12 @@ async function withSlugConflict<T>(run: () => Promise<T>): Promise<T> {
     if (isSlugConflict(error)) throw invalid([{ field: 'slug', message: 'slug baru saja dipakai konten lain; simpan lagi atau pilih slug lain' }])
     throw error
   }
+}
+
+const mediaListColumns = {
+  id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, sizeBytes: media.sizeBytes, width: media.width, height: media.height,
+  altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+  createdAt: media.createdAt, updatedAt: media.updatedAt,
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
