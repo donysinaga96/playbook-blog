@@ -28,6 +28,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.localhost:3000 (lihat "Domain site di dev"), cek `/api/health` |
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+| Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
 | Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
 | Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
 | Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
@@ -137,9 +138,34 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
 
+## Admin
+
+Admin (ADR-009) aktif bila `ADMIN_SESSION_SECRET` diisi di `.env` (lihat `.env.example`). Mode
+multi: buka http://admin.localhost:3000/admin; path admin di domain site dijawab 404.
+
+1. Isi password admin seed (`admin@local.test`, superadmin) sekali saja:
+   `pnpm admin:create --email admin@local.test --reset-password`. Password diketik di prompt
+   tersembunyi (minimal 12 karakter).
+2. User baru: `pnpm admin:create --email <email> --name "<nama>" --superadmin`, atau
+   `--site <kode>` (boleh berulang) untuk menjadi OWNER site tertentu.
+3. Login gagal lima kali untuk satu email dari satu IP diblokir 15 menit. Restart server
+   menghapus hitungan ini. Mengganti password tidak mengakhiri sesi yang sudah ada; ganti
+   `ADMIN_SESSION_SECRET` bila password bocor.
+4. Gate admin terhadap server hasil build: `pnpm build`, lalu
+   `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
+
+## Konten contoh
+
+`pnpm --filter @framework/web demo:saksang` memasang satu artikel resep saksang di site
+dapur-nusantara yang memakai semua yang didukung konten (kategori bertingkat, penulis dengan
+avatar, gambar dengan keterangan dan kredit, keenam tipe block termasuk embed, tag, SEO, menu,
+redirect, revisi). Buka http://kuliner.localhost:3000/sumatera/saksang-khas-batak.
+Hapus dengan `--remove` sebelum `pnpm check`: test database memakai data seed apa adanya.
+URL embed di konten itu hanya contoh.
+
 ## Cek di browser
 
-`apps/web/scripts/browser-check.mjs` membuka 12 halaman kedua site di Chromium headless
+`apps/web/scripts/browser-check.mjs` membuka 12 halaman kedua site dan halaman login admin di Chromium headless
 (Playwright), di lebar desktop dan ponsel, terhadap `pnpm dev` yang sedang jalan. Halaman gagal
 bila tidak ter-hydrate, ada peringatan hydration mismatch, page error, atau console error.
 Screenshot full page disimpan di `apps/web/.browser-check/` (tidak masuk Git). Skrip ini tidak

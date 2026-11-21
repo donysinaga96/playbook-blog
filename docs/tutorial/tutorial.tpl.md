@@ -483,7 +483,7 @@ pnpm install
 
 @@include apps/web/package.json json@@
 
-5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Paket template-kit dan template ditambahkan ke daftar itu di bab "Menyusun Halaman Depan dari Section":
+5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Paket template-kit dan template ditambahkan ke daftar itu di bab "Menyusun Halaman Depan dari Section", dan `routeRules` admin di bab "Membangun Login Admin":
 
 @@include apps/web/nuxt.config.ts ts@@
 
@@ -728,6 +728,7 @@ export * from './site/resolve'
     - `X-Forwarded-Proto` boleh dipercaya karena hanya menentukan `http` atau `https` pada URL redirect ke domain primary site yang sama.
     - Redirect mempertahankan path, query, dan port.
     - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template", lalu dipindah ke sebelum view model di bab "Menyusun Halaman Depan dari Section".
+    - Penanganan path admin (host admin, 404 di domain site) ditambahkan di bab "Membangun Login Admin".
 
 @@include apps/web/server/middleware/site.ts ts@@
 
@@ -1096,9 +1097,9 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 
 @@include apps/web/app/composables/useSiteTheme.ts ts@@
 
-14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed":
+14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` (import registry menjadi `'../templates'`) dan `app.vue` tinggal `<NuxtPage />`; file di bawah adalah lokasi barunya:
 
-@@include apps/web/app/app.vue vue@@
+@@include apps/web/app/pages/[...slug].vue vue@@
 
 15. Uji semua jenis halaman di dev:
 
@@ -1179,9 +1180,9 @@ done
 
 @@include apps/web/server/routes/robots.txt.get.ts ts@@
 
-13. Pasang metadata di `app.vue` dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
+13. Pasang metadata di `app.vue` (sejak bab "Membangun Login Admin": `app/pages/[...slug].vue`) dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
 
-@@include apps/web/app/app.vue vue@@
+@@include apps/web/app/pages/[...slug].vue vue@@
 
 @@include apps/web/app/composables/useSiteTheme.ts ts@@
 
@@ -1492,3 +1493,115 @@ SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @frame
 
    - `browser-check` kini menolak `BASE_URL` tanpa `{host}`, dan di halaman 404 hanya mengabaikan status 404 dokumen itu sendiri, bukan 404 aset lain.
 
+
+# Membangun Login Admin
+
+1. Putuskan bentuk admin sebelum menulis kode: di host mana admin dilayani, bagaimana dirender, bagaimana sesi disimpan, dan bagaimana admin pertama dibuat tanpa menyentuh database manual. Catat sebagai ADR:
+
+@@include docs/adr/009-admin.md markdown@@
+
+2. Pasang dua dependency. `@node-rs/argon2` untuk hash password (binary prebuilt per platform, tanpa kompilasi native, jadi tidak terhalang aturan pnpm yang memblokir build script), dan `tsx` untuk menjalankan CLI dari source TypeScript:
+
+```bash
+pnpm --filter @framework/core add @node-rs/argon2
+pnpm add -Dw tsx
+pnpm --filter @framework/web add zod@^4.6.7
+```
+
+3. Tulis hash password di core. `Algorithm` di `@node-rs/argon2` adalah const enum yang tidak bisa di-import dengan `verbatimModuleSyntax`, jadi nilainya ditulis sebagai konstanta. Email yang tidak ada tetap diverifikasi terhadap hash palsu agar waktu respons mirip:
+
+@@include packages/core/src/auth/password.ts ts@@
+
+@@include packages/core/src/auth/password.test.ts ts@@
+
+4. Baca konfigurasi admin dari environment. Tanpa secret, admin nonaktif; nilai yang diisi tetapi salah menghentikan start:
+
+@@include packages/core/src/auth/admin-config.ts ts@@
+
+@@include packages/core/src/auth/admin-config.test.ts ts@@
+
+5. Tulis pembatas percobaan login. Jam disuntik lewat `now`, sehingga test tidak perlu menunggu 15 menit. Percobaan dicatat di `begin()` sebelum verifikasi password: code review menemukan bahwa bila kegagalan baru dicatat setelah verifikasi (yang async), request paralel lolos semua. IP yang tidak diketahui hanya dibatasi per email:
+
+@@include packages/core/src/auth/login-throttle.ts ts@@
+
+@@include packages/core/src/auth/login-throttle.test.ts ts@@
+
+6. Tulis repository user. Tabel `users` adalah identitas global (tanpa `site_id`), jadi fungsi di sini tidak menerima siteId; akses ke site diturunkan dari `site_members` atau `is_superadmin`. User `DISABLED` dikembalikan tanpa hash agar ditolak dengan pesan yang sama. Daftarkan sebagai `users` di `createRepositories` dan ekspor modul auth dari `packages/core/src/index.ts`:
+
+@@include packages/core/src/repositories/user-repository.ts ts@@
+
+7. Uji repository terhadap database dev. User test dibuat dan dihapus di test itu sendiri; user seed tidak diubah:
+
+@@include packages/core/src/repositories/user-repository.test.ts ts@@
+
+8. Tulis CLI admin pertama. Password dibaca dari prompt tersembunyi (diketik dua kali) atau dari `ADMIN_PASSWORD`, tidak pernah dari argumen. Tambahkan script `"admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts"` di `apps/web/package.json` dan `"admin:create": "pnpm --filter @framework/web admin:create"` di root, lalu masukkan `apps/web/scripts/**/*.ts` ke `include` di `tsconfig.json` root agar ikut typecheck:
+
+@@include apps/web/scripts/admin-create.ts ts@@
+
+9. Isi `.env` (lihat `.env.example`): `ADMIN_SESSION_SECRET` dari `openssl rand -base64 48` dan `ADMIN_HOST=admin.localhost`. Lalu isi password admin seed:
+
+```bash
+pnpm admin:create --email admin@local.test --reset-password
+# Password: ********
+# Ulangi password: ********
+# [admin] password admin@local.test diganti
+```
+
+10. Tulis util admin di server: konfigurasi dibaca sekali, sesi dan user selalu per request. Dua hal penting dari security review:
+    - Router men-decode percent-encoding sebelum mencocokkan route, sehingga `/api/%61dmin/login` sampai ke handler `/api/admin/login`. Pemeriksaan path harus memakai bentuk yang sama (`routedPath`). Tanpa ini, login lewat domain site publik berhasil dan mendapat sesi.
+    - Aturan host dan `Origin` diulang di handler lewat `assertAdminRequest`, yang dipanggil `useAdminSession`, sehingga selisih normalisasi path tidak bisa melewatinya.
+
+@@include apps/web/server/utils/admin.ts ts@@
+
+11. Validasi konfigurasi saat start dan tambahkan penjaga API admin:
+
+@@include apps/web/server/plugins/admin.ts ts@@
+
+@@include apps/web/server/middleware/admin-guard.ts ts@@
+
+12. Di middleware site, tangani path admin sebelum resolusi site (file lengkap di bab "Memilih Site dari Domain Request"): di mode multi, host admin melayani path admin dan mengarahkan path lain ke `/admin`, sedangkan path admin di domain site dijawab 404; di mode single, path admin dilayani di domain site tanpa membangun view model.
+
+13. Tulis route API. Login membuat sesi baru (`clear` lalu `update`) dan tidak pernah mengembalikan hash password:
+
+@@include apps/web/server/api/admin/login.post.ts ts@@
+
+@@include apps/web/server/api/admin/logout.post.ts ts@@
+
+@@include apps/web/server/api/admin/me.get.ts ts@@
+
+14. Mulai memakai `app/pages/`. Isi `app.vue` lama pindah ke `app/pages/[...slug].vue` (halaman publik, tidak berubah), `app.vue` tinggal `<NuxtPage />`, dan admin dijadikan SPA di `nuxt.config.ts`:
+
+```ts
+routeRules: {
+  '/admin': { ssr: false },
+  '/admin/**': { ssr: false },
+},
+```
+
+   Nama file halaman Nuxt menentukan route (`index.vue`, `login.vue`), jadi matikan aturan `vue/multi-word-component-names` untuk `apps/web/app/pages/**` di `eslint.config.js`.
+
+15. Tulis halaman admin minimal. Tampilan lengkap dibuat bersama layar admin. Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
+
+@@include apps/web/app/composables/useAdmin.ts ts@@
+
+@@include apps/web/app/pages/admin/login.vue vue@@
+
+@@include apps/web/app/pages/admin/index.vue vue@@
+
+16. Tulis gate admin terhadap server hasil build, dengan helper request umum `requestWithHost` di `scripts/lib/built-server.mjs` (bab "Membuktikan Isolasi Antar-Site"). Gate memeriksa host admin dan domain site (termasuk path ter-encode), penjaga Origin, login salah dan benar, sesi, logout, rate limit, dan login paralel:
+
+@@include apps/web/scripts/gate-admin.mjs js@@
+
+17. Jalankan, lalu buktikan kasus path ter-encode memang menangkap celahnya. Ganti sementara `routedPath` agar mengembalikan pathname apa adanya dan matikan `assertAdminRequest` di `useAdminSession`, build, dan jalankan gate: hasilnya harus GAGAL, termasuk login yang berhasil lewat `POST /api/%61dmin/login` di domain site. Kembalikan, build ulang, dan pastikan hijau:
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 22 pemeriksaan admin lulus
+```
+
+18. Masukkan ke job CI `build`: variabel `ADMIN_HOST`, `ADMIN_SESSION_SECRET`, dan `ADMIN_PASSWORD` khusus CI (database dan server CI dibuang setelah job), lalu `pnpm admin:create --email admin@local.test --reset-password` dan `pnpm --filter @framework/web gate:admin` setelah gate isolasi site.
+
+19. Hal lain dari code review yang ikut diperbaiki: segmen `admin` dicadangkan di `RESERVED_SEGMENTS` (`packages/core/src/views/urls.ts`) agar konten tidak memakai path `/admin`; IP klien di belakang reverse proxy dibaca dari `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (`clientIp`); API admin non-GET di domain alias mode single dijawab 404 karena 301 mengubah POST menjadi GET; `ADMIN_PASSWORD` hanya dipakai CLI tanpa terminal; prompt password menyimpan sisa input yang di-paste; dan hash palsu yang gagal dibuat tidak disimpan.
+
+20. Coba di browser: http://admin.localhost:3000/admin mengarah ke halaman login; setelah login, halaman admin menampilkan nama dan daftar site. Path `/admin` di http://tekno.localhost:3000 harus 404.

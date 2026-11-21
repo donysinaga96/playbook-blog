@@ -87,6 +87,10 @@ build:
     APP_DB_PASSWORD: ci_app_password
     SEED_DEV_DATA: "true"
     SITE_MODE: multi
+    # Admin (ADR-009). Nilai khusus CI: database dan server CI dibuang setelah job.
+    ADMIN_HOST: admin.localhost
+    ADMIN_SESSION_SECRET: ci-only-session-secret-bukan-untuk-produksi-0123456789
+    ADMIN_PASSWORD: ci-only-admin-password-2026
   cache:
     key:
       files:
@@ -110,6 +114,9 @@ build:
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
     # 3. Gate M2: request paralel ke dua domain tidak saling tertukar.
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
+    # 4. Gate admin (M4): admin pertama dibuat lewat CLI, bukan SQL manual.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email admin@local.test --reset-password
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate:admin
   artifacts:
     paths:
       - apps/web/.output/

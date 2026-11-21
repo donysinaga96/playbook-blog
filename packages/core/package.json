@@ -11,6 +11,7 @@
   "dependencies": {
     "@framework/db": "workspace:*",
     "@framework/template-kit": "workspace:*",
+    "@node-rs/argon2": "^2.2.2",
     "zod": "^4.6.7"
   }
 }

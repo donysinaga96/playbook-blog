@@ -12,7 +12,10 @@
     "typecheck": "nuxt typecheck",
     "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs",
     "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs",
-    "browser-check": "node scripts/browser-check.mjs"
+    "browser-check": "node scripts/browser-check.mjs",
+    "admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts",
+    "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
+    "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
   "dependencies": {
     "@framework/core": "workspace:*",
@@ -23,7 +26,8 @@
     "@framework/template-news": "workspace:*",
     "nuxt": "4.6.4",
     "vue": "^3.5.45",
-    "vue-router": "^5.5.1"
+    "vue-router": "^5.5.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "playwright": "1.49.1",

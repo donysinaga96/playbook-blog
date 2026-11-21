@@ -20,7 +20,8 @@ export const PREFIX = {
  * sama dengan salah satunya tertutup route tetap bila permalink membuatnya
  * bentrok; admin wajib menolaknya saat menyimpan (M4).
  */
-export const RESERVED_SEGMENTS = [...Object.values(PREFIX), 'api', 'media', '_nuxt', '__nuxt'] as const
+// 'admin': path /admin dan /admin/* milik admin (ADR-009), tidak bisa dipakai konten.
+export const RESERVED_SEGMENTS = [...Object.values(PREFIX), 'api', 'media', '_nuxt', '__nuxt', 'admin'] as const
 
 export interface ArticleUrlInput {
   slug: string

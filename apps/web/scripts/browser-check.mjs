@@ -25,7 +25,7 @@ if (!base.includes('{host}')) {
 const shotsDir = process.env.SHOTS_DIR ?? fileURLToPath(new URL('../.browser-check/', import.meta.url))
 const libDir = process.env.BROWSER_LIB_DIR
 
-/** [host, path, status yang diharapkan]. Satu contoh per jenis halaman, kedua site. */
+/** [host, path, status yang diharapkan]. Satu contoh per jenis halaman, kedua site, dan login admin. */
 const PAGES = [
   ['tekno.localhost', '/', 200],
   ['tekno.localhost', '/?page=2', 200],
@@ -39,6 +39,8 @@ const PAGES = [
   ['kuliner.localhost', '/sumatera/rendang-padang-empuk', 200],
   ['kuliner.localhost', '/category/resep', 200],
   ['kuliner.localhost', '/p/kontak', 200],
+  // Admin (SPA, ADR-009): tanpa SSR, tetap harus terpasang tanpa error.
+  ['admin.localhost', '/admin/login', 200],
 ]
 const VIEWPORTS = [['desktop', 1280, 900], ['ponsel', 390, 844]]
 
@@ -78,8 +80,11 @@ try {
       const problems = []
       try {
         const response = await page.goto(url, { waitUntil: 'networkidle' })
-        // Dievaluasi di browser (bukan Node), jadi ditulis sebagai ekspresi.
-        const hydrated = await page.evaluate("Boolean(document.querySelector('#__nuxt')?.__vue_app__)")
+        // Tunggu aplikasi Vue terpasang (di dev, modul bisa selesai dimuat
+        // setelah networkidle). Dievaluasi di browser, jadi ditulis sebagai ekspresi.
+        const hydrated = await page
+          .waitForFunction("Boolean(document.querySelector('#__nuxt')?.__vue_app__)", undefined, { timeout: 10_000 })
+          .then(() => true, () => false)
         if (response?.status() !== expected) problems.push(`status ${response?.status()}, seharusnya ${expected}`)
         if (!hydrated) problems.push('tidak ter-hydrate')
         for (const m of messages) problems.push(m.slice(0, 300))

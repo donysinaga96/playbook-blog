@@ -58,3 +58,31 @@ export function getWithHost(port, path, host) {
     req.end()
   })
 }
+
+/**
+ * Request apa pun dengan header Host tertentu. `body` object dikirim sebagai
+ * JSON. Mengembalikan status, header (huruf kecil), dan body teks.
+ */
+export function requestWithHost(port, { method = 'GET', path, host, headers = {}, body }) {
+  const payload = body === undefined ? undefined : JSON.stringify(body)
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method,
+        headers: { host, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
+      },
+      (res) => {
+        let text = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk) => { text += chunk })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }))
+      },
+    )
+    req.on('error', reject)
+    if (payload) req.write(payload)
+    req.end()
+  })
+}

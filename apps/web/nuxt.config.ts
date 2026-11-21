@@ -5,6 +5,11 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-11-19',
   devtools: { enabled: false },
   typescript: { strict: true },
+  // Admin adalah SPA (ADR-009): tanpa SSR, tanpa SEO, tanpa risiko hidrasi.
+  routeRules: {
+    '/admin': { ssr: false },
+    '/admin/**': { ssr: false },
+  },
   // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
   // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.
   // Server juga memakai entry ./manifest template (ADR-008).

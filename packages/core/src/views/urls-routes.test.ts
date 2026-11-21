@@ -37,7 +37,7 @@ describe('createUrlBuilder (ADR-006)', () => {
   })
 
   it('daftar segmen terlarang memuat semua prefix dan route sistem', () => {
-    expect(RESERVED_SEGMENTS).toEqual(['category', 'tag', 'author', 'p', 'search', 'api', 'media', '_nuxt', '__nuxt'])
+    expect(RESERVED_SEGMENTS).toEqual(['category', 'tag', 'author', 'p', 'search', 'api', 'media', '_nuxt', '__nuxt', 'admin'])
   })
 })
 

@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 0 / 27 | — |
+| M4 — Admin minimal | 9 / 27 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), mulai dari 4.pre lalu 4.0. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre dan 4.0 selesai 21 Nov 2026; berikutnya 4.1. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -223,15 +223,17 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - [x] `resolveLayout`: array kosong = tanpa section, tanpa issue; key tidak ada atau layout rusak tetap `defaultLayouts`; ADR-008, test, tutorial
 
 **4.0 Fondasi admin [A] [B] [G]**
-- [ ] ADR-009: host admin, cara render (SPA), sesi cookie, library Argon2id; site middleware melewati `/admin` dan `/api/admin`
-- [ ] Sesi cookie terenkripsi (secret dari env; `HttpOnly`, `SameSite=Lax`, `Secure` di produksi) dengan masa berlaku; tanpa tabel sesi
-- [ ] Login dan logout dengan Argon2id; pesan gagal yang sama untuk email tidak ada dan password salah
-- [ ] [B] CLI `pnpm admin:create`: email dari argumen, password dari prompt (bukan argumen), user `ACTIVE` + `site_members` `OWNER`
-- [ ] Mode `multi` → pemilih site dari `site_members`; mode `single` → hanya site `SITE_CODE`
-- [ ] Guard `/api/admin/*`: sesi valid + anggota site yang diminta
-- [ ] [G] Rate limit login per IP + email; method non-GET wajib `Origin` yang sama dengan host admin
-- [ ] Test: login benar/salah, sesi kedaluwarsa, user `DISABLED`, akses ke site yang bukan miliknya ditolak
+- [x] ADR-009: host admin, cara render (SPA), sesi cookie, library Argon2id; site middleware melewati `/admin` dan `/api/admin`
+- [x] Sesi cookie terenkripsi (secret dari env; `HttpOnly`, `SameSite=Lax`, `Secure` di produksi) dengan masa berlaku; tanpa tabel sesi — 8 jam; logout tidak mencabut cookie yang sudah tersalin (dicatat di ADR-009)
+- [x] Login dan logout dengan Argon2id; pesan gagal yang sama untuk email tidak ada dan password salah
+- [x] [B] CLI `pnpm admin:create`: email dari argumen, password dari prompt (bukan argumen), user `ACTIVE` + `site_members` `OWNER` — juga `--superadmin` dan `--reset-password` (admin seed tanpa password)
+- [x] Mode `multi` → pemilih site dari `site_members`; mode `single` → hanya site `SITE_CODE` — data site per mode (`users.listSites`, `/api/admin/me`); tampilan pemilih di 4.2
+- [x] Guard `/api/admin/*`: sesi valid + anggota site yang diminta — `requireAdmin` + `requireSite` (404 untuk site orang lain); dipakai route site mulai 4.1
+- [x] [G] Rate limit login per IP + email; method non-GET wajib `Origin` yang sama dengan host admin
+- [x] Test: login benar/salah, sesi kedaluwarsa, user `DISABLED`, akses ke site yang bukan miliknya ditolak — `gate-admin.mjs` (22 pemeriksaan, di CI job `build`), test core auth + repository user (DISABLED); kedaluwarsa sesi mengandalkan TTL seal h3 (tidak diuji); akses site lain diuji di 4.1
 - › Skill: `/security-review` setelah 4.0 selesai; `/code-review` (level high)
+- Security review (21 Nov 2026): 1 temuan sedang diperbaiki: path ter-encode (`/api/%61dmin/...`) melewati aturan host admin dan Origin karena middleware membaca path mentah sementara router men-decode; terbukti login lewat domain site publik berhasil. Perbaikan: `routedPath` di middleware + `assertAdminRequest` di handler; 5 kasus baru di `gate-admin`, terbukti gagal tanpa perbaikan.
+- Code review (level high, 21 Nov 2026, diff 4.0): 9 temuan, semuanya ditindaklanjuti: rate limit dicatat sebelum verifikasi (login paralel lolos semua), segmen `admin` dicadangkan di URL konten, `TRUST_PROXY` untuk IP klien di belakang proxy (tanpa itu satu ember IP untuk semua klien), API admin non-GET di domain alias mode single 404, `ADMIN_PASSWORD` hanya tanpa terminal, prompt menyimpan sisa input paste, hash palsu gagal tidak di-cache, logout gagal menampilkan pesan; `--reset-password` tidak mencabut sesi lama dicatat di ADR-009.
 
 **4.1 Repository tulis di core**
 - [ ] Buat, ubah, arsipkan: artikel, halaman, kategori, tag, menu; siteId wajib; body divalidasi skema block v1; `body_text` dari `extractBodyText`

@@ -33,6 +33,13 @@ export default defineConfig(
     rules: { 'no-undef': 'off' },
   },
 
+  // Nama file halaman Nuxt menentukan route (index.vue, login.vue,
+  // [...slug].vue), jadi aturan nama komponen multi-kata tidak berlaku.
+  {
+    files: ['apps/web/app/pages/**/*.vue'],
+    rules: { 'vue/multi-word-component-names': 'off' },
+  },
+
   // Script dan config yang jalan di Node.
   {
     files: ['**/*.{js,mjs}', '**/scripts/**', '*.config.ts', 'packages/*/*.config.ts'],

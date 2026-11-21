@@ -1,5 +1,6 @@
 import type { Database } from '@framework/db'
 import { createContentRepository } from './content-repository'
+import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
 import type { RepositoryContext } from './types'
@@ -8,6 +9,7 @@ export * from './content-repository'
 export * from './menu-repository'
 export * from './site-repository'
 export * from './types'
+export * from './user-repository'
 
 export interface RepositoryOptions {
   /** Jam untuk aturan "sudah terbit"; default jam sistem. Disuntik di test. */
@@ -30,6 +32,7 @@ export function createRepositories(db: Database, options: RepositoryOptions = {}
     sites: createSiteRepository(ctx),
     content: createContentRepository(ctx),
     menus: createMenuRepository(ctx),
+    users: createUserRepository(ctx),
   }
 }
 

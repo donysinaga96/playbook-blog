@@ -132,7 +132,8 @@ allowBuilds:
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
     "db:adminer": "docker compose --profile tools up -d adminer",
-    "tutorial": "node docs/tutorial/build.mjs"
+    "tutorial": "node docs/tutorial/build.mjs",
+    "admin:create": "pnpm --filter @framework/web admin:create"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -141,6 +142,7 @@ allowBuilds:
     "eslint": "^10.15.0",
     "eslint-plugin-vue": "^10.12.1",
     "globals": "^17.14.0",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3",
     "typescript-eslint": "~8.72.2",
     "vitest": "^5.1.0",
@@ -360,6 +362,18 @@ SITE_MODE=multi
 # MEDIA_DIR=/srv/blog/media
 # Awalan URL media. Default /media (dilayani aplikasi). Ganti ke URL CDN bila perlu.
 # MEDIA_BASE_URL=/media
+
+# Admin (ADR-009). Tanpa ADMIN_SESSION_SECRET, admin nonaktif (semua path
+# admin 404). Secret minimal 32 karakter, mis. hasil `openssl rand -base64 48`.
+# Mode multi: admin hanya di ADMIN_HOST (dev: http://admin.localhost:3000/admin).
+# Mode single: ADMIN_HOST dikosongkan; admin ada di domain site.
+ADMIN_SESSION_SECRET=
+ADMIN_HOST=admin.localhost
+# Hanya untuk otomasi `pnpm admin:create` tanpa terminal (CI); di terminal password diketik.
+# ADMIN_PASSWORD=
+# true bila server di belakang reverse proxy yang menimpa X-Forwarded-For (M5);
+# pembatas login lalu memakai IP klien asli, bukan IP proxy.
+# TRUST_PROXY=true
 ```
 
 4. Salin menjadi `.env` (`cp .env.example .env`), lalu ganti kedua password. Samakan password di `DATABASE_URL` dengan `APP_DB_PASSWORD`.
@@ -511,6 +525,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.localhost:3000 (lihat "Domain site di dev"), cek `/api/health` |
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+| Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
 | Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
 | Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
 | Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
@@ -620,9 +635,34 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
 
+## Admin
+
+Admin (ADR-009) aktif bila `ADMIN_SESSION_SECRET` diisi di `.env` (lihat `.env.example`). Mode
+multi: buka http://admin.localhost:3000/admin; path admin di domain site dijawab 404.
+
+1. Isi password admin seed (`admin@local.test`, superadmin) sekali saja:
+   `pnpm admin:create --email admin@local.test --reset-password`. Password diketik di prompt
+   tersembunyi (minimal 12 karakter).
+2. User baru: `pnpm admin:create --email <email> --name "<nama>" --superadmin`, atau
+   `--site <kode>` (boleh berulang) untuk menjadi OWNER site tertentu.
+3. Login gagal lima kali untuk satu email dari satu IP diblokir 15 menit. Restart server
+   menghapus hitungan ini. Mengganti password tidak mengakhiri sesi yang sudah ada; ganti
+   `ADMIN_SESSION_SECRET` bila password bocor.
+4. Gate admin terhadap server hasil build: `pnpm build`, lalu
+   `ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin`.
+
+## Konten contoh
+
+`pnpm --filter @framework/web demo:saksang` memasang satu artikel resep saksang di site
+dapur-nusantara yang memakai semua yang didukung konten (kategori bertingkat, penulis dengan
+avatar, gambar dengan keterangan dan kredit, keenam tipe block termasuk embed, tag, SEO, menu,
+redirect, revisi). Buka http://kuliner.localhost:3000/sumatera/saksang-khas-batak.
+Hapus dengan `--remove` sebelum `pnpm check`: test database memakai data seed apa adanya.
+URL embed di konten itu hanya contoh.
+
 ## Cek di browser
 
-`apps/web/scripts/browser-check.mjs` membuka 12 halaman kedua site di Chromium headless
+`apps/web/scripts/browser-check.mjs` membuka 12 halaman kedua site dan halaman login admin di Chromium headless
 (Playwright), di lebar desktop dan ponsel, terhadap `pnpm dev` yang sedang jalan. Halaman gagal
 bila tidak ter-hydrate, ada peringatan hydration mismatch, page error, atau console error.
 Screenshot full page disimpan di `apps/web/.browser-check/` (tidak masuk Git). Skrip ini tidak
@@ -1881,7 +1921,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["*.ts", "tests/**/*.ts", "packages/*/src/**/*.ts", "packages/*/*.ts"]
+  "include": ["*.ts", "tests/**/*.ts", "packages/*/src/**/*.ts", "packages/*/*.ts", "apps/web/scripts/**/*.ts"]
 }
 ```
 
@@ -1927,6 +1967,13 @@ export default defineConfig(
     // typescript-eslint mematikan aturan ini untuk .ts. Tanpa ini, auto-import
     // Nuxt (useState, useRequestEvent, ...) dianggap error.
     rules: { 'no-undef': 'off' },
+  },
+
+  // Nama file halaman Nuxt menentukan route (index.vue, login.vue,
+  // [...slug].vue), jadi aturan nama komponen multi-kata tidak berlaku.
+  {
+    files: ['apps/web/app/pages/**/*.vue'],
+    rules: { 'vue/multi-word-component-names': 'off' },
   },
 
   // Script dan config yang jalan di Node.
@@ -2158,6 +2205,7 @@ Alternatif yang ditolak, Konsekuensi, dan Status (Diusulkan, Diterima, Diganti o
 | [006](006-skema-url.md) | Skema URL publik: permalink artikel per site, prefix Inggris, `/p/{slug}`, `?page=N` | Diterima |
 | [007](007-render-halaman-server.md) | Halaman publik dirender penuh di server; view model dibangun di Nitro | Diterima |
 | [008](008-kontrak-section.md) | Section di base, manifest server (`./manifest`), theme diselesaikan sebelum view model | Diterima |
+| [009](009-admin.md) | Admin: host khusus (multi) / domain site (single), SPA, sesi cookie terenkripsi, Argon2id, CLI admin pertama | Diterima |
 ```
 
 3. ADR-001, mode deploy. Satu schema, dua mode, dan konsekuensinya: repository tetap wajib menerima `siteId` walau berjalan di mode single-site, dan tidak boleh ada global state di SSR:
@@ -2723,6 +2771,7 @@ describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
   "dependencies": {
     "@framework/db": "workspace:*",
     "@framework/template-kit": "workspace:*",
+    "@node-rs/argon2": "^2.2.2",
     "zod": "^4.6.7"
   }
 }
@@ -4245,6 +4294,7 @@ export type MenuRepository = ReturnType<typeof createMenuRepository>
 ```ts
 import type { Database } from '@framework/db'
 import { createContentRepository } from './content-repository'
+import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
 import type { RepositoryContext } from './types'
@@ -4253,6 +4303,7 @@ export * from './content-repository'
 export * from './menu-repository'
 export * from './site-repository'
 export * from './types'
+export * from './user-repository'
 
 export interface RepositoryOptions {
   /** Jam untuk aturan "sudah terbit"; default jam sistem. Disuntik di test. */
@@ -4275,6 +4326,7 @@ export function createRepositories(db: Database, options: RepositoryOptions = {}
     sites: createSiteRepository(ctx),
     content: createContentRepository(ctx),
     menus: createMenuRepository(ctx),
+    users: createUserRepository(ctx),
   }
 }
 
@@ -4301,6 +4353,9 @@ export * from './content/embed'
 export * from './content/seo'
 export * from './views/seo'
 export * from './feeds/feeds'
+export * from './auth/password'
+export * from './auth/admin-config'
+export * from './auth/login-throttle'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -5067,6 +5122,10 @@ build:
     APP_DB_PASSWORD: ci_app_password
     SEED_DEV_DATA: "true"
     SITE_MODE: multi
+    # Admin (ADR-009). Nilai khusus CI: database dan server CI dibuang setelah job.
+    ADMIN_HOST: admin.localhost
+    ADMIN_SESSION_SECRET: ci-only-session-secret-bukan-untuk-produksi-0123456789
+    ADMIN_PASSWORD: ci-only-admin-password-2026
   cache:
     key:
       files:
@@ -5090,6 +5149,9 @@ build:
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
     # 3. Gate M2: request paralel ke dua domain tidak saling tertukar.
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
+    # 4. Gate admin (M4): admin pertama dibuat lewat CLI, bukan SQL manual.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email admin@local.test --reset-password
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate:admin
   artifacts:
     paths:
       - apps/web/.output/
@@ -5173,7 +5235,10 @@ pnpm install
     "typecheck": "nuxt typecheck",
     "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs",
     "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs",
-    "browser-check": "node scripts/browser-check.mjs"
+    "browser-check": "node scripts/browser-check.mjs",
+    "admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts",
+    "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
+    "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
   "dependencies": {
     "@framework/core": "workspace:*",
@@ -5184,7 +5249,8 @@ pnpm install
     "@framework/template-news": "workspace:*",
     "nuxt": "4.6.4",
     "vue": "^3.5.45",
-    "vue-router": "^5.5.1"
+    "vue-router": "^5.5.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "playwright": "1.49.1",
@@ -5194,7 +5260,7 @@ pnpm install
 }
 ```
 
-5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Paket template-kit dan template ditambahkan ke daftar itu di bab "Menyusun Halaman Depan dari Section":
+5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Paket template-kit dan template ditambahkan ke daftar itu di bab "Menyusun Halaman Depan dari Section", dan `routeRules` admin di bab "Membangun Login Admin":
 
 `apps/web/nuxt.config.ts`
 
@@ -5206,6 +5272,11 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-11-19',
   devtools: { enabled: false },
   typescript: { strict: true },
+  // Admin adalah SPA (ADR-009): tanpa SSR, tanpa SEO, tanpa risiko hidrasi.
+  routeRules: {
+    '/admin': { ssr: false },
+    '/admin/**': { ssr: false },
+  },
   // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
   // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.
   // Server juga memakai entry ./manifest template (ADR-008).
@@ -5908,6 +5979,7 @@ export {}
     - `X-Forwarded-Proto` boleh dipercaya karena hanya menentukan `http` atau `https` pada URL redirect ke domain primary site yang sama.
     - Redirect mempertahankan path, query, dan port.
     - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template", lalu dipindah ke sebelum view model di bab "Menyusun Halaman Depan dari Section".
+    - Penanganan path admin (host admin, 404 di domain site) ditambahkan di bab "Membangun Login Admin".
 
 `apps/web/server/middleware/site.ts`
 
@@ -5921,10 +5993,15 @@ export {}
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
 //
+// Admin (ADR-009): mode multi -> path admin hanya di ADMIN_HOST (path lain
+// di host itu diarahkan ke /admin, path admin di domain site 404); mode
+// single -> path admin di domain site SITE_CODE, tanpa view model.
+//
 // Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
-import { resolveSiteRequest } from '@framework/core'
-import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
+import { normalizeHost, resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
@@ -5940,6 +6017,14 @@ export default defineEventHandler(async (event) => {
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
+  const admin = useAdminConfig()
+  const adminPath = isAdminPath(url.pathname)
+  if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
+    if (adminPath) return
+    return sendRedirect(event, '/admin', 302)
+  }
+  if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
+
   const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
 
   if (result.kind === 'site') {
@@ -5949,7 +6034,7 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
@@ -5969,15 +6054,22 @@ export default defineEventHandler(async (event) => {
   }
 
   if (result.kind === 'redirect') {
+    // API admin di domain alias (mode single): 301 mengubah POST menjadi GET
+    // dan Origin tidak lagi cocok, jadi jawab 404; halaman /admin tetap diarahkan.
+    if (adminPath && event.req.method !== 'GET' && event.req.method !== 'HEAD') return notFound(event)
     url.hostname = result.toHost
     return sendRedirect(event, url.toString(), 301)
   }
 
+  return notFound(event)
+})
+
+function notFound(event: RequestEvent) {
   setResponseStatus(event, 404)
   event.res.headers.set('content-type', 'text/plain; charset=utf-8')
   event.res.headers.set('cache-control', 'no-store')
   return 'Situs tidak ditemukan.\n'
-})
+}
 ```
 
 12. Tampilkan nama site di halaman sementara `app.vue` untuk membuktikan context sampai ke render, misalnya `const siteName = useState('site-name', () => useRequestEvent()?.context.site?.name ?? null)`. `useState` membawa nilainya dari server ke browser. Fungsi `useState` dan `useRequestEvent` di-auto-import oleh Nuxt, jadi aturan ESLint `no-undef` dimatikan untuk `.vue` (lihat `eslint.config.js`). Nama yang benar-benar tidak ada tetap ditangkap oleh `vue-tsc`:
@@ -7350,6 +7442,7 @@ describe('toImageView', () => {
   "dependencies": {
     "@framework/db": "workspace:*",
     "@framework/template-kit": "workspace:*",
+    "@node-rs/argon2": "^2.2.2",
     "zod": "^4.6.7"
   }
 }
@@ -10031,7 +10124,8 @@ export const PREFIX = {
  * sama dengan salah satunya tertutup route tetap bila permalink membuatnya
  * bentrok; admin wajib menolaknya saat menyimpan (M4).
  */
-export const RESERVED_SEGMENTS = [...Object.values(PREFIX), 'api', 'media', '_nuxt', '__nuxt'] as const
+// 'admin': path /admin dan /admin/* milik admin (ADR-009), tidak bisa dipakai konten.
+export const RESERVED_SEGMENTS = [...Object.values(PREFIX), 'api', 'media', '_nuxt', '__nuxt', 'admin'] as const
 
 export interface ArticleUrlInput {
   slug: string
@@ -10238,7 +10332,7 @@ describe('createUrlBuilder (ADR-006)', () => {
   })
 
   it('daftar segmen terlarang memuat semua prefix dan route sistem', () => {
-    expect(RESERVED_SEGMENTS).toEqual(['category', 'tag', 'author', 'p', 'search', 'api', 'media', '_nuxt', '__nuxt'])
+    expect(RESERVED_SEGMENTS).toEqual(['category', 'tag', 'author', 'p', 'search', 'api', 'media', '_nuxt', '__nuxt', 'admin'])
   })
 })
 
@@ -11335,10 +11429,15 @@ export function useFeedBuilder() {
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
 //
+// Admin (ADR-009): mode multi -> path admin hanya di ADMIN_HOST (path lain
+// di host itu diarahkan ke /admin, path admin di domain site 404); mode
+// single -> path admin di domain site SITE_CODE, tanpa view model.
+//
 // Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
-import { resolveSiteRequest } from '@framework/core'
-import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
+import { normalizeHost, resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
@@ -11354,6 +11453,14 @@ export default defineEventHandler(async (event) => {
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
+  const admin = useAdminConfig()
+  const adminPath = isAdminPath(url.pathname)
+  if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
+    if (adminPath) return
+    return sendRedirect(event, '/admin', 302)
+  }
+  if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
+
   const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
 
   if (result.kind === 'site') {
@@ -11363,7 +11470,7 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
@@ -11383,15 +11490,22 @@ export default defineEventHandler(async (event) => {
   }
 
   if (result.kind === 'redirect') {
+    // API admin di domain alias (mode single): 301 mengubah POST menjadi GET
+    // dan Origin tidak lagi cocok, jadi jawab 404; halaman /admin tetap diarahkan.
+    if (adminPath && event.req.method !== 'GET' && event.req.method !== 'HEAD') return notFound(event)
     url.hostname = result.toHost
     return sendRedirect(event, url.toString(), 301)
   }
 
+  return notFound(event)
+})
+
+function notFound(event: RequestEvent) {
   setResponseStatus(event, 404)
   event.res.headers.set('content-type', 'text/plain; charset=utf-8')
   event.res.headers.set('cache-control', 'no-store')
   return 'Situs tidak ditemukan.\n'
-})
+}
 ```
 
 `apps/web/shared/types/site-context.d.ts`
@@ -11486,20 +11600,20 @@ export function usePageState() {
 }
 ```
 
-14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed":
+14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` (import registry menjadi `'../templates'`) dan `app.vue` tinggal `<NuxtPage />`; file di bawah adalah lokasi barunya:
 
-`apps/web/app/app.vue`
+`apps/web/app/pages/[...slug].vue`
 
 ```vue
 <!--
-  Kerangka halaman publik (ADR-007): wrapper kelas root template
+  Halaman publik, semua path selain /admin (ADR-007, ADR-009): wrapper kelas root template
   (.tpl .tpl-<key>), token sebagai CSS variable di <head>, layout template,
   lalu view untuk jenis halaman ini. Semua data datang dari state yang diisi
   di server; tautan berupa <a href> biasa, tanpa navigasi sisi klien.
 -->
 <script setup lang="ts">
 import type { BaseOptions } from '@framework/template-base'
-import { templateRegistry } from './templates'
+import { templateRegistry } from '../templates'
 
 const theme = useSiteTheme()
 const page = usePageState()
@@ -11573,12 +11687,6 @@ useHead(() => ({
     Tidak ditemukan.
   </p>
 </template>
-
-<style>
-body {
-  margin: 0;
-}
-</style>
 ```
 
 15. Uji semua jenis halaman di dev:
@@ -12260,10 +12368,15 @@ describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
 //
+// Admin (ADR-009): mode multi -> path admin hanya di ADMIN_HOST (path lain
+// di host itu diarahkan ke /admin, path admin di domain site 404); mode
+// single -> path admin di domain site SITE_CODE, tanpa view model.
+//
 // Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
-import { resolveSiteRequest } from '@framework/core'
-import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
+import { normalizeHost, resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { isAdminPath, useAdminConfig } from '../utils/admin'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
@@ -12279,6 +12392,14 @@ export default defineEventHandler(async (event) => {
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
+  const admin = useAdminConfig()
+  const adminPath = isAdminPath(url.pathname)
+  if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
+    if (adminPath) return
+    return sendRedirect(event, '/admin', 302)
+  }
+  if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
+
   const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
 
   if (result.kind === 'site') {
@@ -12288,7 +12409,7 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+    if (adminPath || NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
     // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
@@ -12308,15 +12429,22 @@ export default defineEventHandler(async (event) => {
   }
 
   if (result.kind === 'redirect') {
+    // API admin di domain alias (mode single): 301 mengubah POST menjadi GET
+    // dan Origin tidak lagi cocok, jadi jawab 404; halaman /admin tetap diarahkan.
+    if (adminPath && event.req.method !== 'GET' && event.req.method !== 'HEAD') return notFound(event)
     url.hostname = result.toHost
     return sendRedirect(event, url.toString(), 301)
   }
 
+  return notFound(event)
+})
+
+function notFound(event: RequestEvent) {
   setResponseStatus(event, 404)
   event.res.headers.set('content-type', 'text/plain; charset=utf-8')
   event.res.headers.set('cache-control', 'no-store')
   return 'Situs tidak ditemukan.\n'
-})
+}
 ```
 
 `apps/web/shared/types/site-context.d.ts`
@@ -12434,20 +12562,20 @@ export default defineEventHandler((event) =>
   feedResponse(event, 'text/plain; charset=utf-8', (_site, origin) => renderRobots(origin)))
 ```
 
-13. Pasang metadata di `app.vue` dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
+13. Pasang metadata di `app.vue` (sejak bab "Membangun Login Admin": `app/pages/[...slug].vue`) dengan `useSeoMeta` (title, description, robots, Open Graph, Twitter card, `article:*`) dan `useHead` (canonical, tautan RSS, favicon). Tipe `link` di unhead dibedakan per nilai `rel`, jadi array-nya ditulis sebagai union tiga bentuk objek:
 
-`apps/web/app/app.vue`
+`apps/web/app/pages/[...slug].vue`
 
 ```vue
 <!--
-  Kerangka halaman publik (ADR-007): wrapper kelas root template
+  Halaman publik, semua path selain /admin (ADR-007, ADR-009): wrapper kelas root template
   (.tpl .tpl-<key>), token sebagai CSS variable di <head>, layout template,
   lalu view untuk jenis halaman ini. Semua data datang dari state yang diisi
   di server; tautan berupa <a href> biasa, tanpa navigasi sisi klien.
 -->
 <script setup lang="ts">
 import type { BaseOptions } from '@framework/template-base'
-import { templateRegistry } from './templates'
+import { templateRegistry } from '../templates'
 
 const theme = useSiteTheme()
 const page = usePageState()
@@ -12521,12 +12649,6 @@ useHead(() => ({
     Tidak ditemukan.
   </p>
 </template>
-
-<style>
-body {
-  margin: 0;
-}
-</style>
 ```
 
 `apps/web/app/composables/useSiteTheme.ts`
@@ -12641,6 +12763,34 @@ export function getWithHost(port, path, host) {
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
     })
     req.on('error', reject)
+    req.end()
+  })
+}
+
+/**
+ * Request apa pun dengan header Host tertentu. `body` object dikirim sebagai
+ * JSON. Mengembalikan status, header (huruf kecil), dan body teks.
+ */
+export function requestWithHost(port, { method = 'GET', path, host, headers = {}, body }) {
+  const payload = body === undefined ? undefined : JSON.stringify(body)
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method,
+        headers: { host, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), ...headers },
+      },
+      (res) => {
+        let text = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk) => { text += chunk })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }))
+      },
+    )
+    req.on('error', reject)
+    if (payload) req.write(payload)
     req.end()
   })
 }
@@ -14764,7 +14914,7 @@ if (!base.includes('{host}')) {
 const shotsDir = process.env.SHOTS_DIR ?? fileURLToPath(new URL('../.browser-check/', import.meta.url))
 const libDir = process.env.BROWSER_LIB_DIR
 
-/** [host, path, status yang diharapkan]. Satu contoh per jenis halaman, kedua site. */
+/** [host, path, status yang diharapkan]. Satu contoh per jenis halaman, kedua site, dan login admin. */
 const PAGES = [
   ['tekno.localhost', '/', 200],
   ['tekno.localhost', '/?page=2', 200],
@@ -14778,6 +14928,8 @@ const PAGES = [
   ['kuliner.localhost', '/sumatera/rendang-padang-empuk', 200],
   ['kuliner.localhost', '/category/resep', 200],
   ['kuliner.localhost', '/p/kontak', 200],
+  // Admin (SPA, ADR-009): tanpa SSR, tetap harus terpasang tanpa error.
+  ['admin.localhost', '/admin/login', 200],
 ]
 const VIEWPORTS = [['desktop', 1280, 900], ['ponsel', 390, 844]]
 
@@ -14817,8 +14969,11 @@ try {
       const problems = []
       try {
         const response = await page.goto(url, { waitUntil: 'networkidle' })
-        // Dievaluasi di browser (bukan Node), jadi ditulis sebagai ekspresi.
-        const hydrated = await page.evaluate("Boolean(document.querySelector('#__nuxt')?.__vue_app__)")
+        // Tunggu aplikasi Vue terpasang (di dev, modul bisa selesai dimuat
+        // setelah networkidle). Dievaluasi di browser, jadi ditulis sebagai ekspresi.
+        const hydrated = await page
+          .waitForFunction("Boolean(document.querySelector('#__nuxt')?.__vue_app__)", undefined, { timeout: 10_000 })
+          .then(() => true, () => false)
         if (response?.status() !== expected) problems.push(`status ${response?.status()}, seharusnya ${expected}`)
         if (!hydrated) problems.push('tidak ter-hydrate')
         for (const m of messages) problems.push(m.slice(0, 300))
@@ -14873,3 +15028,1385 @@ SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @frame
 
    - `browser-check` kini menolak `BASE_URL` tanpa `{host}`, dan di halaman 404 hanya mengabaikan status 404 dokumen itu sendiri, bukan 404 aset lain.
 
+
+# Membangun Login Admin
+
+1. Putuskan bentuk admin sebelum menulis kode: di host mana admin dilayani, bagaimana dirender, bagaimana sesi disimpan, dan bagaimana admin pertama dibuat tanpa menyentuh database manual. Catat sebagai ADR:
+
+`docs/adr/009-admin.md`
+
+```markdown
+# ADR-009: Admin: host, render, sesi, dan login
+
+- Status: Diterima
+- Tanggal: 2026-11-21
+
+## Konteks
+
+M4 menambah admin untuk satu pemilik proyek: login, CRUD konten, media, pengaturan tema. Yang
+harus diputuskan sebelum kode:
+
+- Di host mana admin dilayani. Middleware `site.ts` memetakan setiap Host ke site dan menjawab
+  404 untuk host yang tidak dikenal, padahal mode multi butuh satu admin untuk semua site.
+- Cara render. ADR-007 (render penuh di server) hanya mengatur halaman publik.
+- Sesi, hash password, dan cara membuat admin pertama tanpa menyentuh database manual (gate M4).
+- Pengamanan dasar, karena admin adalah permukaan tulis pertama dan di M5 terbuka ke internet.
+
+## Keputusan
+
+1. **Host.** Admin ada di `/admin` dengan API di `/api/admin/*`.
+   - Mode `multi`: hanya di host `ADMIN_HOST` (dev: `admin.localhost`), mengelola semua site
+     milik user. Path admin di domain site dijawab 404; path lain di `ADMIN_HOST` diarahkan ke
+     `/admin`.
+   - Mode `single`: di domain site itu sendiri, hanya untuk site `SITE_CODE`. Di domain alias,
+     halaman `/admin` diarahkan (301) ke domain primary, tetapi API admin non-GET dijawab 404
+     (301 mengubah POST menjadi GET).
+   - Pemeriksaan path memakai pathname yang sudah di-decode, sama dengan yang dicocokkan router
+     (`/api/%61dmin` = `/api/admin`), dan aturan host serta Origin diulang di handler.
+   - Segmen `admin` dicadangkan (`RESERVED_SEGMENTS`): konten tidak boleh memakai path `/admin`.
+   - `ADMIN_SESSION_SECRET` (minimal 32 karakter) wajib agar admin aktif. Tanpa itu, semua
+     path admin dijawab 404 dan dicatat sekali saat start. Nilai yang salah (terlalu pendek,
+     `ADMIN_HOST` tidak valid) membuat server gagal start.
+2. **Render.** Admin adalah SPA (`routeRules: { '/admin/**': { ssr: false } }`). Admin tidak
+   butuh SEO, sehingga masalah hidrasi tidak muncul dan ADR-007 tidak berubah. Aplikasi Nuxt
+   mulai memakai `app/pages/`: halaman publik pindah ke route catch-all yang merender view
+   model yang sama seperti sebelumnya.
+3. **Sesi.** Cookie terenkripsi dari `useSession` (h3), nama `blog_admin`, berlaku 8 jam,
+   `HttpOnly`, `SameSite=Lax`, `Secure` bila request HTTPS. Isinya hanya `userId`. User dimuat
+   ulang dari database di setiap request admin, jadi user yang di-`DISABLED` langsung kehilangan
+   akses. Tanpa tabel sesi.
+4. **Password.** Argon2id lewat `@node-rs/argon2` (binary prebuilt, tanpa kompilasi native),
+   parameter bawaan library: memori 19 MiB, 2 iterasi, paralelisme 1 (minimum OWASP). Password
+   minimal 12 karakter, maksimal 256. Login gagal memberi pesan yang sama untuk email tidak ada,
+   password salah, user `DISABLED`, dan user tanpa password; email yang tidak ada tetap
+   menjalankan verifikasi terhadap hash palsu agar waktunya mirip.
+5. **Hak akses.** Superadmin (`users.is_superadmin`) mengakses semua site `ACTIVE`; user lain
+   hanya site di `site_members`. Mode `single` membatasi ke site `SITE_CODE`. Di M4 semua role
+   anggota (`OWNER`, `EDITOR`, `AUTHOR`) boleh semua aksi admin; permission per aksi ada di
+   backlog ("Banyak user + permission granular"). Site yang bukan milik user dijawab 404, bukan
+   403, agar keberadaannya tidak terbaca.
+6. **Admin pertama.** `pnpm admin:create --email <email> --name <nama> [--superadmin]
+   [--site <kode>]...` (dijalankan lewat `tsx`). Password dibaca dari prompt tersembunyi, atau
+   dari `ADMIN_PASSWORD` bila stdin bukan terminal (otomasi, CI); tidak pernah dari argumen
+   (terlihat di riwayat shell dan daftar proses). Di terminal, `ADMIN_PASSWORD` diabaikan agar
+   nilai di `.env` tidak diam-diam menjadi password user baru. User yang sudah ada hanya diubah password-nya dengan `--reset-password`.
+7. **Pengamanan dasar.**
+   - Rate limit login di memori proses: 5 percobaan gagal per IP + email dan 30 per IP dalam
+     15 menit, lalu 429 dengan `Retry-After`. Percobaan dicatat sebelum verifikasi password,
+     agar request paralel tidak lolos semua. IP diambil dari `X-Forwarded-For` hanya bila
+     `TRUST_PROXY=true` (di belakang reverse proxy, M5); IP yang tidak diketahui hanya dibatasi
+     per email. Cukup untuk satu proses (ADR-001); banyak proses butuh penyimpanan bersama
+     (backlog bersama Redis).
+   - Request non-GET ke `/api/admin/*` wajib membawa header `Origin` yang sama dengan origin
+     request; selain itu 403. Bersama `SameSite=Lax`, ini menutup CSRF tanpa token.
+   - Respons API admin `Cache-Control: no-store`.
+   - `/security-review` setelah 4.0, 4.3 (upload), dan seluruh M4.
+
+## Alternatif yang ditolak
+
+- **Admin di setiap domain site** (mode multi). Cookie sesi terpisah per domain, jadi admin
+  multi-site harus login berkali-kali, dan path admin terbuka di semua domain publik.
+- **Aplikasi admin terpisah.** Menambah satu deploy di M5 dan menggandakan konfigurasi.
+- **Admin SSR.** Tidak ada manfaat SEO, dan menambah risiko hidrasi serta state per request.
+- **Tabel sesi di database.** Belum dibutuhkan untuk satu admin; cookie terenkripsi berumur
+  pendek + user dimuat ulang setiap request sudah memberi pencabutan akses lewat status user.
+- **`argon2` (node-gyp).** Butuh kompilasi native saat install; pnpm memblokir build script
+  secara bawaan.
+
+## Konsekuensi
+
+- Env baru: `ADMIN_HOST` (mode multi), `ADMIN_SESSION_SECRET`, `ADMIN_PASSWORD` (opsional, CLI).
+  CI dan produksi wajib mengisi secret.
+- `tsx` jadi devDependency root untuk menjalankan CLI dari source TypeScript. Image produksi
+  (M5) harus menyediakan cara menjalankan CLI yang sama.
+- Rate limit dan sesi bergantung pada satu proses; dicatat untuk M5 bila jumlah proses bertambah.
+- Logout menghapus cookie di browser, tetapi cookie yang sudah tersalin (mis. dicuri) tetap
+  berlaku sampai kedaluwarsa (paling lama 8 jam), karena server tidak menyimpan sesi.
+  Hal yang sama berlaku untuk `--reset-password`: sesi lama tetap berlaku. Pencabutan yang
+  tersedia: ubah status user menjadi `DISABLED`, atau ganti `ADMIN_SESSION_SECRET` (semua
+  sesi berakhir); reset password karena bocor harus disertai salah satunya. Pencabutan per sesi butuh penyimpanan sesi
+  di server; diputuskan ulang bila admin lebih dari satu orang.
+```
+
+2. Pasang dua dependency. `@node-rs/argon2` untuk hash password (binary prebuilt per platform, tanpa kompilasi native, jadi tidak terhalang aturan pnpm yang memblokir build script), dan `tsx` untuk menjalankan CLI dari source TypeScript:
+
+```bash
+pnpm --filter @framework/core add @node-rs/argon2
+pnpm add -Dw tsx
+pnpm --filter @framework/web add zod@^4.6.7
+```
+
+3. Tulis hash password di core. `Algorithm` di `@node-rs/argon2` adalah const enum yang tidak bisa di-import dengan `verbatimModuleSyntax`, jadi nilainya ditulis sebagai konstanta. Email yang tidak ada tetap diverifikasi terhadap hash palsu agar waktu respons mirip:
+
+`packages/core/src/auth/password.ts`
+
+```ts
+// Hash password admin (ADR-009): Argon2id dengan parameter bawaan
+// @node-rs/argon2 (memori 19 MiB, 2 iterasi, paralelisme 1 = minimum OWASP).
+import { hash, verify } from '@node-rs/argon2'
+
+/** Algorithm.Argon2id; enum itu const enum, tidak bisa di-import dengan verbatimModuleSyntax. */
+const ARGON2ID = 2
+
+export const PASSWORD_MIN = 12
+export const PASSWORD_MAX = 256
+
+/** Pesan bila password tidak memenuhi aturan; null bila boleh dipakai. */
+export function passwordProblem(password: string): string | null {
+  if (password.length < PASSWORD_MIN) return `password minimal ${PASSWORD_MIN} karakter`
+  if (password.length > PASSWORD_MAX) return `password maksimal ${PASSWORD_MAX} karakter`
+  if (password.trim() !== password) return 'password tidak boleh diawali atau diakhiri spasi'
+  return null
+}
+
+export async function hashPassword(password: string): Promise<string> {
+  const problem = passwordProblem(password)
+  if (problem) throw new Error(problem)
+  return hash(password, { algorithm: ARGON2ID })
+}
+
+/** Hash dengan parameter sama, untuk verifikasi palsu saat user tidak ada (waktu respons mirip). */
+let dummyHash: Promise<string> | undefined
+
+function dummy(): Promise<string> {
+  dummyHash ??= hash('password-palsu-untuk-waktu', { algorithm: ARGON2ID }).catch((error: unknown) => {
+    dummyHash = undefined // jangan simpan kegagalan; coba lagi di percobaan berikutnya
+    throw error
+  })
+  return dummyHash
+}
+
+/**
+ * Cocokkan password dengan hash. `storedHash` null (user tidak ada atau tanpa
+ * password) tetap menjalankan verifikasi terhadap hash palsu, lalu false.
+ * Hash yang rusak dianggap tidak cocok, bukan error.
+ */
+export async function verifyPassword(storedHash: string | null, password: string): Promise<boolean> {
+  if (password.length > PASSWORD_MAX) return false
+  const target = storedHash ?? (await dummy())
+  try {
+    const ok = await verify(target, password)
+    return ok && storedHash !== null
+  } catch {
+    return false
+  }
+}
+```
+
+`packages/core/src/auth/password.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { hashPassword, passwordProblem, verifyPassword } from './password'
+
+describe('password admin (Argon2id)', () => {
+  it('hash Argon2id dengan salt acak; verifikasi benar dan salah', async () => {
+    const a = await hashPassword('kata-sandi-panjang-1')
+    const b = await hashPassword('kata-sandi-panjang-1')
+    expect(a).toMatch(/^\$argon2id\$v=19\$m=19456,t=2,p=1\$/)
+    expect(a).not.toBe(b)
+    expect(await verifyPassword(a, 'kata-sandi-panjang-1')).toBe(true)
+    expect(await verifyPassword(a, 'kata-sandi-panjang-2')).toBe(false)
+  })
+
+  it('tanpa hash (user tidak ada) dan hash rusak -> false, bukan error', async () => {
+    expect(await verifyPassword(null, 'password-palsu-untuk-waktu')).toBe(false)
+    expect(await verifyPassword('bukan-hash', 'apa saja yang panjang')).toBe(false)
+  })
+
+  it.each([
+    ['pendek', 'a'.repeat(11), /minimal 12/],
+    ['terlalu panjang', 'a'.repeat(257), /maksimal 256/],
+    ['spasi di tepi', ' kata-sandi-panjang ', /spasi/],
+  ])('menolak password %s', async (_label, password, message) => {
+    expect(passwordProblem(password)).toMatch(message)
+    await expect(hashPassword(password)).rejects.toThrow(message)
+  })
+})
+```
+
+4. Baca konfigurasi admin dari environment. Tanpa secret, admin nonaktif; nilai yang diisi tetapi salah menghentikan start:
+
+`packages/core/src/auth/admin-config.ts`
+
+```ts
+// Konfigurasi admin dari environment (ADR-009), dibaca sekali saat start.
+//
+//   ADMIN_SESSION_SECRET  wajib agar admin aktif; minimal 32 karakter
+//   ADMIN_HOST            mode multi: host khusus admin, mis. admin.localhost
+//
+// Tanpa secret, admin nonaktif (semua path admin 404). Nilai yang diisi
+// tetapi salah ditolak, agar proses gagal start alih-alih berjalan dengan
+// admin yang tidak bisa dipakai.
+import type { SiteMode } from '../site/mode'
+import { normalizeHost } from '../repositories/site-repository'
+
+export type AdminConfig =
+  | { enabled: false; reason: string }
+  | { enabled: true; mode: 'multi'; host: string; sessionSecret: string }
+  | { enabled: true; mode: 'single'; siteCode: string; sessionSecret: string }
+
+export class AdminConfigError extends Error {
+  override name = 'AdminConfigError'
+}
+
+export const SESSION_SECRET_MIN = 32
+
+export function parseAdminConfig(env: Record<string, string | undefined>, siteMode: SiteMode): AdminConfig {
+  const secret = env['ADMIN_SESSION_SECRET']?.trim() || undefined
+  const rawHost = env['ADMIN_HOST']?.trim() || undefined
+  if (!secret) return { enabled: false, reason: 'ADMIN_SESSION_SECRET belum diisi' }
+  if (secret.length < SESSION_SECRET_MIN) {
+    throw new AdminConfigError(`Konfigurasi admin tidak valid -> ADMIN_SESSION_SECRET minimal ${SESSION_SECRET_MIN} karakter`)
+  }
+
+  if (siteMode.mode === 'single') {
+    if (rawHost) throw new AdminConfigError('Konfigurasi admin tidak valid -> ADMIN_HOST tidak dipakai saat SITE_MODE=single (admin ada di domain site)')
+    return { enabled: true, mode: 'single', siteCode: siteMode.siteCode, sessionSecret: secret }
+  }
+  if (!rawHost) throw new AdminConfigError('Konfigurasi admin tidak valid -> ADMIN_HOST wajib diisi saat SITE_MODE=multi, mis. admin.localhost')
+  const host = normalizeHost(rawHost)
+  if (!host || rawHost.includes('/')) throw new AdminConfigError(`Konfigurasi admin tidak valid -> ADMIN_HOST "${rawHost}" bukan hostname`)
+  return { enabled: true, mode: 'multi', host, sessionSecret: secret }
+}
+```
+
+`packages/core/src/auth/admin-config.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { AdminConfigError, parseAdminConfig } from './admin-config'
+
+const secret = 'x'.repeat(32)
+const multi = { mode: 'multi' } as const
+const single = { mode: 'single', siteCode: 'kabar-tekno' } as const
+
+describe('parseAdminConfig', () => {
+  it('tanpa secret -> admin nonaktif, bukan error', () => {
+    expect(parseAdminConfig({ ADMIN_HOST: 'admin.localhost' }, multi)).toEqual({ enabled: false, reason: 'ADMIN_SESSION_SECRET belum diisi' })
+    expect(parseAdminConfig({ ADMIN_SESSION_SECRET: '  ' }, single).enabled).toBe(false)
+  })
+
+  it('multi: host dinormalisasi (huruf kecil, tanpa port)', () => {
+    expect(parseAdminConfig({ ADMIN_SESSION_SECRET: secret, ADMIN_HOST: 'Admin.Localhost:3000' }, multi)).toEqual({
+      enabled: true, mode: 'multi', host: 'admin.localhost', sessionSecret: secret,
+    })
+  })
+
+  it('single: admin di domain site SITE_CODE', () => {
+    expect(parseAdminConfig({ ADMIN_SESSION_SECRET: secret }, single)).toEqual({ enabled: true, mode: 'single', siteCode: 'kabar-tekno', sessionSecret: secret })
+  })
+
+  it.each([
+    ['secret pendek', { ADMIN_SESSION_SECRET: 'pendek', ADMIN_HOST: 'admin.localhost' }, multi, /minimal 32/],
+    ['multi tanpa host', { ADMIN_SESSION_SECRET: secret }, multi, /ADMIN_HOST wajib/],
+    ['host bukan hostname', { ADMIN_SESSION_SECRET: secret, ADMIN_HOST: 'http://admin.localhost/x' }, multi, /bukan hostname/],
+    ['single dengan host', { ADMIN_SESSION_SECRET: secret, ADMIN_HOST: 'admin.localhost' }, single, /tidak dipakai saat SITE_MODE=single/],
+  ] as const)('menolak: %s', (_label, env, mode, message) => {
+    expect(() => parseAdminConfig(env, mode)).toThrow(AdminConfigError)
+    expect(() => parseAdminConfig(env, mode)).toThrow(message)
+  })
+})
+```
+
+5. Tulis pembatas percobaan login. Jam disuntik lewat `now`, sehingga test tidak perlu menunggu 15 menit. Percobaan dicatat di `begin()` sebelum verifikasi password: code review menemukan bahwa bila kegagalan baru dicatat setelah verifikasi (yang async), request paralel lolos semua. IP yang tidak diketahui hanya dibatasi per email:
+
+`packages/core/src/auth/login-throttle.ts`
+
+```ts
+// Pembatas percobaan login di memori proses (ADR-009): 5 percobaan gagal per
+// IP + email dan 30 per IP dalam 15 menit, lalu ditolak sampai jendela
+// waktunya lewat. Cukup untuk satu proses; banyak proses butuh penyimpanan
+// bersama.
+//
+// Percobaan dicatat di begin(), SEBELUM verifikasi password (yang async),
+// agar request paralel tidak lolos semua karena hitungannya belum naik.
+// Login berhasil mengembalikan catatan itu lewat success(). IP tidak
+// diketahui (null) hanya dibatasi per email, agar tidak semua klien berbagi
+// satu ember.
+
+export interface ThrottleOptions {
+  windowMs?: number
+  maxPerKey?: number
+  maxPerIp?: number
+  /** Batas jumlah entri agar memori tidak tumbuh tanpa batas. */
+  maxEntries?: number
+  now?: () => number
+}
+
+interface Entry {
+  count: number
+  resetAt: number
+}
+
+export function createLoginThrottle(options: ThrottleOptions = {}) {
+  const windowMs = options.windowMs ?? 15 * 60_000
+  const maxPerKey = options.maxPerKey ?? 5
+  const maxPerIp = options.maxPerIp ?? 30
+  const maxEntries = options.maxEntries ?? 10_000
+  const now = options.now ?? Date.now
+  const entries = new Map<string, Entry>()
+
+  const keyOf = (ip: string, email: string) => `k:${ip}|${email.trim().toLowerCase()}`
+  const ipOf = (ip: string) => `i:${ip}`
+
+  function current(key: string): Entry | undefined {
+    const entry = entries.get(key)
+    if (entry && entry.resetAt <= now()) {
+      entries.delete(key)
+      return undefined
+    }
+    return entry
+  }
+
+  function bump(key: string) {
+    const entry = current(key)
+    if (entry) {
+      entry.count++
+      return
+    }
+    if (entries.size >= maxEntries) {
+      // Buang entri kedaluwarsa dulu; bila masih penuh, entri tertua.
+      for (const [k, e] of entries) if (e.resetAt <= now()) entries.delete(k)
+      if (entries.size >= maxEntries) entries.delete(entries.keys().next().value as string)
+    }
+    entries.set(key, { count: 1, resetAt: now() + windowMs })
+  }
+
+  function retryAfter(ip: string | null, email: string): number {
+    const blocking: [Entry | undefined, number][] = [[current(keyOf(ip ?? '-', email)), maxPerKey]]
+    if (ip !== null) blocking.push([current(ipOf(ip)), maxPerIp])
+    let wait = 0
+    for (const [entry, max] of blocking) {
+      if (entry && entry.count >= max) wait = Math.max(wait, Math.ceil((entry.resetAt - now()) / 1000))
+    }
+    return wait
+  }
+
+  return {
+    retryAfter,
+    /**
+     * Mulai satu percobaan: detik tunggu bila diblokir (tidak dicatat), atau
+     * 0 dan percobaan langsung dicatat sebagai gagal sampai success().
+     */
+    begin(ip: string | null, email: string): number {
+      const wait = retryAfter(ip, email)
+      if (wait > 0) return wait
+      bump(keyOf(ip ?? '-', email))
+      if (ip !== null) bump(ipOf(ip))
+      return 0
+    },
+    /** Login berhasil: hitungan email dihapus dan catatan IP percobaan ini dikembalikan. */
+    success(ip: string | null, email: string) {
+      entries.delete(keyOf(ip ?? '-', email))
+      if (ip === null) return
+      const entry = current(ipOf(ip))
+      if (entry && entry.count > 0) entry.count--
+    },
+  }
+}
+
+export type LoginThrottle = ReturnType<typeof createLoginThrottle>
+```
+
+`packages/core/src/auth/login-throttle.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { createLoginThrottle } from './login-throttle'
+
+function setup(overrides = {}) {
+  let time = 0
+  const throttle = createLoginThrottle({ now: () => time, ...overrides })
+  return { throttle, advance: (ms: number) => { time += ms } }
+}
+
+describe('createLoginThrottle', () => {
+  it('5 kegagalan per IP + email -> ditolak sampai jendela 15 menit lewat', () => {
+    const { throttle, advance } = setup()
+    for (let i = 0; i < 4; i++) throttle.begin('1.1.1.1', 'a@x.test')
+    expect(throttle.retryAfter('1.1.1.1', 'a@x.test')).toBe(0)
+    throttle.begin('1.1.1.1', 'A@x.test ')
+    expect(throttle.retryAfter('1.1.1.1', 'a@x.test')).toBe(900)
+    // Email lain dari IP yang sama dan IP lain untuk email yang sama tetap boleh.
+    expect(throttle.retryAfter('1.1.1.1', 'b@x.test')).toBe(0)
+    expect(throttle.retryAfter('2.2.2.2', 'a@x.test')).toBe(0)
+    advance(15 * 60_000)
+    expect(throttle.retryAfter('1.1.1.1', 'a@x.test')).toBe(0)
+  })
+
+  it('30 kegagalan per IP (email berganti-ganti) -> IP ditolak', () => {
+    const { throttle } = setup()
+    for (let i = 0; i < 30; i++) throttle.begin('3.3.3.3', `user${i}@x.test`)
+    expect(throttle.retryAfter('3.3.3.3', 'baru@x.test')).toBeGreaterThan(0)
+  })
+
+  it('percobaan paralel: dicatat saat dimulai, jadi yang ke-6 ditolak sebelum verifikasi selesai', () => {
+    const { throttle } = setup()
+    const started = Array.from({ length: 8 }, () => throttle.begin('1.1.1.1', 'a@x.test'))
+    expect(started.filter((w) => w === 0)).toHaveLength(5)
+    expect(started.slice(5).every((w) => w > 0)).toBe(true)
+  })
+
+  it('IP tidak diketahui: hanya dibatasi per email, tidak berbagi ember IP', () => {
+    const { throttle } = setup()
+    for (let i = 0; i < 40; i++) throttle.begin(null, `u${i}@x.test`)
+    expect(throttle.retryAfter(null, 'baru@x.test')).toBe(0)
+    for (let i = 0; i < 5; i++) throttle.begin(null, 'z@x.test')
+    expect(throttle.retryAfter(null, 'z@x.test')).toBeGreaterThan(0)
+  })
+
+  it('login berhasil menghapus hitungan IP + email', () => {
+    const { throttle } = setup()
+    for (let i = 0; i < 4; i++) throttle.begin('1.1.1.1', 'a@x.test')
+    throttle.success('1.1.1.1', 'a@x.test')
+    throttle.begin('1.1.1.1', 'a@x.test')
+    expect(throttle.retryAfter('1.1.1.1', 'a@x.test')).toBe(0)
+  })
+
+  it('jumlah entri dibatasi', () => {
+    const { throttle } = setup({ maxEntries: 10 })
+    for (let i = 0; i < 100; i++) throttle.begin(`10.0.0.${i}`, 'a@x.test')
+    // Tidak melempar dan tetap bekerja untuk kunci baru.
+    for (let i = 0; i < 5; i++) throttle.begin('9.9.9.9', 'z@x.test')
+    expect(throttle.retryAfter('9.9.9.9', 'z@x.test')).toBeGreaterThan(0)
+  })
+})
+```
+
+6. Tulis repository user. Tabel `users` adalah identitas global (tanpa `site_id`), jadi fungsi di sini tidak menerima siteId; akses ke site diturunkan dari `site_members` atau `is_superadmin`. User `DISABLED` dikembalikan tanpa hash agar ditolak dengan pesan yang sama. Daftarkan sebagai `users` di `createRepositories` dan ekspor modul auth dari `packages/core/src/index.ts`:
+
+`packages/core/src/repositories/user-repository.ts`
+
+```ts
+// Repository user admin (ADR-009).
+//
+// Tabel users adalah identitas GLOBAL (tanpa site_id), seperti resolver
+// site: fungsi di sini tidak menerima siteId. Akses ke site diturunkan dari
+// site_members (atau is_superadmin) oleh listSites; setiap operasi konten
+// tetap memakai repository yang menerima siteId.
+import { and, asc, eq, inArray, siteMembers, sites, sql, users } from '@framework/db'
+import type { SiteMode } from '../site/mode'
+import type { RepositoryContext } from './types'
+
+export interface AdminUser {
+  id: string
+  email: string
+  displayName: string
+  isSuperadmin: boolean
+}
+
+export interface LoginCandidate extends AdminUser {
+  /** Null = user tanpa password (login lewat provider lain) atau DISABLED: tidak bisa login. */
+  passwordHash: string | null
+}
+
+export interface AdminSite {
+  id: string
+  code: string
+  name: string
+  /** Role keanggotaan; superadmin tanpa keanggotaan = 'SUPERADMIN'. */
+  role: 'OWNER' | 'EDITOR' | 'AUTHOR' | 'SUPERADMIN'
+}
+
+export interface CreateAdminInput {
+  email: string
+  displayName: string
+  passwordHash: string
+  isSuperadmin: boolean
+  /** Kode site tempat user menjadi OWNER. */
+  siteCodes: string[]
+}
+
+export class UserInputError extends Error {
+  override name = 'UserInputError'
+}
+
+/** Email disimpan huruf kecil (CHECK users_email_normalized). */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
+const userColumns = {
+  id: users.id,
+  email: users.email,
+  displayName: users.displayName,
+  isSuperadmin: users.isSuperadmin,
+}
+
+export function createUserRepository(ctx: RepositoryContext) {
+  const { db } = ctx
+
+  return {
+    /** User untuk login. User DISABLED dikembalikan tanpa hash agar tetap ditolak dengan pesan yang sama. */
+    async findForLogin(email: string): Promise<LoginCandidate | null> {
+      const [row] = await db
+        .select({ ...userColumns, passwordHash: users.passwordHash, status: users.status })
+        .from(users)
+        .where(eq(users.email, normalizeEmail(email)))
+        .limit(1)
+      if (!row) return null
+      const { status, passwordHash, ...user } = row
+      return { ...user, passwordHash: status === 'ACTIVE' ? passwordHash : null }
+    },
+
+    /** User ACTIVE berdasarkan id (dipanggil setiap request admin); null bila tidak ada atau DISABLED. */
+    async getActive(id: string): Promise<AdminUser | null> {
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return null
+      const [row] = await db
+        .select(userColumns)
+        .from(users)
+        .where(and(eq(users.id, id), eq(users.status, 'ACTIVE')))
+        .limit(1)
+      return row ?? null
+    },
+
+    async recordLogin(id: string): Promise<void> {
+      await db.update(users).set({ lastLoginAt: sql`now()` }).where(eq(users.id, id))
+    },
+
+    /**
+     * Site ACTIVE yang boleh dikelola user. Superadmin: semua site (role dari
+     * keanggotaan bila ada). Mode single: hanya site SITE_CODE.
+     */
+    async listSites(user: AdminUser, mode: SiteMode): Promise<AdminSite[]> {
+      const memberships = await db
+        .select({ siteId: siteMembers.siteId, role: siteMembers.role })
+        .from(siteMembers)
+        .where(eq(siteMembers.userId, user.id))
+      const roles = new Map(memberships.map((m) => [m.siteId, m.role as AdminSite['role']]))
+
+      const conditions = [eq(sites.status, 'ACTIVE')]
+      if (mode.mode === 'single') conditions.push(eq(sites.code, mode.siteCode))
+      const rows = await db
+        .select({ id: sites.id, code: sites.code, name: sites.name })
+        .from(sites)
+        .where(and(...conditions))
+        .orderBy(asc(sites.name))
+
+      return rows.flatMap((site) => {
+        const role = roles.get(site.id) ?? (user.isSuperadmin ? 'SUPERADMIN' : null)
+        return role ? [{ ...site, role }] : []
+      })
+    },
+
+    /** Membuat admin + keanggotaan OWNER dalam satu transaksi (CLI admin:create). */
+    async createAdmin(input: CreateAdminInput): Promise<AdminUser> {
+      const email = normalizeEmail(input.email)
+      return db.transaction(async (tx) => {
+        const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1)
+        if (existing) throw new UserInputError(`user ${email} sudah ada (pakai --reset-password untuk mengganti password)`)
+
+        const siteRows = input.siteCodes.length
+          ? await tx.select({ id: sites.id, code: sites.code }).from(sites).where(inArray(sites.code, input.siteCodes))
+          : []
+        const missing = input.siteCodes.filter((code) => !siteRows.some((s) => s.code === code))
+        if (missing.length) throw new UserInputError(`site tidak ditemukan: ${missing.join(', ')}`)
+
+        const [created] = await tx
+          .insert(users)
+          .values({ email, displayName: input.displayName.trim(), passwordHash: input.passwordHash, isSuperadmin: input.isSuperadmin })
+          .returning(userColumns)
+        if (!created) throw new Error('insert user tidak mengembalikan baris')
+        if (siteRows.length) {
+          await tx.insert(siteMembers).values(siteRows.map((s) => ({ siteId: s.id, userId: created.id, role: 'OWNER' })))
+        }
+        return created
+      })
+    },
+
+    /** Ganti password user yang sudah ada; false bila email tidak ditemukan. */
+    async setPassword(email: string, passwordHash: string): Promise<boolean> {
+      const rows = await db
+        .update(users)
+        .set({ passwordHash, updatedAt: sql`now()` })
+        .where(eq(users.email, normalizeEmail(email)))
+        .returning({ id: users.id })
+      return rows.length > 0
+    },
+  }
+}
+
+export type UserRepository = ReturnType<typeof createUserRepository>
+```
+
+7. Uji repository terhadap database dev. User test dibuat dan dihapus di test itu sendiri; user seed tidak diubah:
+
+`packages/core/src/repositories/user-repository.test.ts`
+
+```ts
+// Repository user admin terhadap database dev yang di-seed (dilewati tanpa
+// DATABASE_URL). User test dibuat dan dihapus di sini; user seed tidak diubah.
+import { createDatabase, eq, users } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createRepositories, UserInputError } from './index'
+
+describe.skipIf(!process.env['DATABASE_URL'])('repository user admin', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 2, applicationName: 'vitest-users' })
+  const repos = createRepositories(db)
+  const email = `test-${process.pid}-${Date.now()}@local.test`
+  afterAll(async () => {
+    await db.delete(users).where(eq(users.email, email))
+    await db.$client.end()
+  })
+
+  it('superadmin seed: semua site ACTIVE; mode single hanya SITE_CODE', async () => {
+    const admin = await repos.users.findForLogin('Admin@Local.Test ')
+    if (!admin) throw new Error('admin seed tidak ada')
+    expect(admin).toMatchObject({ email: 'admin@local.test', isSuperadmin: true })
+    expect((await repos.users.listSites(admin, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([
+      ['dapur-nusantara', 'OWNER'],
+      ['kabar-tekno', 'OWNER'],
+    ])
+    expect((await repos.users.listSites(admin, { mode: 'single', siteCode: 'kabar-tekno' })).map((s) => s.code)).toEqual(['kabar-tekno'])
+  })
+
+  it('anggota biasa: hanya site keanggotaannya', async () => {
+    const author = await repos.users.findForLogin('penulis@local.test')
+    if (!author) throw new Error('penulis seed tidak ada')
+    expect((await repos.users.listSites(author, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([['kabar-tekno', 'AUTHOR']])
+    expect(await repos.users.listSites(author, { mode: 'single', siteCode: 'dapur-nusantara' })).toEqual([])
+  })
+
+  it('createAdmin + OWNER dalam satu transaksi; email ganda dan site tak dikenal ditolak', async () => {
+    const created = await repos.users.createAdmin({ email: email.toUpperCase(), displayName: ' Admin Test ', passwordHash: 'hash-palsu', isSuperadmin: false, siteCodes: ['dapur-nusantara'] })
+    expect(created).toMatchObject({ email, displayName: 'Admin Test', isSuperadmin: false })
+    expect((await repos.users.listSites(created, { mode: 'multi' })).map((s) => [s.code, s.role])).toEqual([['dapur-nusantara', 'OWNER']])
+    await expect(repos.users.createAdmin({ email, displayName: 'X', passwordHash: 'h', isSuperadmin: false, siteCodes: [] })).rejects.toThrow(UserInputError)
+    await expect(repos.users.createAdmin({ email: `lain-${email}`, displayName: 'X', passwordHash: 'h', isSuperadmin: false, siteCodes: ['tidak-ada'] })).rejects.toThrow(/site tidak ditemukan: tidak-ada/)
+    expect(await repos.users.findForLogin(`lain-${email}`)).toBeNull()
+  })
+
+  it('getActive, setPassword, dan user DISABLED tidak bisa login', async () => {
+    const user = await repos.users.findForLogin(email)
+    if (!user) throw new Error('user test tidak ada')
+    expect(await repos.users.getActive(user.id)).toMatchObject({ email })
+    expect(await repos.users.getActive('bukan-uuid')).toBeNull()
+    expect(await repos.users.setPassword(email, 'hash-baru')).toBe(true)
+    expect(await repos.users.setPassword('tidak-ada@local.test', 'x')).toBe(false)
+    expect((await repos.users.findForLogin(email))?.passwordHash).toBe('hash-baru')
+
+    await db.update(users).set({ status: 'DISABLED' }).where(eq(users.email, email))
+    expect((await repos.users.findForLogin(email))?.passwordHash).toBeNull()
+    expect(await repos.users.getActive(user.id)).toBeNull()
+  })
+})
+```
+
+8. Tulis CLI admin pertama. Password dibaca dari prompt tersembunyi (diketik dua kali) atau dari `ADMIN_PASSWORD`, tidak pernah dari argumen. Tambahkan script `"admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts"` di `apps/web/package.json` dan `"admin:create": "pnpm --filter @framework/web admin:create"` di root, lalu masukkan `apps/web/scripts/**/*.ts` ke `include` di `tsconfig.json` root agar ikut typecheck:
+
+`apps/web/scripts/admin-create.ts`
+
+```ts
+// Membuat admin pertama tanpa menyentuh database manual (ADR-009, gate M4).
+//
+//   pnpm admin:create --email admin@contoh.id --name "Nama" --superadmin
+//   pnpm admin:create --email editor@contoh.id --name "Nama" --site kabar-tekno --site dapur-nusantara
+//   pnpm admin:create --email admin@local.test --reset-password
+//
+// Password dibaca dari prompt tersembunyi (diketik dua kali) di terminal, atau
+// dari env ADMIN_PASSWORD bila tanpa terminal (CI). Tidak pernah dari argumen:
+// argumen terlihat di riwayat shell dan daftar proses.
+import { parseArgs } from 'node:util'
+import { createRepositories, hashPassword, passwordProblem, UserInputError } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv } from '@framework/db'
+
+const USAGE = `Pemakaian:
+  pnpm admin:create --email <email> --name <nama> [--superadmin] [--site <kode>]...
+  pnpm admin:create --email <email> --reset-password
+Password: prompt tersembunyi di terminal; tanpa terminal (CI): env ADMIN_PASSWORD.`
+
+function fail(message: string): never {
+  console.error(`[admin] ${message}`)
+  process.exit(1)
+}
+
+const { values } = (() => {
+  try {
+    return parseArgs({
+      options: {
+        email: { type: 'string' },
+        name: { type: 'string' },
+        superadmin: { type: 'boolean', default: false },
+        site: { type: 'string', multiple: true, default: [] },
+        'reset-password': { type: 'boolean', default: false },
+        help: { type: 'boolean', default: false },
+      },
+      strict: true,
+    })
+  } catch (error) {
+    return fail(`${error instanceof Error ? error.message : String(error)}\n${USAGE}`)
+  }
+})()
+
+if (values.help) {
+  console.log(USAGE)
+  process.exit(0)
+}
+if (!values.email) fail(`--email wajib diisi\n${USAGE}`)
+const reset = values['reset-password']
+if (!reset && !values.name?.trim()) fail(`--name wajib diisi untuk user baru\n${USAGE}`)
+if (!reset && !values.superadmin && values.site.length === 0) {
+  fail('user baru harus --superadmin atau punya minimal satu --site; tanpa itu tidak ada yang bisa dikelola')
+}
+
+/** Sisa ketikan setelah Enter (mis. dua baris di-paste sekaligus), untuk prompt berikutnya. */
+let pending = ''
+
+/** Baca satu baris dari terminal tanpa menampilkan ketikan. */
+function promptHidden(question: string): Promise<string> {
+  const { stdin, stdout } = process
+  stdout.write(question)
+  const finish = (line: string, rest: string) => {
+    pending = rest
+    stdout.write('\n')
+    return line
+  }
+  const newline = pending.search(/[\r\n]/)
+  if (newline >= 0) return Promise.resolve(finish(pending.slice(0, newline), pending.slice(newline + 1).replace(/^\n/, '')))
+
+  stdin.setRawMode(true)
+  stdin.resume()
+  stdin.setEncoding('utf8')
+  let input = pending
+  pending = ''
+  return new Promise((resolve) => {
+    const onData = (chunk: string) => {
+      for (let i = 0; i < chunk.length; i++) {
+        const ch = chunk[i] as string
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+          stdin.setRawMode(false)
+          stdin.pause()
+          stdin.off('data', onData)
+          const rest = chunk.slice(i + 1)
+          resolve(finish(input, ch === '\r' ? rest.replace(/^\n/, '') : rest))
+          return
+        }
+        if (ch === '\u0003') {
+          stdin.setRawMode(false)
+          stdout.write('\n')
+          process.exit(130)
+        }
+        if (ch === '\u007f' || ch === '\b') input = input.slice(0, -1)
+        else input += ch
+      }
+    }
+    stdin.on('data', onData)
+  })
+}
+
+/**
+ * Terminal: selalu prompt (ADMIN_PASSWORD di .env tidak dipakai diam-diam
+ * untuk user baru). Tanpa terminal (CI): ADMIN_PASSWORD, dengan peringatan.
+ */
+async function readPassword(): Promise<string> {
+  const fromEnv = process.env['ADMIN_PASSWORD']
+  if (!process.stdin.isTTY) {
+    if (!fromEnv) fail('stdin bukan terminal: isi password lewat env ADMIN_PASSWORD')
+    console.warn('[admin] memakai password dari ADMIN_PASSWORD')
+    return fromEnv
+  }
+  if (fromEnv) console.warn('[admin] ADMIN_PASSWORD diabaikan di terminal; ketik password')
+  const first = await promptHidden('Password: ')
+  const problem = passwordProblem(first)
+  if (problem) fail(problem)
+  if ((await promptHidden('Ulangi password: ')) !== first) fail('password tidak sama')
+  return first
+}
+
+const password = await readPassword()
+const problem = passwordProblem(password)
+if (problem) fail(problem)
+
+const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 1, applicationName: 'admin-create' })
+try {
+  const users = createRepositories(db).users
+  const passwordHash = await hashPassword(password)
+  if (reset) {
+    if (!(await users.setPassword(values.email, passwordHash))) fail(`user ${values.email} tidak ditemukan`)
+    console.log(`[admin] password ${values.email.toLowerCase()} diganti`)
+  } else {
+    const user = await users.createAdmin({
+      email: values.email,
+      displayName: values.name ?? '',
+      passwordHash,
+      isSuperadmin: values.superadmin,
+      siteCodes: values.site,
+    })
+    const scope = [user.isSuperadmin ? 'superadmin' : null, values.site.length ? `OWNER di ${values.site.join(', ')}` : null].filter(Boolean).join('; ')
+    console.log(`[admin] user ${user.email} dibuat (${scope})`)
+  }
+} catch (error) {
+  if (error instanceof UserInputError) fail(error.message)
+  throw error
+} finally {
+  await db.$client.end()
+}
+```
+
+9. Isi `.env` (lihat `.env.example`): `ADMIN_SESSION_SECRET` dari `openssl rand -base64 48` dan `ADMIN_HOST=admin.localhost`. Lalu isi password admin seed:
+
+```bash
+pnpm admin:create --email admin@local.test --reset-password
+# Password: ********
+# Ulangi password: ********
+# [admin] password admin@local.test diganti
+```
+
+10. Tulis util admin di server: konfigurasi dibaca sekali, sesi dan user selalu per request. Dua hal penting dari security review:
+    - Router men-decode percent-encoding sebelum mencocokkan route, sehingga `/api/%61dmin/login` sampai ke handler `/api/admin/login`. Pemeriksaan path harus memakai bentuk yang sama (`routedPath`). Tanpa ini, login lewat domain site publik berhasil dan mendapat sesi.
+    - Aturan host dan `Origin` diulang di handler lewat `assertAdminRequest`, yang dipanggil `useAdminSession`, sehingga selisih normalisasi path tidak bisa melewatinya.
+
+`apps/web/server/utils/admin.ts`
+
+```ts
+// Admin (ADR-009): konfigurasi, sesi, dan pemeriksaan akses. Config dibaca
+// sekali per proses; sesi dan user selalu per request (event), tidak
+// disimpan di modul (ADR-001).
+import { createLoginThrottle, normalizeHost, parseAdminConfig, type AdminConfig, type AdminSite, type AdminUser } from '@framework/core'
+import { createError, getRequestHost, getRequestIP, getRequestURL, useSession, type RequestEvent } from 'nuxt/server'
+import { useRepositories } from './database'
+import { useSiteMode } from './site-mode'
+
+let adminConfig: AdminConfig | undefined
+
+/** Melempar AdminConfigError bila env salah; plugin admin memanggilnya saat start. */
+export function useAdminConfig(): AdminConfig {
+  adminConfig ??= parseAdminConfig(process.env, useSiteMode())
+  return adminConfig
+}
+
+/** Pembatas login, satu per proses (ADR-009). */
+export const loginThrottle = createLoginThrottle()
+
+/**
+ * IP klien untuk pembatas login. X-Forwarded-For hanya dipercaya bila
+ * TRUST_PROXY=true (server di belakang reverse proxy yang menimpa header itu);
+ * tanpa itu header bisa dipalsukan klien. Null bila tidak diketahui.
+ */
+export function clientIp(event: RequestEvent): string | null {
+  return getRequestIP(event, { xForwardedFor: process.env['TRUST_PROXY'] === 'true' }) ?? null
+}
+
+const ADMIN_PREFIXES = ['/admin', '/api/admin']
+
+/**
+ * Pathname dalam bentuk yang dicocokkan router: router men-decode percent-
+ * encoding sebelum mencocokkan route, jadi /api/%61dmin/login sampai ke
+ * handler /api/admin/login. Pemeriksaan path harus memakai bentuk yang sama
+ * (temuan security review 21 Nov 2026). Encoding rusak -> pathname apa adanya.
+ */
+export function routedPath(pathname: string): string {
+  try {
+    return decodeURI(pathname)
+  } catch {
+    return pathname
+  }
+}
+
+/** Path admin: /admin, /admin/..., /api/admin/... (bukan /administrasi). Menerima pathname mentah. */
+export function isAdminPath(pathname: string): boolean {
+  const path = routedPath(pathname)
+  return ADMIN_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
+}
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/**
+ * Pemeriksaan yang juga dijalankan middleware, diulang di handler (lapisan
+ * kedua): mode multi hanya di ADMIN_HOST; method non-GET wajib Origin yang
+ * sama dengan origin request. Selisih normalisasi path antara middleware dan
+ * router tidak bisa melewatinya.
+ */
+export function assertAdminRequest(event: RequestEvent): void {
+  const config = useAdminConfig()
+  if (!config.enabled) throw createError({ statusCode: 404, statusMessage: 'Not Found' })
+  if (config.mode === 'multi' && normalizeHost(getRequestHost(event)) !== config.host) {
+    throw createError({ statusCode: 404, statusMessage: 'Not Found' })
+  }
+  if (!SAFE_METHODS.has(event.req.method)) {
+    const origin = event.req.headers.get('origin')
+    if (!origin || origin !== getRequestURL(event, { xForwardedProto: true }).origin) {
+      throw createError({ statusCode: 403, statusMessage: 'Origin tidak diizinkan' })
+    }
+  }
+}
+
+const SESSION_NAME = 'blog_admin'
+const SESSION_MAX_AGE = 8 * 60 * 60
+
+type AdminSessionData = {
+  userId?: string
+}
+
+/** Sesi cookie terenkripsi; Secure bila request HTTPS (langsung atau lewat proxy). */
+export async function useAdminSession(event: RequestEvent) {
+  assertAdminRequest(event)
+  const config = useAdminConfig()
+  if (!config.enabled) throw createError({ statusCode: 404, statusMessage: 'Not Found' })
+  const secure = getRequestURL(event, { xForwardedProto: true }).protocol === 'https:'
+  return useSession<AdminSessionData>(event, {
+    name: SESSION_NAME,
+    password: config.sessionSecret,
+    maxAge: SESSION_MAX_AGE,
+    cookie: { secure, sameSite: 'lax', httpOnly: true, path: '/' },
+  })
+}
+
+export interface AdminContext {
+  user: AdminUser
+  sites: AdminSite[]
+}
+
+/** User login yang masih ACTIVE + site yang boleh dikelolanya; 401 bila tidak. */
+export async function requireAdmin(event: RequestEvent): Promise<AdminContext> {
+  const session = await useAdminSession(event)
+  const userId = session.data.userId
+  const user = userId ? await useRepositories().users.getActive(userId) : null
+  if (!user) {
+    if (userId) await session.clear()
+    throw createError({ statusCode: 401, statusMessage: 'Belum login' })
+  }
+  const sites = await useRepositories().users.listSites(user, useSiteMode())
+  return { user, sites }
+}
+
+/** Site yang diminta harus milik user; selain itu 404 agar keberadaannya tidak terbaca. */
+export function requireSite(admin: AdminContext, siteId: string | undefined): AdminSite {
+  const site = admin.sites.find((s) => s.id === siteId)
+  if (!site) throw createError({ statusCode: 404, statusMessage: 'Site tidak ditemukan' })
+  return site
+}
+```
+
+11. Validasi konfigurasi saat start dan tambahkan penjaga API admin:
+
+`apps/web/server/plugins/admin.ts`
+
+```ts
+// Validasi konfigurasi admin saat server start (ADR-009): nilai yang salah
+// membuat proses gagal start; tanpa secret, admin nonaktif dan dicatat.
+import { useAdminConfig } from '../utils/admin'
+
+export default defineNitroPlugin(() => {
+  const config = useAdminConfig()
+  if (!config.enabled) console.info(`[admin] nonaktif: ${config.reason}`)
+  else console.info(config.mode === 'multi' ? `[admin] aktif di host ${config.host}` : '[admin] aktif di domain site')
+})
+```
+
+`apps/web/server/middleware/admin-guard.ts`
+
+```ts
+// Penjaga API admin (ADR-009), berjalan sebelum route /api/admin/*:
+//  - request non-GET wajib membawa Origin yang sama dengan origin request
+//    (menutup CSRF bersama cookie SameSite=Lax, tanpa token);
+//  - respons tidak boleh di-cache.
+// Path dicek setelah di-decode seperti router (routedPath). Pemeriksaan host
+// dan Origin diulang di handler lewat useAdminSession (assertAdminRequest);
+// login dan hak akses diperiksa di route lewat requireAdmin.
+import { defineEventHandler, getRequestURL } from 'nuxt/server'
+import { assertAdminRequest, routedPath } from '../utils/admin'
+
+export default defineEventHandler((event) => {
+  const path = routedPath(getRequestURL(event).pathname)
+  if (!path.startsWith('/api/admin/') && path !== '/api/admin') return
+  event.res.headers.set('cache-control', 'no-store')
+  // Host (mode multi) dan, untuk method non-GET, Origin.
+  assertAdminRequest(event)
+})
+```
+
+12. Di middleware site, tangani path admin sebelum resolusi site (file lengkap di bab "Memilih Site dari Domain Request"): di mode multi, host admin melayani path admin dan mengarahkan path lain ke `/admin`, sedangkan path admin di domain site dijawab 404; di mode single, path admin dilayani di domain site tanpa membangun view model.
+
+13. Tulis route API. Login membuat sesi baru (`clear` lalu `update`) dan tidak pernah mengembalikan hash password:
+
+`apps/web/server/api/admin/login.post.ts`
+
+```ts
+// POST /api/admin/login { email, password } (ADR-009).
+// Pesan gagal sama untuk semua sebab; percobaan dibatasi per IP + email.
+import { PASSWORD_MAX, verifyPassword } from '@framework/core'
+import { createError, defineEventHandler, readValidatedBody } from 'nuxt/server'
+import { z } from 'zod'
+import { clientIp, loginThrottle, useAdminSession } from '../../utils/admin'
+import { useRepositories } from '../../utils/database'
+import { useSiteMode } from '../../utils/site-mode'
+
+const body = z.object({
+  email: z.string().trim().min(3).max(254),
+  password: z.string().min(1).max(PASSWORD_MAX),
+})
+
+export default defineEventHandler(async (event) => {
+  const session = await useAdminSession(event)
+  const input = await readValidatedBody(event, (raw) => body.parse(raw)).catch(() => {
+    throw createError({ statusCode: 400, statusMessage: 'Email dan password wajib diisi' })
+  })
+  const ip = clientIp(event)
+
+  // Dicatat sebelum verifikasi (async), agar request paralel tidak lolos semua.
+  const wait = loginThrottle.begin(ip, input.email)
+  if (wait > 0) {
+    event.res.headers.set('retry-after', String(wait))
+    throw createError({ statusCode: 429, statusMessage: 'Terlalu banyak percobaan login. Coba lagi nanti.' })
+  }
+
+  const users = useRepositories().users
+  const candidate = await users.findForLogin(input.email)
+  const ok = await verifyPassword(candidate?.passwordHash ?? null, input.password)
+  // Superadmin atau anggota site; user tanpa site tidak punya apa pun untuk dikelola.
+  const sites = ok && candidate ? await users.listSites(candidate, useSiteMode()) : []
+  if (!ok || !candidate || sites.length === 0) {
+    throw createError({ statusCode: 401, statusMessage: 'Email atau password salah' })
+  }
+
+  loginThrottle.success(ip, input.email)
+  // Sesi baru setiap login (id sesi lama tidak dipakai ulang).
+  await session.clear()
+  await session.update({ userId: candidate.id })
+  await users.recordLogin(candidate.id)
+  const user = { id: candidate.id, email: candidate.email, displayName: candidate.displayName, isSuperadmin: candidate.isSuperadmin }
+  return { user, sites }
+})
+```
+
+`apps/web/server/api/admin/logout.post.ts`
+
+```ts
+// POST /api/admin/logout: hapus sesi. Selalu 200, juga tanpa sesi.
+import { defineEventHandler } from 'nuxt/server'
+import { useAdminSession } from '../../utils/admin'
+
+export default defineEventHandler(async (event) => {
+  const session = await useAdminSession(event)
+  await session.clear()
+  return { ok: true }
+})
+```
+
+`apps/web/server/api/admin/me.get.ts`
+
+```ts
+// GET /api/admin/me: user login dan site yang boleh dikelolanya; 401 tanpa sesi.
+import { defineEventHandler } from 'nuxt/server'
+import { requireAdmin, useAdminConfig } from '../../utils/admin'
+
+export default defineEventHandler(async (event) => {
+  const { user, sites } = await requireAdmin(event)
+  const config = useAdminConfig()
+  return { user, sites, mode: config.enabled ? config.mode : null }
+})
+```
+
+14. Mulai memakai `app/pages/`. Isi `app.vue` lama pindah ke `app/pages/[...slug].vue` (halaman publik, tidak berubah), `app.vue` tinggal `<NuxtPage />`, dan admin dijadikan SPA di `nuxt.config.ts`:
+
+```ts
+routeRules: {
+  '/admin': { ssr: false },
+  '/admin/**': { ssr: false },
+},
+```
+
+   Nama file halaman Nuxt menentukan route (`index.vue`, `login.vue`), jadi matikan aturan `vue/multi-word-component-names` untuk `apps/web/app/pages/**` di `eslint.config.js`.
+
+15. Tulis halaman admin minimal. Tampilan lengkap dibuat bersama layar admin. Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
+
+`apps/web/app/composables/useAdmin.ts`
+
+```ts
+// State admin di browser (SPA, ADR-009). Data datang dari /api/admin/*;
+// kode app/ tidak pernah memanggil repository.
+import type { AdminSite, AdminUser } from '@framework/core'
+
+export interface AdminMe {
+  user: AdminUser
+  sites: AdminSite[]
+  mode: 'multi' | 'single' | null
+}
+
+export function useAdminMe() {
+  return useState<AdminMe | null>('admin-me', () => null)
+}
+
+/** Pesan error dari respons API (statusMessage h3) untuk ditampilkan. */
+export function apiErrorMessage(error: unknown, fallback = 'Terjadi kesalahan. Coba lagi.'): string {
+  const e = error as { statusCode?: number; statusMessage?: string; data?: { statusMessage?: string; message?: string } }
+  return e?.data?.statusMessage ?? e?.data?.message ?? e?.statusMessage ?? fallback
+}
+```
+
+`apps/web/app/pages/admin/login.vue`
+
+```vue
+<!-- Login admin (ADR-009). Tampilan lengkap admin dikerjakan di 4.2. -->
+<script setup lang="ts">
+const email = ref('')
+const password = ref('')
+const error = ref<string | null>(null)
+const busy = ref(false)
+
+async function submit() {
+  busy.value = true
+  error.value = null
+  try {
+    await $fetch('/api/admin/login', { method: 'POST', body: { email: email.value, password: password.value } })
+    await navigateTo('/admin')
+  } catch (e) {
+    error.value = apiErrorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <main class="admin-login">
+    <h1>Masuk ke admin</h1>
+    <form @submit.prevent="submit">
+      <label>
+        Email
+        <input
+          v-model="email"
+          type="email"
+          name="email"
+          autocomplete="username"
+          required
+        >
+      </label>
+      <label>
+        Password
+        <input
+          v-model="password"
+          type="password"
+          name="password"
+          autocomplete="current-password"
+          required
+        >
+      </label>
+      <p
+        v-if="error"
+        role="alert"
+      >
+        {{ error }}
+      </p>
+      <button
+        type="submit"
+        :disabled="busy"
+      >
+        Masuk
+      </button>
+    </form>
+  </main>
+</template>
+```
+
+`apps/web/app/pages/admin/index.vue`
+
+```vue
+<!-- Beranda admin: user login dan site yang bisa dikelola (ADR-009). -->
+<script setup lang="ts">
+const me = useAdminMe()
+const error = ref<string | null>(null)
+
+onMounted(async () => {
+  try {
+    me.value = await $fetch<AdminMe>('/api/admin/me')
+  } catch (e) {
+    if ((e as { statusCode?: number }).statusCode === 401) return navigateTo('/admin/login')
+    error.value = apiErrorMessage(e)
+  }
+})
+
+async function logout() {
+  try {
+    await $fetch('/api/admin/logout', { method: 'POST' })
+    me.value = null
+    await navigateTo('/admin/login')
+  } catch (e) {
+    error.value = `Gagal keluar: ${apiErrorMessage(e)}`
+  }
+}
+</script>
+
+<template>
+  <main class="admin-home">
+    <p
+      v-if="error"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+    <template v-else-if="me">
+      <h1>Halo, {{ me.user.displayName }}</h1>
+      <h2>Site</h2>
+      <ul>
+        <li
+          v-for="site in me.sites"
+          :key="site.id"
+        >
+          {{ site.name }} ({{ site.code }})
+        </li>
+      </ul>
+      <button
+        type="button"
+        @click="logout"
+      >
+        Keluar
+      </button>
+    </template>
+    <p v-else>
+      Memuat…
+    </p>
+  </main>
+</template>
+```
+
+16. Tulis gate admin terhadap server hasil build, dengan helper request umum `requestWithHost` di `scripts/lib/built-server.mjs` (bab "Membuktikan Isolasi Antar-Site"). Gate memeriksa host admin dan domain site (termasuk path ter-encode), penjaga Origin, login salah dan benar, sesi, logout, rate limit, dan login paralel:
+
+`apps/web/scripts/gate-admin.mjs`
+
+```js
+// Gate admin (ADR-009, usulan M4-F) terhadap server hasil build.
+//
+// 4.0: host admin dan domain site (termasuk path ter-encode), penjaga Origin,
+// login salah/benar, sesi, logout, dan rate limit login. Alur buat-jadwalkan-tampilkan artikel
+// ditambahkan di 4.6.
+//
+// Butuh database ber-seed dan env: ADMIN_SESSION_SECRET, ADMIN_HOST,
+// ADMIN_PASSWORD (password admin yang dibuat lewat `pnpm admin:create`),
+// ADMIN_EMAIL (default admin@local.test).
+//
+//   pnpm build && pnpm --filter @framework/web gate:admin
+import { requestWithHost, startBuiltServer } from './lib/built-server.mjs'
+
+const port = process.env.GATE_ADMIN_PORT ?? '3996'
+const adminHost = process.env.ADMIN_HOST
+const email = process.env.ADMIN_EMAIL ?? 'admin@local.test'
+const password = process.env.ADMIN_PASSWORD
+const siteHost = process.env.GATE_SITE_HOST ?? 'tekno.localhost'
+
+if (!adminHost || !password || !process.env.ADMIN_SESSION_SECRET) {
+  console.error('[gate-admin] ADMIN_HOST, ADMIN_SESSION_SECRET, dan ADMIN_PASSWORD wajib diisi')
+  process.exit(1)
+}
+
+const origin = `http://${adminHost}:${port}`
+const host = `${adminHost}:${port}`
+const failures = []
+let passed = 0
+
+function check(label, condition, detail = '') {
+  if (condition) passed++
+  else failures.push(`${label}${detail ? `: ${detail}` : ''}`)
+}
+
+/** Request ke host admin; `cookie` dari login sebelumnya. */
+function admin(path, { method = 'GET', body, cookie, withOrigin = true, originHeader } = {}) {
+  const headers = {}
+  if (method !== 'GET' && withOrigin) headers.origin = originHeader ?? origin
+  if (cookie) headers.cookie = cookie
+  return requestWithHost(port, { method, path, host, headers, body })
+}
+
+function sessionCookie(response) {
+  const setCookie = [response.headers['set-cookie'] ?? []].flat()
+  const found = setCookie.find((c) => c.startsWith('blog_admin='))
+  return found ? { header: found.split(';')[0], raw: found } : null
+}
+
+const server = await startBuiltServer({ port, label: 'gate-admin' })
+try {
+  if (server.response?.status !== 200) throw new Error(`server/database tidak siap (${server.healthUrl} -> ${server.response?.status ?? 'tidak menjawab'})`)
+
+  // Routing: admin hanya di host admin.
+  let r = await admin('/')
+  check('host admin / diarahkan ke /admin', r.status === 302 && r.headers.location === '/admin', `${r.status} ${r.headers.location}`)
+  r = await admin('/admin')
+  check('host admin /admin (SPA) 200', r.status === 200 && r.body.includes('<div id="__nuxt"'), String(r.status))
+  r = await requestWithHost(port, { path: '/admin', host: siteHost })
+  check('domain site /admin 404', r.status === 404, String(r.status))
+  r = await requestWithHost(port, { path: '/api/admin/me', host: siteHost })
+  check('domain site /api/admin/me 404', r.status === 404, String(r.status))
+  r = await requestWithHost(port, { path: '/', host: siteHost })
+  check('domain site / tetap halaman publik', r.status === 200 && r.body.includes('class="tpl '), String(r.status))
+
+  // Path ter-encode (/api/%61dmin = /api/admin bagi router) tidak boleh lolos
+  // dari aturan host maupun Origin (temuan security review 21 Nov 2026).
+  r = await requestWithHost(port, { path: '/api/%61dmin/me', host: siteHost })
+  check('domain site /api/%61dmin/me 404', r.status === 404, String(r.status))
+  r = await requestWithHost(port, { path: '/%61dmin', host: siteHost })
+  check('domain site /%61dmin 404', r.status === 404, String(r.status))
+  r = await requestWithHost(port, { method: 'POST', path: '/api/%61dmin/login', host: siteHost, body: { email, password } })
+  check('domain site POST /api/%61dmin/login ditolak', r.status === 404 && !sessionCookie(r), String(r.status))
+  r = await admin('/api/%61dmin/login', { method: 'POST', body: { email, password }, originHeader: 'http://evil.test' })
+  check('host admin POST /api/%61dmin/login dengan Origin lain ditolak', (r.status === 403 || r.status === 302) && !sessionCookie(r), String(r.status))
+  r = await admin('/api/admin/%6cogin', { method: 'POST', body: { email, password }, originHeader: 'http://evil.test' })
+  check('host admin POST /api/admin/%6cogin dengan Origin lain 403', r.status === 403 && !sessionCookie(r), String(r.status))
+
+  // Penjaga Origin dan tanpa cache.
+  r = await admin('/api/admin/login', { method: 'POST', body: { email, password }, withOrigin: false })
+  check('login tanpa Origin 403', r.status === 403, String(r.status))
+  r = await admin('/api/admin/login', { method: 'POST', body: { email, password }, originHeader: 'http://evil.test' })
+  check('login dengan Origin lain 403', r.status === 403, String(r.status))
+  r = await admin('/api/admin/me')
+  check('me tanpa sesi 401, no-store', r.status === 401 && r.headers['cache-control'] === 'no-store', `${r.status} ${r.headers['cache-control']}`)
+
+  // Login salah: pesan sama untuk semua sebab.
+  const wrong = await admin('/api/admin/login', { method: 'POST', body: { email, password: `${password}-salah` } })
+  const unknown = await admin('/api/admin/login', { method: 'POST', body: { email: 'tidak-ada@local.test', password } })
+  check('login salah 401', wrong.status === 401, String(wrong.status))
+  check('pesan login gagal seragam', wrong.status === unknown.status && JSON.parse(wrong.body).statusMessage === JSON.parse(unknown.body).statusMessage)
+
+  // Login benar -> sesi -> me -> logout.
+  r = await admin('/api/admin/login', { method: 'POST', body: { email, password } })
+  const cookie = sessionCookie(r)
+  check('login benar 200 dengan cookie sesi', r.status === 200 && cookie !== null, String(r.status))
+  check('cookie sesi HttpOnly + SameSite=Lax', /httponly/i.test(cookie?.raw ?? '') && /samesite=lax/i.test(cookie?.raw ?? ''), cookie?.raw)
+  check('respons login tanpa hash password', !r.body.includes('argon2') && !r.body.includes('passwordHash'))
+  r = await admin('/api/admin/me', { cookie: cookie?.header })
+  const me = r.status === 200 ? JSON.parse(r.body) : null
+  check('me dengan sesi 200', r.status === 200 && me?.user?.email === email && me.sites.length > 0, String(r.status))
+  r = await admin('/api/admin/logout', { method: 'POST', cookie: cookie?.header })
+  const cleared = sessionCookie(r)
+  check('logout menghapus cookie', r.status === 200 && cleared !== null && /max-age=0|expires=thu, 01 jan 1970/i.test(cleared.raw), cleared?.raw)
+
+  // Rate limit: 5 kegagalan per IP + email -> 429 dengan Retry-After.
+  const victim = `gate-${Date.now()}@local.test`
+  for (let i = 0; i < 5; i++) await admin('/api/admin/login', { method: 'POST', body: { email: victim, password: 'salah-salah-salah' } })
+  r = await admin('/api/admin/login', { method: 'POST', body: { email: victim, password: 'salah-salah-salah' } })
+  check('percobaan ke-6 ditolak 429 + Retry-After', r.status === 429 && Number(r.headers['retry-after']) > 0, `${r.status} ${r.headers['retry-after']}`)
+
+  // Percobaan paralel tidak boleh lolos semua (dicatat sebelum verifikasi password).
+  const burst = `gate-burst-${Date.now()}@local.test`
+  const results = await Promise.all(Array.from({ length: 10 }, () => admin('/api/admin/login', { method: 'POST', body: { email: burst, password: 'salah-salah-salah' } })))
+  const statuses = results.map((x) => x.status)
+  check('10 login paralel: paling banyak 5 diverifikasi, sisanya 429', statuses.filter((s) => s === 401).length <= 5 && statuses.filter((s) => s === 429).length >= 5, statuses.join(','))
+} catch (error) {
+  failures.push(String(error))
+} finally {
+  server.stop()
+}
+
+if (failures.length) {
+  console.error(`[gate-admin] GAGAL: ${failures.length} pemeriksaan`)
+  for (const f of failures) console.error(`  - ${f}`)
+  process.exitCode = 1
+} else {
+  console.log(`[gate-admin] OK: ${passed} pemeriksaan admin lulus`)
+}
+```
+
+17. Jalankan, lalu buktikan kasus path ter-encode memang menangkap celahnya. Ganti sementara `routedPath` agar mengembalikan pathname apa adanya dan matikan `assertAdminRequest` di `useAdminSession`, build, dan jalankan gate: hasilnya harus GAGAL, termasuk login yang berhasil lewat `POST /api/%61dmin/login` di domain site. Kembalikan, build ulang, dan pastikan hijau:
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
+# [gate-admin] OK: 22 pemeriksaan admin lulus
+```
+
+18. Masukkan ke job CI `build`: variabel `ADMIN_HOST`, `ADMIN_SESSION_SECRET`, dan `ADMIN_PASSWORD` khusus CI (database dan server CI dibuang setelah job), lalu `pnpm admin:create --email admin@local.test --reset-password` dan `pnpm --filter @framework/web gate:admin` setelah gate isolasi site.
+
+19. Hal lain dari code review yang ikut diperbaiki: segmen `admin` dicadangkan di `RESERVED_SEGMENTS` (`packages/core/src/views/urls.ts`) agar konten tidak memakai path `/admin`; IP klien di belakang reverse proxy dibaca dari `X-Forwarded-For` hanya bila `TRUST_PROXY=true` (`clientIp`); API admin non-GET di domain alias mode single dijawab 404 karena 301 mengubah POST menjadi GET; `ADMIN_PASSWORD` hanya dipakai CLI tanpa terminal; prompt password menyimpan sisa input yang di-paste; dan hash palsu yang gagal dibuat tidak disimpan.
+
+20. Coba di browser: http://admin.localhost:3000/admin mengarah ke halaman login; setelah login, halaman admin menampilkan nama dan daftar site. Path `/admin` di http://tekno.localhost:3000 harus 404.
