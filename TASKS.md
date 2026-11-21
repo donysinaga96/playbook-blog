@@ -10,11 +10,11 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M0 — Fondasi | 10 / 10 | ✅ Lulus 17 Nov 2026 — pipeline #3078334327 (commit 9df99b4) |
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
-| M3 — Template kedua (titik evaluasi) | 23 / 25 | — |
+| M3 — Template kedua (titik evaluasi) | 24 / 25 | ⏳ Lokal hijau 21 Nov 2026; menunggu pipeline CI |
 | M4 — Admin minimal | 0 / 27 | — (draf; usulan A–G menunggu persetujuan) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M3 3.5 (penutup); 3.0–3.4 selesai 21 Nov 2026. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** push + pipeline CI hijau untuk gate M3, lalu putuskan urutan M4/M5 (evaluasi M3). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -176,18 +176,27 @@ Baris `› Skill` menyebut skill Claude Code yang dipakai untuk task di atasnya 
 - [x] Test template-kit: rantai migrasi, versi lebih baru, migrasi error
 
 **3.4 Test pembukti dan cek browser [E] [F]**
-- [x] Smoke dan gate paralel: kuliner `tpl-news` beserta marker news; tiga template dari satu server
+- [x] Smoke dan gate paralel: kuliner `tpl-news` beserta marker news — gate memeriksa kelas root, token, dan section home per site; smoke memeriksa template per host (`SMOKE_HOSTS=host=template`). Server memuat tiga template, dua dipakai site seed; base diuji sebagai fallback di test template-kit
 - [x] Test arsitektur: entry `./manifest` tidak meng-import `.vue`/`.css` — `tests/template-manifest.test.ts`, menelusuri import tidak langsung, dengan test kontrol
 - [x] Skrip Playwright lokal di `apps/web/scripts/` (cek hidrasi + screenshot per domain), tidak di CI; cara pakai di `docs/dev-setup.md` — `pnpm --filter @framework/web browser-check`: 12 halaman × desktop/ponsel, terbukti gagal saat mismatch disisipkan
 - › Skill: `/run` untuk menjalankan app dan skrip cek
 
 **3.5 Penutup**
-- [ ] Bab tutorial (`docs/tutorial/tutorial.tpl.md` + `pnpm tutorial`), dengan catatan di bab lama yang filenya berubah
-- [ ] Commit, pipeline hijau, retro mini M3, evaluasi urutan M4/M5
+- [x] Bab tutorial (`docs/tutorial/tutorial.tpl.md` + `pnpm tutorial`), dengan catatan di bab lama yang filenya berubah — 4 bab baru: section home, template kedua, migrasi config, cek hidrasi
+- [ ] Commit, pipeline hijau, retro mini M3, evaluasi urutan M4/M5 — commit dan retro selesai; menunggu push + pipeline, dan keputusan urutan M4/M5
+- Code review (level high, 21 Nov 2026, `f2503b4..7043fd6`, 3.2–3.4): semua 8 temuan diperbaiki: versi tersimpan dibaca sebagai angka seperti CHECK database (`1.01.0`), hasil migrasi wajib berisi tokens/options/layouts, setiap mayor yang dilewati wajib punya langkah `X.0.0` (termasuk 0.x → 1.x), `structuredClone` di dalam try, smoke memeriksa template per host (`SMOKE_HOSTS=host=template`, juga di CI), `browser-check` menolak `BASE_URL` tanpa `{host}` dan hanya mengabaikan 404 dokumen sendiri, nama paket `libasound2` untuk Ubuntu lama, teks TASKS "tiga template"
 - › Skill: `/code-review` (level high) untuk seluruh diff M3 sebelum commit
 
 **Gate:** news selesai tanpa mengubah core, atau setiap perubahan core dicatat sebagai ADR perbaikan kontrak.
+Status 21 Nov 2026: news selesai tanpa komponen sendiri dan tanpa mengubah core di 3.2. Perubahan core M3 (eksekusi data section, `excludeIds`, theme diselesaikan sebelum view model, `?page=N` arsip) dicatat di ADR-008. Lokal hijau: `pnpm check` (439 test), build, smoke (`tekno=magazine`, `kuliner=news`), gate 240 request, browser-check 24 halaman. Menunggu pipeline CI.
 **Evaluasi:** apakah admin (M4) atau produksi dengan data seed/manual (M5) yang lebih dulu?
+
+Commit M3: f2503b4 (3.0–3.1), 53343bd (3.2), 7a03cb3 (3.3), 7043fd6 (3.4), ditambah commit penutup 3.5.
+
+**Retro mini M3**
+- Lebih lama dari dugaan: memisahkan manifest dari komponen. Nitro tidak bisa meng-import `.vue`/`.css`, jadi setiap template butuh dua entry, dua registry, dan test yang menjaga keduanya. Code review juga menemukan dua hal yang tidak terlihat dari test: pagination home bersection meninggalkan artikel yang tak terjangkau, dan aturan versi template-kit lebih ketat dari CHECK database. Dev server yang menyimpan komponen lama setelah file dikembalikan sempat membuat hasil cek browser menyesatkan.
+- Ternyata tidak perlu: opsi baru di base atau override komponen untuk news; token, layout section, dan CSS cukup. Request data kedua untuk section juga tidak perlu karena theme diselesaikan di middleware.
+- Perlu diubah di roadmap: M4 (pengaturan tema) bergantung langsung pada hasil M3: form dibangkitkan dari skema manifest, layout divalidasi `resolveLayout`, dan config ditulis dalam versi terpasang. Arti `layouts.home: []` (kini = default) perlu diputuskan sebelum form layout dibuat, karena form harus bisa menyatakan "tanpa section" bila itu diinginkan.
 
 ## M4 — Admin minimal
 

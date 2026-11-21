@@ -11,7 +11,10 @@
 // sendiri (mis. 1.0.3) tetap tertangani.
 //
 // Aturan:
-//  - Versi mayor wajib punya migrasi ke X.0.0 (dicek defineManifest).
+//  - Versi mayor wajib punya migrasi ke X.0.0 (dicek defineManifest untuk
+//    X >= 2; saat migrasi, setiap mayor yang dilewati wajib punya langkah
+//    X.0.0, termasuk 0.x -> 1.0.0).
+//  - Hasil migrasi wajib object { tokens, options, layouts }.
 //  - Migrasi menerima salinan config, jadi boleh mengubah argumennya.
 //  - Versi tersimpan lebih baru dari terpasang, versi tersimpan bukan
 //    semver, atau migrasi yang melempar error -> config diabaikan (default),
@@ -19,6 +22,8 @@
 //  - Migrasi milik template itu sendiri, tidak diwariskan ke turunan.
 //  - Baris database tidak ditulis ulang di sini; config ditulis dalam versi
 //    terpasang saat disimpan dari admin (M4).
+
+import { isPlainObject } from './objects'
 
 /** Config theme seperti disimpan di site_themes (JSON mentah). */
 export interface StoredConfig {
@@ -29,12 +34,14 @@ export interface StoredConfig {
 
 export type ConfigMigration = (config: StoredConfig) => StoredConfig
 
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+// Sama dengan CHECK site_themes_version_semver di database: angka boleh
+// diawali nol (1.01.0 = 1.1.0), dibandingkan sebagai angka.
+const VERSION = /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})$/
 
 type Version = [number, number, number]
 
 export function parseVersion(version: string): Version | null {
-  const m = SEMVER.exec(version)
+  const m = VERSION.exec(version)
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
 }
 
@@ -85,15 +92,33 @@ export function migrateConfig(
     .filter((key) => compareVersions(key, stored.version) > 0 && compareVersions(key, installed) <= 0)
     .sort(compareVersions)
 
-  let config: StoredConfig = structuredClone({ tokens: stored.tokens, options: stored.options, layouts: stored.layouts })
+  // Setiap versi mayor yang dilewati wajib punya langkah X.0.0.
+  const from = parseVersion(stored.version)?.[0] ?? 0
+  const to = parseVersion(installed)?.[0] ?? 0
+  for (let major = from + 1; major <= to; major++) {
+    if (!steps.some((step) => compareVersions(step, `${major}.0.0`) === 0)) {
+      return { ok: false, reason: `config versi ${stored.version} butuh migrateConfig "${major}.0.0" yang tidak ada` }
+    }
+  }
+
+  let config: StoredConfig
+  try {
+    config = structuredClone({ tokens: stored.tokens, options: stored.options, layouts: stored.layouts })
+  } catch (error) {
+    return { ok: false, reason: `config tidak bisa disalin: ${error instanceof Error ? error.message : String(error)}` }
+  }
   for (const step of steps) {
     try {
-      const next = (migrations[step] as ConfigMigration)(config)
-      if (typeof next !== 'object' || next === null) throw new Error('hasil bukan object { tokens, options, layouts }')
+      const next: unknown = (migrations[step] as ConfigMigration)(config)
+      if (!isStoredConfig(next)) throw new Error('hasil harus object berisi tokens, options, dan layouts')
       config = next
     } catch (error) {
       return { ok: false, reason: `migrateConfig ${step} gagal: ${error instanceof Error ? error.message : String(error)}` }
     }
   }
   return { ok: true, config, applied: steps }
+}
+
+function isStoredConfig(value: unknown): value is StoredConfig {
+  return isPlainObject(value) && 'tokens' in value && 'options' in value && 'layouts' in value
 }

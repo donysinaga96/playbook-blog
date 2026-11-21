@@ -638,7 +638,7 @@ folder sendiri lalu arahkan `BROWSER_LIB_DIR` ke sana:
 
 ```bash
 mkdir -p ~/.local/chromium-libs && cd ~/.local/chromium-libs
-apt-get download libnss3 libnspr4 libasound2t64
+apt-get download libnss3 libnspr4 libasound2t64   # Ubuntu 22.04 / Debian 12: libasound2
 for f in *.deb; do dpkg-deb -x "$f" root; done
 BROWSER_LIB_DIR=~/.local/chromium-libs/root/usr/lib/x86_64-linux-gnu \
   pnpm --filter @framework/web browser-check
@@ -5087,7 +5087,7 @@ build:
     #    (menangkap bug yang hanya muncul di bundle produksi).
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - sh packages/db/scripts/setup.sh
-    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
     # 3. Gate M2: request paralel ke dua domain tidak saling tertukar.
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
   artifacts:
@@ -5452,11 +5452,17 @@ Versi di bawah sudah memakai modul bersama `scripts/lib/built-server.mjs` dari b
 // SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
 // 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
 // muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+// Format host[=template], mis. tekno.localhost=magazine: bila template
+// disebut, wrapper wajib class="tpl tpl-<template>" (template tidak jatuh
+// diam-diam ke base).
 import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
 
 const port = process.env.SMOKE_PORT ?? '3999'
 const expected = Number(process.env.EXPECT_STATUS ?? '200')
-const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean).map((entry) => {
+  const [host, template] = entry.split('=')
+  return { host, template }
+})
 
 const server = await startBuiltServer({ port, label: 'smoke' })
 let failed = true
@@ -5484,12 +5490,15 @@ process.exitCode = failed ? 1 : 0
 /** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
 async function checkPages() {
   let ok = true
-  for (const host of pageHosts) {
+  for (const { host, template } of pageHosts) {
     const { status, body } = await getWithHost(port, '/', host)
     const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
     console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
     if (status !== 200 || !wrapper) {
       console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    } else if (template && wrapper !== `class="tpl tpl-${template}"`) {
+      console.error(`[smoke] GAGAL: ${host} harus memakai template ${template}`)
       ok = false
     }
   }
@@ -9771,7 +9780,7 @@ function placeholderSvg(name: string): string {
 
 32. Batasi dev server ke `localhost` dengan `nuxt dev --host localhost`. Tanpa itu Nuxt mendengarkan di semua interface dan memperingatkan bahwa dev server (berikut source code-nya) bisa dibaca dari jaringan.
 
-33. Perluas smoke test build dengan `SMOKE_HOSTS`: untuk setiap domain, halaman `/` harus 200 dan memuat wrapper template. Smoke test lama hanya memanggil `/api/health`, sehingga tidak menangkap bug bundle SSR di langkah 27:
+33. Perluas smoke test build dengan `SMOKE_HOSTS`: untuk setiap domain, halaman `/` harus 200 dan memuat wrapper template. Format `host=template` (mewajibkan kelas root template tertentu) ditambahkan di bab "Memeriksa Hidrasi di Browser". Smoke test lama hanya memanggil `/api/health`, sehingga tidak menangkap bug bundle SSR di langkah 27:
 
 Versi di bawah sudah memakai modul bersama `scripts/lib/built-server.mjs` dari bab "Membuktikan Isolasi Antar-Site".
 
@@ -9791,11 +9800,17 @@ Versi di bawah sudah memakai modul bersama `scripts/lib/built-server.mjs` dari b
 // SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
 // 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
 // muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+// Format host[=template], mis. tekno.localhost=magazine: bila template
+// disebut, wrapper wajib class="tpl tpl-<template>" (template tidak jatuh
+// diam-diam ke base).
 import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
 
 const port = process.env.SMOKE_PORT ?? '3999'
 const expected = Number(process.env.EXPECT_STATUS ?? '200')
-const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean).map((entry) => {
+  const [host, template] = entry.split('=')
+  return { host, template }
+})
 
 const server = await startBuiltServer({ port, label: 'smoke' })
 let failed = true
@@ -9823,12 +9838,15 @@ process.exitCode = failed ? 1 : 0
 /** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
 async function checkPages() {
   let ok = true
-  for (const host of pageHosts) {
+  for (const { host, template } of pageHosts) {
     const { status, body } = await getWithHost(port, '/', host)
     const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
     console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
     if (status !== 200 || !wrapper) {
       console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    } else if (template && wrapper !== `class="tpl tpl-${template}"`) {
+      console.error(`[smoke] GAGAL: ${host} harus memakai template ${template}`)
       ok = false
     }
   }
@@ -12642,11 +12660,17 @@ export function getWithHost(port, path, host) {
 // SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
 // 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
 // muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+// Format host[=template], mis. tekno.localhost=magazine: bila template
+// disebut, wrapper wajib class="tpl tpl-<template>" (template tidak jatuh
+// diam-diam ke base).
 import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
 
 const port = process.env.SMOKE_PORT ?? '3999'
 const expected = Number(process.env.EXPECT_STATUS ?? '200')
-const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean).map((entry) => {
+  const [host, template] = entry.split('=')
+  return { host, template }
+})
 
 const server = await startBuiltServer({ port, label: 'smoke' })
 let failed = true
@@ -12674,12 +12698,15 @@ process.exitCode = failed ? 1 : 0
 /** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
 async function checkPages() {
   let ok = true
-  for (const host of pageHosts) {
+  for (const { host, template } of pageHosts) {
     const { status, body } = await getWithHost(port, '/', host)
     const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
     console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
     if (status !== 200 || !wrapper) {
       console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    } else if (template && wrapper !== `class="tpl tpl-${template}"`) {
+      console.error(`[smoke] GAGAL: ${host} harus memakai template ${template}`)
       ok = false
     }
   }
@@ -14293,7 +14320,7 @@ describe('template news', () => {
 ```bash
 pnpm check
 pnpm build
-SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
 # [smoke] tekno.localhost/ -> 200 class="tpl tpl-magazine"
 # [smoke] kuliner.localhost/ -> 200 class="tpl tpl-news"
 pnpm --filter @framework/web gate
@@ -14332,7 +14359,10 @@ pnpm dev
 // sendiri (mis. 1.0.3) tetap tertangani.
 //
 // Aturan:
-//  - Versi mayor wajib punya migrasi ke X.0.0 (dicek defineManifest).
+//  - Versi mayor wajib punya migrasi ke X.0.0 (dicek defineManifest untuk
+//    X >= 2; saat migrasi, setiap mayor yang dilewati wajib punya langkah
+//    X.0.0, termasuk 0.x -> 1.0.0).
+//  - Hasil migrasi wajib object { tokens, options, layouts }.
 //  - Migrasi menerima salinan config, jadi boleh mengubah argumennya.
 //  - Versi tersimpan lebih baru dari terpasang, versi tersimpan bukan
 //    semver, atau migrasi yang melempar error -> config diabaikan (default),
@@ -14340,6 +14370,8 @@ pnpm dev
 //  - Migrasi milik template itu sendiri, tidak diwariskan ke turunan.
 //  - Baris database tidak ditulis ulang di sini; config ditulis dalam versi
 //    terpasang saat disimpan dari admin (M4).
+
+import { isPlainObject } from './objects'
 
 /** Config theme seperti disimpan di site_themes (JSON mentah). */
 export interface StoredConfig {
@@ -14350,12 +14382,14 @@ export interface StoredConfig {
 
 export type ConfigMigration = (config: StoredConfig) => StoredConfig
 
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+// Sama dengan CHECK site_themes_version_semver di database: angka boleh
+// diawali nol (1.01.0 = 1.1.0), dibandingkan sebagai angka.
+const VERSION = /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})$/
 
 type Version = [number, number, number]
 
 export function parseVersion(version: string): Version | null {
-  const m = SEMVER.exec(version)
+  const m = VERSION.exec(version)
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
 }
 
@@ -14406,17 +14440,35 @@ export function migrateConfig(
     .filter((key) => compareVersions(key, stored.version) > 0 && compareVersions(key, installed) <= 0)
     .sort(compareVersions)
 
-  let config: StoredConfig = structuredClone({ tokens: stored.tokens, options: stored.options, layouts: stored.layouts })
+  // Setiap versi mayor yang dilewati wajib punya langkah X.0.0.
+  const from = parseVersion(stored.version)?.[0] ?? 0
+  const to = parseVersion(installed)?.[0] ?? 0
+  for (let major = from + 1; major <= to; major++) {
+    if (!steps.some((step) => compareVersions(step, `${major}.0.0`) === 0)) {
+      return { ok: false, reason: `config versi ${stored.version} butuh migrateConfig "${major}.0.0" yang tidak ada` }
+    }
+  }
+
+  let config: StoredConfig
+  try {
+    config = structuredClone({ tokens: stored.tokens, options: stored.options, layouts: stored.layouts })
+  } catch (error) {
+    return { ok: false, reason: `config tidak bisa disalin: ${error instanceof Error ? error.message : String(error)}` }
+  }
   for (const step of steps) {
     try {
-      const next = (migrations[step] as ConfigMigration)(config)
-      if (typeof next !== 'object' || next === null) throw new Error('hasil bukan object { tokens, options, layouts }')
+      const next: unknown = (migrations[step] as ConfigMigration)(config)
+      if (!isStoredConfig(next)) throw new Error('hasil harus object berisi tokens, options, dan layouts')
       config = next
     } catch (error) {
       return { ok: false, reason: `migrateConfig ${step} gagal: ${error instanceof Error ? error.message : String(error)}` }
     }
   }
   return { ok: true, config, applied: steps }
+}
+
+function isStoredConfig(value: unknown): value is StoredConfig {
+  return isPlainObject(value) && 'tokens' in value && 'options' in value && 'layouts' in value
 }
 ```
 
@@ -14491,7 +14543,29 @@ describe('migrateConfig', () => {
       throw new Error('rusak')
     }
     expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': boom })).toEqual({ ok: false, reason: 'migrateConfig 1.1.0 gagal: rusak' })
-    expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': () => null as unknown as StoredConfig })).toMatchObject({ ok: false, reason: expect.stringMatching(/1\.1\.0 gagal: hasil bukan object/) })
+    for (const bad of [null, [], { options: {} }]) {
+      expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': () => bad as unknown as StoredConfig })).toEqual({
+        ok: false,
+        reason: 'migrateConfig 1.1.0 gagal: hasil harus object berisi tokens, options, dan layouts',
+      })
+    }
+  })
+})
+
+describe('migrateConfig: versi mayor dan bentuk versi', () => {
+  it('setiap mayor yang dilewati wajib punya langkah X.0.0, termasuk 0.x -> 1.0.0', () => {
+    expect(migrateConfig(stored('0.9.0'), '1.1.0', { '1.1.0': mark('1.1.0') })).toEqual({ ok: false, reason: 'config versi 0.9.0 butuh migrateConfig "1.0.0" yang tidak ada' })
+    expect(migrateConfig(stored('0.9.0'), '1.1.0', { '1.0.0': mark('1.0.0'), '1.1.0': mark('1.1.0') })).toMatchObject({ ok: true, applied: ['1.0.0', '1.1.0'] })
+  })
+
+  it('angka berawalan nol diterima seperti CHECK database (1.01.0 = 1.1.0)', () => {
+    expect(compareVersions('1.01.0', '1.1.0')).toBe(0)
+    expect(migrateConfig(stored('1.01.0'), '1.2.0', { '1.1.0': mark('1.1.0'), '1.2.0': mark('1.2.0') })).toMatchObject({ ok: true, applied: ['1.2.0'] })
+  })
+
+  it('config yang tidak bisa disalin -> gagal, bukan exception', () => {
+    const input = { ...stored('1.0.0'), options: { fn: () => 1 } }
+    expect(migrateConfig(input, '1.1.0', {})).toMatchObject({ ok: false, reason: expect.stringMatching(/^config tidak bisa disalin/) })
   })
 })
 
@@ -14623,7 +14697,7 @@ describe('template magazine', () => {
 ```bash
 pnpm check
 pnpm build
-SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
 pnpm --filter @framework/web gate
 # tanpa baris "[theme] site kabar-tekno: options.adSlots: key tidak dikenal"
 ```
@@ -14671,6 +14745,10 @@ import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const base = process.env.BASE_URL ?? 'http://{host}:3000'
+if (!base.includes('{host}')) {
+  console.error(`[browser] BASE_URL harus memuat {host}, mis. http://{host}:3000 (sekarang: ${base})`)
+  process.exit(1)
+}
 const shotsDir = process.env.SHOTS_DIR ?? fileURLToPath(new URL('../.browser-check/', import.meta.url))
 const libDir = process.env.BROWSER_LIB_DIR
 
@@ -14715,12 +14793,15 @@ try {
       const context = await browser.newContext({ viewport: { width, height } })
       const page = await context.newPage()
       const messages = []
+      const url = base.replace('{host}', host) + path
       page.on('console', (m) => {
-        if (m.type() === 'error' || m.type() === 'warning') messages.push(`${m.type()}: ${m.text()}`)
+        if (m.type() !== 'error' && m.type() !== 'warning') return
+        // Status 404 dokumen halaman 404 itu sendiri bukan masalah; 404 aset lain tetap dicatat.
+        if (expected === 404 && /status of 404/.test(m.text()) && m.location().url === url) return
+        messages.push(`${m.type()}: ${m.text()}`)
       })
       page.on('pageerror', (e) => messages.push(`pageerror: ${e.message}`))
 
-      const url = base.replace('{host}', host) + path
       const problems = []
       try {
         const response = await page.goto(url, { waitUntil: 'networkidle' })
@@ -14728,11 +14809,7 @@ try {
         const hydrated = await page.evaluate("Boolean(document.querySelector('#__nuxt')?.__vue_app__)")
         if (response?.status() !== expected) problems.push(`status ${response?.status()}, seharusnya ${expected}`)
         if (!hydrated) problems.push('tidak ter-hydrate')
-        // Status 404 halaman ini sendiri juga tercatat browser sebagai console error; itu bukan masalah.
-        for (const m of messages) {
-          if (expected === 404 && /status of 404/.test(m)) continue
-          problems.push(m.slice(0, 300))
-        }
+        for (const m of messages) problems.push(m.slice(0, 300))
         const name = `${host}${path}`.replace(/[^a-z0-9]+/gi, '_').replace(/_$/, '')
         await page.screenshot({ path: `${shotsDir}/${name}.${label}.png`, fullPage: true })
       } catch (error) {
@@ -14771,4 +14848,16 @@ pnpm --filter @framework/web browser-check
 6. Buktikan skrip ini bisa gagal. Sisipkan sementara `{{ Math.random() }}` di judul section (`SectionHeading.vue`), jalankan lagi: home tekno harus GAGAL dengan `Hydration text mismatch` dan exit 1. Kembalikan file, restart `pnpm dev` (cache SSR dev server bisa masih menyimpan komponen dari paket workspace di luar `apps/web` walau file sudah kembali), lalu pastikan hijau lagi.
 
 7. Buka screenshot di `apps/web/.browser-check/` untuk membandingkan tampilan magazine dan news di desktop dan ponsel.
+
+8. Tinjau kode dengan code review sebelum menutup tahap ini. Temuan pada tahap template kedua yang diperbaiki:
+   - Versi tersimpan seperti `1.01.0` lolos CHECK database tetapi ditolak template-kit, sehingga seluruh config jatuh ke default. Versi kini dibaca sebagai angka, sama dengan CHECK database.
+   - Migrasi yang mengembalikan object tanpa `tokens`, `options`, atau `layouts` mereset config tanpa issue. Hasil migrasi kini wajib lengkap.
+   - Lompatan mayor tanpa langkah `X.0.0` (termasuk 0.x ke 1.x) lolos tanpa migrasi. Kini gagal dengan alasan yang jelas.
+   - Smoke test menerima wrapper template apa pun, jadi template yang diam-diam jatuh ke base tidak tertangkap. `SMOKE_HOSTS` kini menerima `host=template`:
+
+```bash
+SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
+```
+
+   - `browser-check` kini menolak `BASE_URL` tanpa `{host}`, dan di halaman 404 hanya mengabaikan status 404 dokumen itu sendiri, bukan 404 aset lain.
 

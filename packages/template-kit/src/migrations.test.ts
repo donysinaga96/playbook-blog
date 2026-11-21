@@ -59,7 +59,29 @@ describe('migrateConfig', () => {
       throw new Error('rusak')
     }
     expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': boom })).toEqual({ ok: false, reason: 'migrateConfig 1.1.0 gagal: rusak' })
-    expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': () => null as unknown as StoredConfig })).toMatchObject({ ok: false, reason: expect.stringMatching(/1\.1\.0 gagal: hasil bukan object/) })
+    for (const bad of [null, [], { options: {} }]) {
+      expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': () => bad as unknown as StoredConfig })).toEqual({
+        ok: false,
+        reason: 'migrateConfig 1.1.0 gagal: hasil harus object berisi tokens, options, dan layouts',
+      })
+    }
+  })
+})
+
+describe('migrateConfig: versi mayor dan bentuk versi', () => {
+  it('setiap mayor yang dilewati wajib punya langkah X.0.0, termasuk 0.x -> 1.0.0', () => {
+    expect(migrateConfig(stored('0.9.0'), '1.1.0', { '1.1.0': mark('1.1.0') })).toEqual({ ok: false, reason: 'config versi 0.9.0 butuh migrateConfig "1.0.0" yang tidak ada' })
+    expect(migrateConfig(stored('0.9.0'), '1.1.0', { '1.0.0': mark('1.0.0'), '1.1.0': mark('1.1.0') })).toMatchObject({ ok: true, applied: ['1.0.0', '1.1.0'] })
+  })
+
+  it('angka berawalan nol diterima seperti CHECK database (1.01.0 = 1.1.0)', () => {
+    expect(compareVersions('1.01.0', '1.1.0')).toBe(0)
+    expect(migrateConfig(stored('1.01.0'), '1.2.0', { '1.1.0': mark('1.1.0'), '1.2.0': mark('1.2.0') })).toMatchObject({ ok: true, applied: ['1.2.0'] })
+  })
+
+  it('config yang tidak bisa disalin -> gagal, bukan exception', () => {
+    const input = { ...stored('1.0.0'), options: { fn: () => 1 } }
+    expect(migrateConfig(input, '1.1.0', {})).toMatchObject({ ok: false, reason: expect.stringMatching(/^config tidak bisa disalin/) })
   })
 })
 

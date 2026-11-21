@@ -155,7 +155,7 @@ folder sendiri lalu arahkan `BROWSER_LIB_DIR` ke sana:
 
 ```bash
 mkdir -p ~/.local/chromium-libs && cd ~/.local/chromium-libs
-apt-get download libnss3 libnspr4 libasound2t64
+apt-get download libnss3 libnspr4 libasound2t64   # Ubuntu 22.04 / Debian 12: libasound2
 for f in *.deb; do dpkg-deb -x "$f" root; done
 BROWSER_LIB_DIR=~/.local/chromium-libs/root/usr/lib/x86_64-linux-gnu \
   pnpm --filter @framework/web browser-check

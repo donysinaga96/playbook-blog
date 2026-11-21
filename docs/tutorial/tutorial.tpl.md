@@ -1001,7 +1001,7 @@ export default defineNuxtPlugin(() => {
 
 32. Batasi dev server ke `localhost` dengan `nuxt dev --host localhost`. Tanpa itu Nuxt mendengarkan di semua interface dan memperingatkan bahwa dev server (berikut source code-nya) bisa dibaca dari jaringan.
 
-33. Perluas smoke test build dengan `SMOKE_HOSTS`: untuk setiap domain, halaman `/` harus 200 dan memuat wrapper template. Smoke test lama hanya memanggil `/api/health`, sehingga tidak menangkap bug bundle SSR di langkah 27:
+33. Perluas smoke test build dengan `SMOKE_HOSTS`: untuk setiap domain, halaman `/` harus 200 dan memuat wrapper template. Format `host=template` (mewajibkan kelas root template tertentu) ditambahkan di bab "Memeriksa Hidrasi di Browser". Smoke test lama hanya memanggil `/api/health`, sehingga tidak menangkap bug bundle SSR di langkah 27:
 
 Versi di bawah sudah memakai modul bersama `scripts/lib/built-server.mjs` dari bab "Membuktikan Isolasi Antar-Site".
 
@@ -1391,7 +1391,7 @@ pnpm dev
 ```bash
 pnpm check
 pnpm build
-SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
 # [smoke] tekno.localhost/ -> 200 class="tpl tpl-magazine"
 # [smoke] kuliner.localhost/ -> 200 class="tpl tpl-news"
 pnpm --filter @framework/web gate
@@ -1438,7 +1438,7 @@ pnpm dev
 ```bash
 pnpm check
 pnpm build
-SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
 pnpm --filter @framework/web gate
 # tanpa baris "[theme] site kabar-tekno: options.adSlots: key tidak dikenal"
 ```
@@ -1479,4 +1479,16 @@ pnpm --filter @framework/web browser-check
 6. Buktikan skrip ini bisa gagal. Sisipkan sementara `{{ Math.random() }}` di judul section (`SectionHeading.vue`), jalankan lagi: home tekno harus GAGAL dengan `Hydration text mismatch` dan exit 1. Kembalikan file, restart `pnpm dev` (cache SSR dev server bisa masih menyimpan komponen dari paket workspace di luar `apps/web` walau file sudah kembali), lalu pastikan hijau lagi.
 
 7. Buka screenshot di `apps/web/.browser-check/` untuk membandingkan tampilan magazine dan news di desktop dan ponsel.
+
+8. Tinjau kode dengan code review sebelum menutup tahap ini. Temuan pada tahap template kedua yang diperbaiki:
+   - Versi tersimpan seperti `1.01.0` lolos CHECK database tetapi ditolak template-kit, sehingga seluruh config jatuh ke default. Versi kini dibaca sebagai angka, sama dengan CHECK database.
+   - Migrasi yang mengembalikan object tanpa `tokens`, `options`, atau `layouts` mereset config tanpa issue. Hasil migrasi kini wajib lengkap.
+   - Lompatan mayor tanpa langkah `X.0.0` (termasuk 0.x ke 1.x) lolos tanpa migrasi. Kini gagal dengan alasan yang jelas.
+   - Smoke test menerima wrapper template apa pun, jadi template yang diam-diam jatuh ke base tidak tertangkap. `SMOKE_HOSTS` kini menerima `host=template`:
+
+```bash
+SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
+```
+
+   - `browser-check` kini menolak `BASE_URL` tanpa `{host}`, dan di halaman 404 hanya mengabaikan status 404 dokumen itu sendiri, bukan 404 aset lain.
 

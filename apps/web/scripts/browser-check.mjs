@@ -18,6 +18,10 @@ import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const base = process.env.BASE_URL ?? 'http://{host}:3000'
+if (!base.includes('{host}')) {
+  console.error(`[browser] BASE_URL harus memuat {host}, mis. http://{host}:3000 (sekarang: ${base})`)
+  process.exit(1)
+}
 const shotsDir = process.env.SHOTS_DIR ?? fileURLToPath(new URL('../.browser-check/', import.meta.url))
 const libDir = process.env.BROWSER_LIB_DIR
 
@@ -62,12 +66,15 @@ try {
       const context = await browser.newContext({ viewport: { width, height } })
       const page = await context.newPage()
       const messages = []
+      const url = base.replace('{host}', host) + path
       page.on('console', (m) => {
-        if (m.type() === 'error' || m.type() === 'warning') messages.push(`${m.type()}: ${m.text()}`)
+        if (m.type() !== 'error' && m.type() !== 'warning') return
+        // Status 404 dokumen halaman 404 itu sendiri bukan masalah; 404 aset lain tetap dicatat.
+        if (expected === 404 && /status of 404/.test(m.text()) && m.location().url === url) return
+        messages.push(`${m.type()}: ${m.text()}`)
       })
       page.on('pageerror', (e) => messages.push(`pageerror: ${e.message}`))
 
-      const url = base.replace('{host}', host) + path
       const problems = []
       try {
         const response = await page.goto(url, { waitUntil: 'networkidle' })
@@ -75,11 +82,7 @@ try {
         const hydrated = await page.evaluate("Boolean(document.querySelector('#__nuxt')?.__vue_app__)")
         if (response?.status() !== expected) problems.push(`status ${response?.status()}, seharusnya ${expected}`)
         if (!hydrated) problems.push('tidak ter-hydrate')
-        // Status 404 halaman ini sendiri juga tercatat browser sebagai console error; itu bukan masalah.
-        for (const m of messages) {
-          if (expected === 404 && /status of 404/.test(m)) continue
-          problems.push(m.slice(0, 300))
-        }
+        for (const m of messages) problems.push(m.slice(0, 300))
         const name = `${host}${path}`.replace(/[^a-z0-9]+/gi, '_').replace(/_$/, '')
         await page.screenshot({ path: `${shotsDir}/${name}.${label}.png`, fullPage: true })
       } catch (error) {

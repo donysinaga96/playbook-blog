@@ -11,11 +11,17 @@
 // SMOKE_HOSTS (butuh database ber-seed) memeriksa render SSR halaman: status
 // 200 dan wrapper template (class="tpl ..."). Ini menangkap bug yang hanya
 // muncul di bundle produksi, mis. driver database ikut ter-bundle ke SSR Vue.
+// Format host[=template], mis. tekno.localhost=magazine: bila template
+// disebut, wrapper wajib class="tpl tpl-<template>" (template tidak jatuh
+// diam-diam ke base).
 import { getWithHost, startBuiltServer } from './lib/built-server.mjs'
 
 const port = process.env.SMOKE_PORT ?? '3999'
 const expected = Number(process.env.EXPECT_STATUS ?? '200')
-const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+const pageHosts = (process.env.SMOKE_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean).map((entry) => {
+  const [host, template] = entry.split('=')
+  return { host, template }
+})
 
 const server = await startBuiltServer({ port, label: 'smoke' })
 let failed = true
@@ -43,12 +49,15 @@ process.exitCode = failed ? 1 : 0
 /** Render halaman / untuk setiap domain di SMOKE_HOSTS. */
 async function checkPages() {
   let ok = true
-  for (const host of pageHosts) {
+  for (const { host, template } of pageHosts) {
     const { status, body } = await getWithHost(port, '/', host)
     const wrapper = body.match(/class="tpl [^"]*"/)?.[0]
     console.log(`[smoke] ${host}/ -> ${status} ${wrapper ?? '(tanpa wrapper template)'}`)
     if (status !== 200 || !wrapper) {
       console.error(`[smoke] GAGAL: halaman ${host} harus 200 dengan wrapper template`)
+      ok = false
+    } else if (template && wrapper !== `class="tpl tpl-${template}"`) {
+      console.error(`[smoke] GAGAL: ${host} harus memakai template ${template}`)
       ok = false
     }
   }
