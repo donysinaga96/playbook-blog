@@ -1264,7 +1264,7 @@ git diff packages/core/src/views/__snapshots__/
 
 2. Tulis kontrak section di `packages/template-kit/src/sections.ts`:
    - `defineSection({ props, data })`: skema props Zod (field opsional memakai `.default()`) dan fungsi yang mengubah props menjadi permintaan data `{ source, slug?, limit }`.
-   - `resolveLayout`: memvalidasi layout satu halaman. Item yang rusak dilewati dan dicatat; layout yang tidak ada, kosong, bukan array, atau tidak menyisakan section valid diganti `defaultLayouts`. Nama seperti `toString` tidak boleh dianggap section, jadi pencarian memakai `Object.hasOwn`.
+   - `resolveLayout`: memvalidasi layout satu halaman. Item yang rusak dilewati dan dicatat; layout yang tidak ada, bukan array, atau tidak menyisakan section valid diganti `defaultLayouts`. Array kosong berarti site sengaja tanpa section (home tampil seperti sebelum ada section). Versi pertama memperlakukan array kosong sama dengan "tidak ada"; itu diubah sebelum form layout di admin dibuat, karena admin harus bisa mematikan section. Nama seperti `toString` tidak boleh dianggap section, jadi pencarian memakai `Object.hasOwn`.
    - `SECTION_LIMITS`: 8 section per halaman dan 12 artikel per section. `limit` di luar batas dijepit, dan permintaan data dicek ulang apa pun skema props-nya.
 
 @@include packages/template-kit/src/sections.ts ts@@

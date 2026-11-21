@@ -47,8 +47,12 @@ describe('resolveLayout', () => {
     expect(resolve([{ type: 'toString' }, { type: 'note' }]).issues).toEqual(['layouts.home[0]: section "toString" tidak dikenal, dilewati'])
   })
 
-  it.each([undefined, null, []])('layout kosong (%j) -> defaultLayouts tanpa issue', (raw) => {
+  it.each([undefined, null])('layout tidak ada (%j) -> defaultLayouts tanpa issue', (raw) => {
     expect(resolve(raw)).toEqual({ sections: [{ type: 'hero', props: { source: 'featured', limit: 1 }, articles: { source: 'featured', limit: 1 } }], issues: [] })
+  })
+
+  it('array kosong -> tanpa section (pilihan site), tanpa issue', () => {
+    expect(resolve([])).toEqual({ sections: [], issues: [] })
   })
 
   it('layout bukan array -> default, dicatat', () => {

@@ -139,6 +139,8 @@ describe('createTemplateRegistry', () => {
       issues: ['layouts.home[0]: section "hero" tidak dikenal, dilewati', 'layouts.home: tidak ada section yang valid, memakai default'],
     })
     expect(registry.resolveTheme({ ...stored, layouts: 'home' })).toMatchObject({ layouts: { home: [grid(3)] }, issues: ['layouts: bukan object, memakai default'] })
+    expect(registry.resolveTheme({ ...stored, layouts: { home: [] } })).toMatchObject({ layouts: { home: [] }, issues: [] })
+    expect(registry.resolveTheme({ ...stored, layouts: {} })).toMatchObject({ layouts: { home: [grid(3)] }, issues: [] })
   })
 
   it('fallback memakai defaultLayouts base, bukan milik template yang tidak terdaftar', () => {

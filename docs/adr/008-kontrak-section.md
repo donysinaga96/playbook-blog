@@ -47,8 +47,12 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
 5. **Aturan layout tahan data buruk** (`resolveLayout` di template-kit):
    - item yang bukan `{ type, props }`, tipe tidak dikenal, props tidak valid, atau
      permintaan data yang tidak valid: section dilewati dan dicatat;
-   - `layouts.<halaman>` tidak ada, kosong, bukan array, atau tidak menyisakan section valid:
-     memakai `defaultLayouts` manifest;
+   - `layouts.<halaman>` tidak ada, bukan array, atau tidak menyisakan section valid: memakai
+     `defaultLayouts` manifest;
+   - `layouts.<halaman>: []` berarti site sengaja tanpa section: home memakai tampilan tanpa
+     layout (`featured` + `latest`, pagination ADR-006). Diputuskan 21 Nov 2026 sebelum form
+     layout di admin (M4); sebelumnya array kosong juga jatuh ke default, sehingga site tidak
+     bisa mematikan section;
    - batas: paling banyak 8 section per halaman dan 12 artikel per section
      (`SECTION_LIMITS`); `limit` di luar batas dijepit. Core menjaga batas yang sama lagi,
      tanpa bergantung pada validasi pemanggil;

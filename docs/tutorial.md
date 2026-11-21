@@ -7214,6 +7214,8 @@ describe('createTemplateRegistry', () => {
       issues: ['layouts.home[0]: section "hero" tidak dikenal, dilewati', 'layouts.home: tidak ada section yang valid, memakai default'],
     })
     expect(registry.resolveTheme({ ...stored, layouts: 'home' })).toMatchObject({ layouts: { home: [grid(3)] }, issues: ['layouts: bukan object, memakai default'] })
+    expect(registry.resolveTheme({ ...stored, layouts: { home: [] } })).toMatchObject({ layouts: { home: [] }, issues: [] })
+    expect(registry.resolveTheme({ ...stored, layouts: {} })).toMatchObject({ layouts: { home: [grid(3)] }, issues: [] })
   })
 
   it('fallback memakai defaultLayouts base, bukan milik template yang tidak terdaftar', () => {
@@ -13008,8 +13010,12 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
 5. **Aturan layout tahan data buruk** (`resolveLayout` di template-kit):
    - item yang bukan `{ type, props }`, tipe tidak dikenal, props tidak valid, atau
      permintaan data yang tidak valid: section dilewati dan dicatat;
-   - `layouts.<halaman>` tidak ada, kosong, bukan array, atau tidak menyisakan section valid:
-     memakai `defaultLayouts` manifest;
+   - `layouts.<halaman>` tidak ada, bukan array, atau tidak menyisakan section valid: memakai
+     `defaultLayouts` manifest;
+   - `layouts.<halaman>: []` berarti site sengaja tanpa section: home memakai tampilan tanpa
+     layout (`featured` + `latest`, pagination ADR-006). Diputuskan 21 Nov 2026 sebelum form
+     layout di admin (M4); sebelumnya array kosong juga jatuh ke default, sehingga site tidak
+     bisa mematikan section;
    - batas: paling banyak 8 section per halaman dan 12 artikel per section
      (`SECTION_LIMITS`); `limit` di luar batas dijepit. Core menjaga batas yang sama lagi,
      tanpa bergantung pada validasi pemanggil;
@@ -13074,7 +13080,7 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
 
 2. Tulis kontrak section di `packages/template-kit/src/sections.ts`:
    - `defineSection({ props, data })`: skema props Zod (field opsional memakai `.default()`) dan fungsi yang mengubah props menjadi permintaan data `{ source, slug?, limit }`.
-   - `resolveLayout`: memvalidasi layout satu halaman. Item yang rusak dilewati dan dicatat; layout yang tidak ada, kosong, bukan array, atau tidak menyisakan section valid diganti `defaultLayouts`. Nama seperti `toString` tidak boleh dianggap section, jadi pencarian memakai `Object.hasOwn`.
+   - `resolveLayout`: memvalidasi layout satu halaman. Item yang rusak dilewati dan dicatat; layout yang tidak ada, bukan array, atau tidak menyisakan section valid diganti `defaultLayouts`. Array kosong berarti site sengaja tanpa section (home tampil seperti sebelum ada section). Versi pertama memperlakukan array kosong sama dengan "tidak ada"; itu diubah sebelum form layout di admin dibuat, karena admin harus bisa mematikan section. Nama seperti `toString` tidak boleh dianggap section, jadi pencarian memakai `Object.hasOwn`.
    - `SECTION_LIMITS`: 8 section per halaman dan 12 artikel per section. `limit` di luar batas dijepit, dan permintaan data dicek ulang apa pun skema props-nya.
 
 `packages/template-kit/src/sections.ts`
@@ -13093,8 +13099,9 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
 // di bawah. Core yang mengambil data, template tidak pernah query.
 //
 // Data buruk tidak membuat halaman crash: section yang tidak dikenal atau
-// props-nya salah dilewati dan dicatat; layout yang kosong atau rusak
-// diganti defaultLayouts dari manifest.
+// props-nya salah dilewati dan dicatat; layout yang tidak ada atau rusak
+// diganti defaultLayouts dari manifest. Array kosong adalah pilihan site:
+// tanpa section (halaman memakai tampilan tanpa layout).
 import { z } from 'zod'
 import { isPlainObject } from './objects'
 
@@ -13162,7 +13169,7 @@ export interface ResolveLayoutInput {
   sections: Readonly<Record<string, SectionDefinition>>
   /** Nilai mentah layouts[page] dari database. */
   raw: unknown
-  /** defaultLayouts[page] dari manifest; dipakai bila raw kosong atau tidak valid. */
+  /** defaultLayouts[page] dari manifest; dipakai bila raw tidak ada atau tidak valid. */
   fallback: readonly LayoutItem[]
   /** Untuk pesan issue, mis. 'layouts.home'. */
   label: string
@@ -13183,7 +13190,8 @@ export function resolveLayout(input: ResolveLayoutInput): ResolveLayoutResult {
 
   if (raw === undefined || raw === null) return useFallback([])
   if (!Array.isArray(raw)) return useFallback([`${label}: bukan array, memakai default`])
-  if (raw.length === 0) return useFallback([])
+  // Array kosong = site sengaja tanpa section (ADR-008, diperbarui 21 Nov 2026).
+  if (raw.length === 0) return { sections: [], issues: [] }
 
   const resolved = resolveItems(sections, raw, label)
   if (resolved.sections.length === 0) {
@@ -13314,8 +13322,12 @@ describe('resolveLayout', () => {
     expect(resolve([{ type: 'toString' }, { type: 'note' }]).issues).toEqual(['layouts.home[0]: section "toString" tidak dikenal, dilewati'])
   })
 
-  it.each([undefined, null, []])('layout kosong (%j) -> defaultLayouts tanpa issue', (raw) => {
+  it.each([undefined, null])('layout tidak ada (%j) -> defaultLayouts tanpa issue', (raw) => {
     expect(resolve(raw)).toEqual({ sections: [{ type: 'hero', props: { source: 'featured', limit: 1 }, articles: { source: 'featured', limit: 1 } }], issues: [] })
+  })
+
+  it('array kosong -> tanpa section (pilihan site), tanpa issue', () => {
+    expect(resolve([])).toEqual({ sections: [], issues: [] })
   })
 
   it('layout bukan array -> default, dicatat', () => {

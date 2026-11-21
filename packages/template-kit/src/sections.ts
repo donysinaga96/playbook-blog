@@ -11,8 +11,9 @@
 // di bawah. Core yang mengambil data, template tidak pernah query.
 //
 // Data buruk tidak membuat halaman crash: section yang tidak dikenal atau
-// props-nya salah dilewati dan dicatat; layout yang kosong atau rusak
-// diganti defaultLayouts dari manifest.
+// props-nya salah dilewati dan dicatat; layout yang tidak ada atau rusak
+// diganti defaultLayouts dari manifest. Array kosong adalah pilihan site:
+// tanpa section (halaman memakai tampilan tanpa layout).
 import { z } from 'zod'
 import { isPlainObject } from './objects'
 
@@ -80,7 +81,7 @@ export interface ResolveLayoutInput {
   sections: Readonly<Record<string, SectionDefinition>>
   /** Nilai mentah layouts[page] dari database. */
   raw: unknown
-  /** defaultLayouts[page] dari manifest; dipakai bila raw kosong atau tidak valid. */
+  /** defaultLayouts[page] dari manifest; dipakai bila raw tidak ada atau tidak valid. */
   fallback: readonly LayoutItem[]
   /** Untuk pesan issue, mis. 'layouts.home'. */
   label: string
@@ -101,7 +102,8 @@ export function resolveLayout(input: ResolveLayoutInput): ResolveLayoutResult {
 
   if (raw === undefined || raw === null) return useFallback([])
   if (!Array.isArray(raw)) return useFallback([`${label}: bukan array, memakai default`])
-  if (raw.length === 0) return useFallback([])
+  // Array kosong = site sengaja tanpa section (ADR-008, diperbarui 21 Nov 2026).
+  if (raw.length === 0) return { sections: [], issues: [] }
 
   const resolved = resolveItems(sections, raw, label)
   if (resolved.sections.length === 0) {

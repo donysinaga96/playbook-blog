@@ -1,6 +1,6 @@
 # Usulan M4 dan M5
 
-Status: menunggu persetujuan (ditulis 21 Nov 2026).
+Status: usulan M4 disetujui 21 Nov 2026 (E ditunda ke backlog); usulan M5 dan S1–S2 menunggu persetujuan.
 Pemeriksaan poin M4 dan M5 ada di [TASKS.md](../TASKS.md#m4--admin-minimal). Setelah disetujui, huruf usulan tetap dipakai sebagai penanda di rincian TASKS.md, seperti M2 dan M3.
 Usulan ini mengandaikan usulan M3 (terutama B, manifest server, dan D, `migrateConfig`) disetujui.
 
@@ -27,13 +27,13 @@ Usulan ini mengandaikan usulan M3 (terutama B, manifest server, dan D, `migrateC
 
 | Usulan | Disetujui? | Catatan |
 |---|---|---|
-| M4-A — ADR-009 admin (host, SPA, sesi) | | |
-| M4-B — CLI admin:create | | |
-| M4-C — Block editor sendiri | | |
-| M4-D — Preview tema di host admin | | |
-| M4-E — Pulihkan revisi | | |
-| M4-F — Gate M4 di CI | | |
-| M4-G — Pengamanan dasar admin | | |
+| M4-A — ADR-009 admin (host, SPA, sesi) | Ya, 21 Nov 2026 | |
+| M4-B — CLI admin:create | Ya, 21 Nov 2026 | |
+| M4-C — Block editor sendiri | Ya, 21 Nov 2026 | |
+| M4-D — Preview tema di host admin | Ya, 21 Nov 2026 | |
+| M4-E — Pulihkan revisi | Ditunda | Masuk backlog setelah M5 |
+| M4-F — Gate M4 di CI | Ya, 21 Nov 2026 | |
+| M4-G — Pengamanan dasar admin | Ya, 21 Nov 2026 | |
 | M5-A — Proxy TLS per domain (ADR-010) | | |
 | M5-B — Deploy dari CI | | |
 | M5-C — Backup + restore | | |

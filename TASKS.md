@@ -11,10 +11,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 0 / 27 | — (draf; usulan A–G menunggu persetujuan) |
+| M4 — Admin minimal | 0 / 27 | — |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026): setujui usulan M4 A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md), lalu kerjakan rincian M4. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), mulai dari 4.pre lalu 4.0. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -213,11 +213,14 @@ Commit M3: f2503b4 (3.0–3.1), 53343bd (3.2), 7a03cb3 (3.3), 7043fd6 (3.4), dit
 | Revisi otomatis dan redirect otomatis saat slug berubah | Tabel `article_revisions` (`revision_no` = `articles.version`) dan `redirects` sudah ada; `findRedirect` sudah dipakai route publik. | Snapshot revisi dan redirect ditulis dalam transaksi yang sama dengan update artikel. Rantai redirect (A→B lalu B→C) diratakan supaya tidak 301 berantai. |
 | Gate: artikel dijadwalkan tampil tepat waktu | Terjadwal = `PUBLISHED` + `published_at > now()`, sudah difilter di query publik, sitemap, dan RSS. HTML publik belum dikirim dengan header cache; feed di-cache 300 detik. | Tidak butuh scheduler atau queue. Tanpa cache HTML, "tepat waktu" berarti tampil pada request pertama setelah `published_at`. Bila M5 menambah cache, toleransinya sebesar TTL. |
 
-### Usulan (menunggu persetujuan)
+### Usulan
 
-Usulan A–G untuk M4 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal). Rincian di bawah adalah draf yang memakai usulan itu.
+Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) disetujui 21 Nov 2026, kecuali E (pulihkan revisi) yang ditunda ke backlog. Keputusan tambahan: `layouts.home: []` berarti "tanpa section" (home gaya lama), key yang tidak ada tetap berarti `defaultLayouts`; dikerjakan di awal M4 karena form layout di 4.4 membutuhkannya.
 
-### Rincian (draf; disesuaikan setelah usulan disetujui)
+### Rincian (21 Nov 2026)
+
+**4.pre Arti layout kosong**
+- [x] `resolveLayout`: array kosong = tanpa section, tanpa issue; key tidak ada atau layout rusak tetap `defaultLayouts`; ADR-008, test, tutorial
 
 **4.0 Fondasi admin [A] [B] [G]**
 - [ ] ADR-009: host admin, cara render (SPA), sesi cookie, library Argon2id; site middleware melewati `/admin` dan `/api/admin`
@@ -255,11 +258,10 @@ Usulan A–G untuk M4 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--adm
 - [ ] Simpan: validasi, lalu tulis config dalam versi template terpasang
 - › Skill: `frontend-design:frontend-design` untuk form token (warna, font) dan panel preview
 
-**4.5 Revisi dan redirect [E]**
+**4.5 Revisi dan redirect**
 - [ ] Setiap update artikel: snapshot ke `article_revisions` dalam transaksi yang sama, `version` naik
 - [ ] Slug artikel atau halaman yang pernah terbit berubah → redirect 301 dari path lama; rantai diratakan; redirect yang menunjuk ke dirinya sendiri dihapus
 - [ ] Daftar revisi per artikel
-- [ ] [E] Pulihkan revisi (menjadi update baru, riwayat tidak ditimpa)
 
 **4.6 Test pembukti gate dan penutup [F]**
 - [ ] [F] Skrip gate `apps/web/scripts/gate-admin.mjs`, masuk CI job `build`: login → buat artikel → jadwalkan `published_at` beberapa detik ke depan → sebelum waktunya 404 dan tidak ada di home, sitemap, RSS → sesudahnya tampil
@@ -388,3 +390,4 @@ Ditunda sampai pemicunya terjadi. MVP = M0–M5.
 | Slot iklan dan analitik | Site mulai punya trafik | Slot sudah dideklarasikan di manifest template |
 | API terpisah (NestJS) | Butuh API untuk aplikasi mobile atau pihak ketiga | `packages/core` bisa dipasang ke NestJS tanpa ditulis ulang |
 | Komentar, newsletter | Ada permintaan pembaca | — |
+| Pulihkan revisi artikel (usulan M4-E) | Ada kebutuhan mengembalikan isi lama tanpa SQL | Ditunda pada persetujuan M4 21 Nov 2026; revisi tetap disimpan otomatis di M4 |
