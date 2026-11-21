@@ -28,6 +28,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.localhost:3000 (lihat "Domain site di dev"), cek `/api/health` |
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+| Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
 | Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
 | Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
 
@@ -135,6 +136,30 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 - Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Cek di browser
+
+`apps/web/scripts/browser-check.mjs` membuka 12 halaman kedua site di Chromium headless
+(Playwright), di lebar desktop dan ponsel, terhadap `pnpm dev` yang sedang jalan. Halaman gagal
+bila tidak ter-hydrate, ada peringatan hydration mismatch, page error, atau console error.
+Screenshot full page disimpan di `apps/web/.browser-check/` (tidak masuk Git). Skrip ini tidak
+dijalankan di CI.
+
+1. Sekali saja: `pnpm --filter @framework/web exec playwright install chromium`.
+2. Jalankan `pnpm dev`, lalu di terminal lain `pnpm --filter @framework/web browser-check`.
+   Variabel opsional: `BASE_URL` (default `http://{host}:3000`), `SHOTS_DIR`.
+
+Bila Chromium gagal start karena library sistem tidak ada (`libnss3.so`, `libnspr4.so`,
+`libasound.so.2`) dan tidak ada akses sudo untuk `playwright install-deps`, ekstrak paketnya ke
+folder sendiri lalu arahkan `BROWSER_LIB_DIR` ke sana:
+
+```bash
+mkdir -p ~/.local/chromium-libs && cd ~/.local/chromium-libs
+apt-get download libnss3 libnspr4 libasound2t64
+for f in *.deb; do dpkg-deb -x "$f" root; done
+BROWSER_LIB_DIR=~/.local/chromium-libs/root/usr/lib/x86_64-linux-gnu \
+  pnpm --filter @framework/web browser-check
+```
 
 ## Media
 

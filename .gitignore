@@ -38,6 +38,7 @@ coverage/
 .vitest/
 test-results/
 playwright-report/
+.browser-check/
 blob-report/
 .eslintcache
 .stylelintcache

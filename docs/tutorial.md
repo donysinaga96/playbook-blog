@@ -268,6 +268,7 @@ coverage/
 .vitest/
 test-results/
 playwright-report/
+.browser-check/
 blob-report/
 .eslintcache
 .stylelintcache
@@ -510,6 +511,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Menjalankan aplikasi web (hot reload) | `pnpm dev` → http://tekno.localhost:3000 (lihat "Domain site di dev"), cek `/api/health` |
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
+| Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
 | Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
 | Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
 
@@ -617,6 +619,30 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 - Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Cek di browser
+
+`apps/web/scripts/browser-check.mjs` membuka 12 halaman kedua site di Chromium headless
+(Playwright), di lebar desktop dan ponsel, terhadap `pnpm dev` yang sedang jalan. Halaman gagal
+bila tidak ter-hydrate, ada peringatan hydration mismatch, page error, atau console error.
+Screenshot full page disimpan di `apps/web/.browser-check/` (tidak masuk Git). Skrip ini tidak
+dijalankan di CI.
+
+1. Sekali saja: `pnpm --filter @framework/web exec playwright install chromium`.
+2. Jalankan `pnpm dev`, lalu di terminal lain `pnpm --filter @framework/web browser-check`.
+   Variabel opsional: `BASE_URL` (default `http://{host}:3000`), `SHOTS_DIR`.
+
+Bila Chromium gagal start karena library sistem tidak ada (`libnss3.so`, `libnspr4.so`,
+`libasound.so.2`) dan tidak ada akses sudo untuk `playwright install-deps`, ekstrak paketnya ke
+folder sendiri lalu arahkan `BROWSER_LIB_DIR` ke sana:
+
+```bash
+mkdir -p ~/.local/chromium-libs && cd ~/.local/chromium-libs
+apt-get download libnss3 libnspr4 libasound2t64
+for f in *.deb; do dpkg-deb -x "$f" root; done
+BROWSER_LIB_DIR=~/.local/chromium-libs/root/usr/lib/x86_64-linux-gnu \
+  pnpm --filter @framework/web browser-check
+```
 
 ## Media
 
@@ -5146,7 +5172,8 @@ pnpm install
     "postinstall": "nuxt prepare",
     "typecheck": "nuxt typecheck",
     "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs",
-    "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs"
+    "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs",
+    "browser-check": "node scripts/browser-check.mjs"
   },
   "dependencies": {
     "@framework/core": "workspace:*",
@@ -5160,6 +5187,7 @@ pnpm install
     "vue-router": "^5.5.1"
   },
   "devDependencies": {
+    "playwright": "1.49.1",
     "typescript": "~6.0.3",
     "vue-tsc": "^3.3.14"
   }
@@ -14599,4 +14627,148 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 pnpm --filter @framework/web gate
 # tanpa baris "[theme] site kabar-tekno: options.adSlots: key tidak dikenal"
 ```
+
+# Memeriksa Hidrasi di Browser
+
+1. Pahami apa yang tidak tertangkap test lain. Test render SSR, snapshot, smoke, dan gate hanya membaca HTML dari server. Hydration mismatch baru terlihat di browser: Vue membandingkan HTML server dengan hasil render ulangnya, dan bila berbeda (mis. tanggal atau angka acak yang dihitung dua kali), halaman bisa berkedip atau kehilangan interaksi. Komponen section baru menampilkan tanggal, jadi perlu dicek di browser sungguhan.
+
+2. Pasang Playwright sebagai devDependency aplikasi web, dengan versi yang dipatok, lalu unduh Chromium sekali:
+
+```bash
+pnpm --filter @framework/web add -D playwright@1.49.1
+pnpm --filter @framework/web exec playwright install chromium
+```
+
+   Paket `playwright` tidak mengunduh browser saat `pnpm install`, jadi CI tidak terbebani. Skrip ini memang hanya untuk lokal.
+
+3. Tulis `apps/web/scripts/browser-check.mjs`:
+   - Satu contoh per jenis halaman di kedua site (home, arsip `?page=2`, artikel, kategori, tag, penulis, pencarian, halaman statis, 404), di lebar desktop dan ponsel.
+   - Halaman gagal bila status tidak sesuai, aplikasi Vue tidak terpasang (`#__nuxt.__vue_app__`), atau ada peringatan, console error, maupun page error. Status 404 milik halaman 404 sendiri dikecualikan.
+   - Screenshot full page ke `apps/web/.browser-check/` (masukkan ke `.gitignore`).
+   - Targetnya dev server, karena build produksi Vue tidak mencetak peringatan hydration mismatch.
+   - `BROWSER_LIB_DIR` diteruskan ke Chromium sebagai `LD_LIBRARY_PATH`, untuk mesin tanpa library sistem Chromium dan tanpa sudo.
+
+`apps/web/scripts/browser-check.mjs`
+
+```js
+// Cek di browser sungguhan (Chromium headless lewat Playwright), hanya
+// untuk dijalankan lokal, tidak di CI:
+//   - halaman ter-hydrate (aplikasi Vue terpasang di browser),
+//   - tanpa peringatan hydration mismatch, page error, atau console error,
+//   - screenshot full page per halaman, lebar desktop dan ponsel.
+//
+// Target bawaan: dev server yang sedang jalan (`pnpm dev`), karena hanya
+// build dev yang mencetak peringatan hydration mismatch.
+//
+//   pnpm --filter @framework/web browser-check
+//   BASE_URL='http://{host}:3000' SHOTS_DIR=/tmp/shots pnpm --filter @framework/web browser-check
+//
+// Browser: `pnpm --filter @framework/web exec playwright install chromium`.
+// Mesin tanpa library sistem Chromium (libnss3, libnspr4, libasound2) dan
+// tanpa sudo: ekstrak paketnya ke sebuah folder lalu isi BROWSER_LIB_DIR
+// (lihat docs/dev-setup.md).
+import { mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const base = process.env.BASE_URL ?? 'http://{host}:3000'
+const shotsDir = process.env.SHOTS_DIR ?? fileURLToPath(new URL('../.browser-check/', import.meta.url))
+const libDir = process.env.BROWSER_LIB_DIR
+
+/** [host, path, status yang diharapkan]. Satu contoh per jenis halaman, kedua site. */
+const PAGES = [
+  ['tekno.localhost', '/', 200],
+  ['tekno.localhost', '/?page=2', 200],
+  ['tekno.localhost', '/review/ponsel-lipat-makin-murah', 200],
+  ['tekno.localhost', '/category/gadget', 200],
+  ['tekno.localhost', '/tag/android', 200],
+  ['tekno.localhost', '/author/budi-santoso', 200],
+  ['tekno.localhost', '/search?q=ponsel', 200],
+  ['tekno.localhost', '/tidak/ada', 404],
+  ['kuliner.localhost', '/', 200],
+  ['kuliner.localhost', '/sumatera/rendang-padang-empuk', 200],
+  ['kuliner.localhost', '/category/resep', 200],
+  ['kuliner.localhost', '/p/kontak', 200],
+]
+const VIEWPORTS = [['desktop', 1280, 900], ['ponsel', 390, 844]]
+
+let chromium
+try {
+  ;({ chromium } = await import('playwright'))
+} catch {
+  console.error('[browser] Playwright belum terpasang: pnpm install, lalu pnpm --filter @framework/web exec playwright install chromium')
+  process.exit(1)
+}
+
+mkdirSync(shotsDir, { recursive: true })
+const browser = await chromium.launch({
+  env: libDir ? { ...process.env, LD_LIBRARY_PATH: [libDir, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':') } : process.env,
+}).catch((error) => {
+  console.error(`[browser] Chromium gagal start: ${error.message.split('\n')[0]}`)
+  console.error('[browser] Library sistem kurang? Lihat "Cek di browser" di docs/dev-setup.md (BROWSER_LIB_DIR).')
+  process.exit(1)
+})
+
+const failures = []
+try {
+  for (const [host, path, expected] of PAGES) {
+    for (const [label, width, height] of VIEWPORTS) {
+      const context = await browser.newContext({ viewport: { width, height } })
+      const page = await context.newPage()
+      const messages = []
+      page.on('console', (m) => {
+        if (m.type() === 'error' || m.type() === 'warning') messages.push(`${m.type()}: ${m.text()}`)
+      })
+      page.on('pageerror', (e) => messages.push(`pageerror: ${e.message}`))
+
+      const url = base.replace('{host}', host) + path
+      const problems = []
+      try {
+        const response = await page.goto(url, { waitUntil: 'networkidle' })
+        // Dievaluasi di browser (bukan Node), jadi ditulis sebagai ekspresi.
+        const hydrated = await page.evaluate("Boolean(document.querySelector('#__nuxt')?.__vue_app__)")
+        if (response?.status() !== expected) problems.push(`status ${response?.status()}, seharusnya ${expected}`)
+        if (!hydrated) problems.push('tidak ter-hydrate')
+        // Status 404 halaman ini sendiri juga tercatat browser sebagai console error; itu bukan masalah.
+        for (const m of messages) {
+          if (expected === 404 && /status of 404/.test(m)) continue
+          problems.push(m.slice(0, 300))
+        }
+        const name = `${host}${path}`.replace(/[^a-z0-9]+/gi, '_').replace(/_$/, '')
+        await page.screenshot({ path: `${shotsDir}/${name}.${label}.png`, fullPage: true })
+      } catch (error) {
+        problems.push(`gagal dibuka: ${error.message.split('\n')[0]}`)
+      }
+      console.log(`[browser] ${problems.length ? 'GAGAL' : 'OK   '} ${label.padEnd(7)} ${url}`)
+      for (const p of problems) console.log(`          ${p}`)
+      if (problems.length) failures.push(`${label} ${url}`)
+      await context.close()
+    }
+  }
+} finally {
+  await browser.close()
+}
+
+console.log(`[browser] screenshot: ${shotsDir}`)
+if (failures.length) {
+  console.error(`[browser] GAGAL: ${failures.length} halaman bermasalah`)
+  process.exitCode = 1
+} else {
+  console.log(`[browser] OK: ${PAGES.length * VIEWPORTS.length} halaman ter-hydrate tanpa mismatch atau error`)
+}
+```
+
+4. Tambahkan script `"browser-check": "node scripts/browser-check.mjs"` di `apps/web/package.json`, jalankan `pnpm dev`, lalu di terminal lain:
+
+```bash
+pnpm --filter @framework/web browser-check
+# [browser] OK    desktop http://tekno.localhost:3000/
+# ...
+# [browser] OK: 24 halaman ter-hydrate tanpa mismatch atau error
+```
+
+5. Bila Chromium gagal start karena `libnss3.so`, `libnspr4.so`, atau `libasound.so.2` tidak ada dan Anda tidak punya sudo, ikuti bagian "Cek di browser" di `docs/dev-setup.md`: unduh paket `.deb`-nya dengan `apt-get download`, ekstrak dengan `dpkg-deb -x`, lalu isi `BROWSER_LIB_DIR`.
+
+6. Buktikan skrip ini bisa gagal. Sisipkan sementara `{{ Math.random() }}` di judul section (`SectionHeading.vue`), jalankan lagi: home tekno harus GAGAL dengan `Hydration text mismatch` dan exit 1. Kembalikan file, restart `pnpm dev` (cache SSR dev server bisa masih menyimpan komponen dari paket workspace di luar `apps/web` walau file sudah kembali), lalu pastikan hijau lagi.
+
+7. Buka screenshot di `apps/web/.browser-check/` untuk membandingkan tampilan magazine dan news di desktop dan ponsel.
 

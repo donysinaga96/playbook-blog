@@ -1443,3 +1443,40 @@ pnpm --filter @framework/web gate
 # tanpa baris "[theme] site kabar-tekno: options.adSlots: key tidak dikenal"
 ```
 
+# Memeriksa Hidrasi di Browser
+
+1. Pahami apa yang tidak tertangkap test lain. Test render SSR, snapshot, smoke, dan gate hanya membaca HTML dari server. Hydration mismatch baru terlihat di browser: Vue membandingkan HTML server dengan hasil render ulangnya, dan bila berbeda (mis. tanggal atau angka acak yang dihitung dua kali), halaman bisa berkedip atau kehilangan interaksi. Komponen section baru menampilkan tanggal, jadi perlu dicek di browser sungguhan.
+
+2. Pasang Playwright sebagai devDependency aplikasi web, dengan versi yang dipatok, lalu unduh Chromium sekali:
+
+```bash
+pnpm --filter @framework/web add -D playwright@1.49.1
+pnpm --filter @framework/web exec playwright install chromium
+```
+
+   Paket `playwright` tidak mengunduh browser saat `pnpm install`, jadi CI tidak terbebani. Skrip ini memang hanya untuk lokal.
+
+3. Tulis `apps/web/scripts/browser-check.mjs`:
+   - Satu contoh per jenis halaman di kedua site (home, arsip `?page=2`, artikel, kategori, tag, penulis, pencarian, halaman statis, 404), di lebar desktop dan ponsel.
+   - Halaman gagal bila status tidak sesuai, aplikasi Vue tidak terpasang (`#__nuxt.__vue_app__`), atau ada peringatan, console error, maupun page error. Status 404 milik halaman 404 sendiri dikecualikan.
+   - Screenshot full page ke `apps/web/.browser-check/` (masukkan ke `.gitignore`).
+   - Targetnya dev server, karena build produksi Vue tidak mencetak peringatan hydration mismatch.
+   - `BROWSER_LIB_DIR` diteruskan ke Chromium sebagai `LD_LIBRARY_PATH`, untuk mesin tanpa library sistem Chromium dan tanpa sudo.
+
+@@include apps/web/scripts/browser-check.mjs js@@
+
+4. Tambahkan script `"browser-check": "node scripts/browser-check.mjs"` di `apps/web/package.json`, jalankan `pnpm dev`, lalu di terminal lain:
+
+```bash
+pnpm --filter @framework/web browser-check
+# [browser] OK    desktop http://tekno.localhost:3000/
+# ...
+# [browser] OK: 24 halaman ter-hydrate tanpa mismatch atau error
+```
+
+5. Bila Chromium gagal start karena `libnss3.so`, `libnspr4.so`, atau `libasound.so.2` tidak ada dan Anda tidak punya sudo, ikuti bagian "Cek di browser" di `docs/dev-setup.md`: unduh paket `.deb`-nya dengan `apt-get download`, ekstrak dengan `dpkg-deb -x`, lalu isi `BROWSER_LIB_DIR`.
+
+6. Buktikan skrip ini bisa gagal. Sisipkan sementara `{{ Math.random() }}` di judul section (`SectionHeading.vue`), jalankan lagi: home tekno harus GAGAL dengan `Hydration text mismatch` dan exit 1. Kembalikan file, restart `pnpm dev` (cache SSR dev server bisa masih menyimpan komponen dari paket workspace di luar `apps/web` walau file sudah kembali), lalu pastikan hijau lagi.
+
+7. Buka screenshot di `apps/web/.browser-check/` untuk membandingkan tampilan magazine dan news di desktop dan ponsel.
+

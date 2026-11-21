@@ -11,7 +11,8 @@
     "postinstall": "nuxt prepare",
     "typecheck": "nuxt typecheck",
     "smoke": "node --env-file-if-exists=../../.env scripts/smoke-build.mjs",
-    "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs"
+    "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs",
+    "browser-check": "node scripts/browser-check.mjs"
   },
   "dependencies": {
     "@framework/core": "workspace:*",
@@ -25,6 +26,7 @@
     "vue-router": "^5.5.1"
   },
   "devDependencies": {
+    "playwright": "1.49.1",
     "typescript": "~6.0.3",
     "vue-tsc": "^3.3.14"
   }
