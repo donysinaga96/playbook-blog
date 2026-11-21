@@ -6,8 +6,9 @@
 import baseManifest from '@framework/template-base/manifest'
 import { createTemplateRegistry, type ResolvedTheme, type StoredTheme } from '@framework/template-kit'
 import magazineManifest from '@framework/template-magazine/manifest'
+import newsManifest from '@framework/template-news/manifest'
 
-export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest], { fallback: 'base' })
+export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest, newsManifest], { fallback: 'base' })
 
 // Issue theme yang sama cukup dicatat sekali per proses, bukan setiap request.
 const loggedIssues = new Set<string>()

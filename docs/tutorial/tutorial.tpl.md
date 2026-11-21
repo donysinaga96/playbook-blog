@@ -1209,7 +1209,7 @@ curl -s -H 'Host: kuliner.localhost:3000' http://127.0.0.1:3000/robots.txt
 
 @@include apps/web/scripts/smoke-build.mjs js@@
 
-3. Tulis test gate `apps/web/scripts/gate-parallel.mjs`:
+3. Tulis test gate `apps/web/scripts/gate-parallel.mjs` (file di bawah sudah versi bab "Membuat Template Kedua": kuliner memakai template news, dan halaman `/` punya penanda section):
    - Penanda setiap site diambil dari data seed: judul, kelas root template, aturan token CSS, logo, item menu, dan nama site.
    - Request ke beberapa jenis halaman di kedua domain diacak, lalu dikirim 32 sekaligus (default 240 request).
    - Setiap respons wajib memuat semua penanda site-nya sendiri dan tidak boleh memuat satu pun penanda site lain, termasuk di payload Nuxt.
@@ -1352,3 +1352,51 @@ pnpm dev
 # http://kuliner.localhost:3000 -> section--headline-list (masih template base sampai template news ada)
 # Strip kategori tidak tampil di data seed: semua artikelnya sudah muncul di section sebelumnya.
 ```
+
+# Membuat Template Kedua
+
+1. Pahami tujuannya. Template kedua membuktikan kontrak template: site kuliner harus tampil jelas berbeda dari site teknologi tanpa satu pun komponen sendiri dan tanpa mengubah core. Yang boleh dipakai hanya token, opsi, layout section, dan CSS di bawah `.tpl-news`.
+
+2. Rancang tampilannya dulu, sebelum menulis CSS:
+   - Warna dan font sudah ditentukan token theme site (merah cabai, permukaan krem, Merriweather untuk judul, Source Sans 3 untuk isi), jadi pembeda harus datang dari struktur, bukan warna.
+   - Halaman depan dibuka dengan daftar judul (`headline-list`), bukan kartu besar bergambar seperti magazine. Judul pertama dibuat besar dengan serif, judul berikutnya dalam dua kolom bergaris vertikal. Hanya bagian ini yang dibuat mencolok; sisanya tenang.
+   - Kartu berupa media horizontal (gambar kiri, teks kanan) tanpa bayangan, dipisah garis tipis.
+   - Garis tebal warna primer di bawah menu dan di atas footer; judul section diberi garis tebal di atasnya.
+   - Hindari label huruf kapital dan pemisah `·`; label kategori cukup teks tebal berwarna primer.
+
+3. Buat paket `templates/news`. Seperti magazine, ada dua entry: `./manifest` (data saja, untuk server) dan entry utama (manifest + CSS):
+
+@@include templates/news/package.json json@@
+
+@@include templates/news/src/manifest.ts ts@@
+
+@@include templates/news/src/index.ts ts@@
+
+4. Tulis CSS-nya. Setiap selector diawali `.tpl-news` (dijaga `tests/template-css.test.ts`). Kolom ganda daftar judul hanya di layar lebar; di ponsel semuanya satu kolom:
+
+@@include templates/news/src/styles.css css@@
+
+5. Uji manifest news: semua view, layout, dan section dipakai bersama dari base, token dan layout bawaan berbeda, dan config theme site kuliner lolos tanpa issue. Test template hanya boleh meng-import template-kit dan base, jadi pembandingnya base, bukan magazine:
+
+@@include templates/news/src/manifest.test.ts ts@@
+
+6. Daftarkan news di kedua registry (`server/utils/templates.ts` untuk manifest, `app/templates.ts` untuk definisi lengkap) dan tambahkan `"@framework/template-news": "workspace:*"` di `apps/web/package.json`, lalu jalankan `pnpm install`. Test `server/utils/templates.test.ts` gagal bila news hanya didaftarkan di salah satunya.
+
+7. Rapikan config theme site kuliner. Opsi yang tidak ada di skema template dicatat sebagai `key tidak dikenal` setiap server start. Karena template news baru dibuat sekarang, config itu cukup diperbaiki langsung (di seed dan di database dev), tanpa migrasi config. Untuk template yang sudah dipakai, perubahan seperti ini harus lewat `migrateConfig` (bab berikutnya).
+
+8. Perbarui penanda gate: site kuliner kini `class="tpl tpl-news"` dan `.tpl-news{--color-primary:...}`, dan halaman `/` setiap site wajib memuat section dari layout-nya (`section--hero` dan `section--latest-grid` untuk tekno, `section--headline-list` untuk kuliner).
+
+9. Jalankan pemeriksaan, lalu bandingkan kedua site di browser, di layar lebar dan di ponsel:
+
+```bash
+pnpm check
+pnpm build
+SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+# [smoke] tekno.localhost/ -> 200 class="tpl tpl-magazine"
+# [smoke] kuliner.localhost/ -> 200 class="tpl tpl-news"
+pnpm --filter @framework/web gate
+pnpm dev
+```
+
+10. Periksa gate milestone: news selesai tanpa komponen sendiri dan tanpa mengubah core. Perubahan core yang dibutuhkan section home sudah dicatat di ADR-008 pada bab sebelumnya.
+

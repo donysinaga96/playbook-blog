@@ -119,9 +119,12 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 
 ## Template dan theme
 
-- Setiap request halaman memuat baris aktif `site_themes`, lalu registry di
-  `apps/web/app/templates.ts` memilih template berdasarkan `template_key`. Template yang tidak
-  terdaftar (mis. `news` milik `dapur-nusantara`, baru ada di M3) jatuh ke `base`.
+- Setiap request halaman memuat baris aktif `site_themes`, lalu registry manifest di
+  `apps/web/server/utils/templates.ts` memilih template berdasarkan `template_key` dan
+  memvalidasi token, opsi, serta layout section (ADR-008). Template yang tidak terdaftar jatuh
+  ke `base`. Seed: kabar-tekno memakai `magazine`, dapur-nusantara memakai `news`.
+- Layout home diambil dari `site_themes.layouts.home`; section yang rusak dilewati, layout
+  kosong atau rusak memakai `defaultLayouts` template.
 - Token dan opsi divalidasi per key terhadap skema manifest; nilai yang salah memakai default.
 - Masalah theme (template tidak terdaftar, nilai tidak valid, key tidak dikenal) dicatat sekali
   per proses di log server: `[theme] site <kode>: ...`.

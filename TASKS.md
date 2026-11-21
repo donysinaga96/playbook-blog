@@ -10,11 +10,11 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M0 — Fondasi | 10 / 10 | ✅ Lulus 17 Nov 2026 — pipeline #3078334327 (commit 9df99b4) |
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
-| M3 — Template kedua (titik evaluasi) | 13 / 25 | — |
+| M3 — Template kedua (titik evaluasi) | 18 / 25 | — |
 | M4 — Admin minimal | 0 / 27 | — (draf; usulan A–G menunggu persetujuan) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M3 3.2 (template news); 3.0 dan 3.1 selesai 21 Nov 2026. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M3 3.3 (migrateConfig); 3.0–3.2 selesai 21 Nov 2026 (3.2 belum di-commit). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -163,10 +163,10 @@ Baris `› Skill` menyebut skill Claude Code yang dipakai untuk task di atasnya 
 - › Skill: `frontend-design:frontend-design` untuk markup dan gaya netral komponen section di base; `/run` untuk melihat home tekno di browser
 
 **3.2 Template news**
-- [ ] `templates/news` 1.0.0: manifest + entry `./manifest`, token default sesuai seed, CSS kartu dan header di bawah `.tpl-news`, `defaultLayouts.home`; tanpa override komponen
-- [ ] Bila CSS tidak cukup: opsi baru di base (versi minor), bukan override
-- [ ] Daftarkan di registry server dan Vue; kuliner tampil dengan news
-- [ ] Test manifest news dan test CSS di bawah kelas root (seperti magazine)
+- [x] `templates/news` 1.0.0: manifest + entry `./manifest`, token default sesuai seed, CSS kartu dan header di bawah `.tpl-news`, `defaultLayouts.home`; tanpa override komponen
+- [x] Bila CSS tidak cukup: opsi baru di base (versi minor), bukan override — tidak diperlukan, CSS cukup
+- [x] Daftarkan di registry server dan Vue; kuliner tampil dengan news — seed theme news tanpa `options.adSlots` (bukan opsi news; template baru, jadi tanpa migrasi)
+- [x] Test manifest news dan test CSS di bawah kelas root (seperti magazine)
 - › Skill: `frontend-design:frontend-design` untuk arah visual news yang jelas berbeda dari magazine (tipografi, header, kartu), hanya lewat token dan CSS; `/run` + screenshot dari skrip 3.4 untuk membandingkan tiga site
 
 **3.3 migrateConfig [D]**
@@ -176,7 +176,7 @@ Baris `› Skill` menyebut skill Claude Code yang dipakai untuk task di atasnya 
 - [ ] Test template-kit: rantai migrasi, versi lebih baru, migrasi error
 
 **3.4 Test pembukti dan cek browser [E] [F]**
-- [ ] Smoke dan gate paralel: kuliner `tpl-news` beserta marker news; tiga template dari satu server
+- [x] Smoke dan gate paralel: kuliner `tpl-news` beserta marker news; tiga template dari satu server
 - [x] Test arsitektur: entry `./manifest` tidak meng-import `.vue`/`.css` — `tests/template-manifest.test.ts`, menelusuri import tidak langsung, dengan test kontrol
 - [ ] Skrip Playwright lokal di `apps/web/scripts/` (cek hidrasi + screenshot per domain), tidak di CI; cara pakai di `docs/dev-setup.md`
 - › Skill: `/run` untuk menjalankan app dan skrip cek

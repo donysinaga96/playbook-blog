@@ -124,7 +124,7 @@ export function defineManifest(input: ManifestInput): TemplateManifest {
   }
 
   if (parent && input.sections) fail('sections hanya didefinisikan template base; template turunan memakai section induknya (ADR-008)')
-  const sections = Object.freeze({ ...(input.sections ?? parent?.sections ?? {}) })
+  const sections = input.sections ? Object.freeze({ ...input.sections }) : (parent?.sections ?? Object.freeze({}))
 
   const defaultLayouts = {} as Record<LayoutPage, readonly LayoutItem[]>
   for (const page of LAYOUT_PAGES) {

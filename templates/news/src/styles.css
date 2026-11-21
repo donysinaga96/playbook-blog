@@ -1,0 +1,248 @@
+/*
+ * News: tampilan harian yang padat informasi. Kepala halaman rata kiri
+ * dengan garis tebal warna primer di bawah menu; halaman depan dibuka
+ * dengan judul utama besar ber-serif, judul lain dalam dua kolom
+ * bergaris; kartu berupa media horizontal (gambar kiri, teks kanan)
+ * tanpa bayangan. Semua di bawah .tpl-news agar tidak bocor ke site lain
+ * di server yang sama (ADR-005).
+ */
+
+.tpl-news {
+  --container: 70rem;
+  --rule: 3px solid var(--color-text);
+
+  font-size: 1.0625rem;
+}
+
+.tpl-news h1,
+.tpl-news h2,
+.tpl-news h3 {
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- Kepala halaman ------------------------------------------- */
+
+.tpl-news .site-header {
+  border-bottom: 0;
+}
+
+.tpl-news .site-header__inner {
+  align-items: flex-end;
+  padding-block: 1.5rem 1rem;
+}
+
+.tpl-news .site-header__logo {
+  height: 3rem;
+}
+
+.tpl-news .site-header__name {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.tpl-news .site-header__tagline {
+  align-self: flex-end;
+  padding-bottom: 0.25rem;
+  font-style: italic;
+}
+
+.tpl-news .site-header__date {
+  align-self: flex-end;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.tpl-news .site-header__nav {
+  border-top: 4px solid var(--color-primary);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl-news .menu-tree--root {
+  gap: 0 1.5rem;
+}
+
+.tpl-news .menu-tree__link {
+  padding-block: 0.75rem;
+  font-size: 0.9375rem;
+}
+
+.tpl-news .site-header .menu-tree--sub {
+  border-top: 3px solid var(--color-primary);
+}
+
+/* ---------- Judul section dan listing -------------------------------- */
+
+.tpl-news .section__head {
+  padding-top: 0.5rem;
+  border-top: var(--rule);
+}
+
+.tpl-news .section-title {
+  font-size: 1.125rem;
+}
+
+.tpl-news .section-title a:hover {
+  color: var(--color-primary);
+}
+
+.tpl-news .home__latest > .section-title {
+  padding-top: 0.5rem;
+  border-top: var(--rule);
+}
+
+.tpl-news .section__more {
+  font-weight: 600;
+}
+
+/* ---------- Daftar judul: judul utama + dua kolom -------------------- */
+
+.tpl-news .section--headline-list .section__head {
+  border-top-color: var(--color-primary);
+}
+
+.tpl-news .headline-list__item {
+  padding-block: 1rem;
+}
+
+.tpl-news .headline-list__title {
+  font-size: 1.25rem;
+  font-weight: 900;
+}
+
+.tpl-news .headline-list__item:first-child .headline-list__title {
+  font-size: clamp(1.75rem, 4.5vw, 2.75rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  max-width: 24ch;
+}
+
+@media (min-width: 48rem) {
+  .tpl-news .headline-list {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 2rem;
+  }
+
+  .tpl-news .headline-list__item:first-child {
+    grid-column: 1 / -1;
+    padding-bottom: 1.5rem;
+  }
+
+  /* Kolom kanan dipisah garis vertikal. */
+  .tpl-news .headline-list__item:nth-child(odd):not(:first-child) {
+    padding-left: 2rem;
+    border-left: 1px solid var(--c-border);
+  }
+}
+
+/* ---------- Kartu: media horizontal ---------------------------------- */
+
+.tpl-news .article-list {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  gap: 0 2rem;
+}
+
+.tpl-news .article-card {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  align-items: start;
+  gap: 1rem;
+  padding-block: 1rem;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl-news .article-card:not(:has(.article-card__media)) {
+  grid-template-columns: 1fr;
+}
+
+.tpl-news .article-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tpl-news .article-card__title {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.3;
+}
+
+.tpl-news .article-card__excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.tpl-news .article-card__meta {
+  font-size: 0.8125rem;
+}
+
+/* Kartu utama (hero, home tanpa section): gambar besar di kanan. */
+.tpl-news .article-card--lead {
+  grid-template-columns: 1fr;
+  padding-top: 0;
+}
+
+@media (min-width: 48rem) {
+  .tpl-news .article-card--lead {
+    grid-template-columns: 2fr 3fr;
+    gap: 2rem;
+  }
+
+  .tpl-news .article-card--lead .article-card__media {
+    order: 2;
+  }
+}
+
+.tpl-news .article-card--lead .article-card__title {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  line-height: 1.15;
+}
+
+/* ---------- Artikel ------------------------------------------------- */
+
+.tpl-news .article__header {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl-news .article__title {
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.1;
+}
+
+.tpl-news .article__excerpt {
+  font-family: var(--f-heading);
+  font-size: 1.1875rem;
+  line-height: 1.5;
+}
+
+.tpl-news .prose > p:first-of-type {
+  font-size: 1.1875rem;
+}
+
+.tpl-news .prose blockquote {
+  padding-left: 1rem;
+  border-left: 4px solid var(--color-primary);
+  font-family: var(--f-heading);
+  font-size: 1.25rem;
+}
+
+.tpl-news .listing__title {
+  padding-top: 0.5rem;
+  border-top: var(--rule);
+}
+
+/* Tag mengikuti sudut kartu, bukan pil bulat seperti base. */
+.tpl-news .article__tags a {
+  border-radius: var(--radius-card);
+}
+
+/* ---------- Kaki halaman -------------------------------------------- */
+
+.tpl-news .site-footer {
+  border-top: 4px solid var(--color-primary);
+}

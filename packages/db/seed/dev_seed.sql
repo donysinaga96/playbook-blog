@@ -51,7 +51,7 @@ INSERT INTO site_themes (id, site_id, template_key, template_version, tokens, op
   ('01930000-0000-7000-8000-000000000141', '01930000-0000-7000-8000-000000000102', 'news', '1.0.0',
    '{"color": {"primary": "#b3261e", "surface": "#fffbf5", "text": "#1d1b16"},
      "font": {"heading": "Merriweather", "body": "Source Sans 3"}, "radius": {"card": "2px"}}',
-   '{"header": {"style": "left", "showDate": false}, "adSlots": {}}',
+   '{"header": {"style": "left", "showDate": false}}',
    '{"home": [{"type": "headline-list", "props": {"source": "latest", "limit": 5}},
               {"type": "category-strip", "props": {"categorySlug": "resep", "limit": 8}}]}',
    true),

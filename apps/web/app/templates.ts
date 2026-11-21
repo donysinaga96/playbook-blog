@@ -7,5 +7,6 @@
 import base from '@framework/template-base'
 import { createTemplateRegistry } from '@framework/template-kit'
 import magazine from '@framework/template-magazine'
+import news from '@framework/template-news'
 
-export const templateRegistry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+export const templateRegistry = createTemplateRegistry([base, magazine, news], { fallback: 'base' })

@@ -2,5 +2,20 @@
   "name": "@framework/template-news",
   "version": "0.0.0",
   "private": true,
-  "description": "Template kedua, pembuktian kontrak"
+  "description": "Template kedua: tampilan harian berita dari token, opsi, layout section, dan CSS di atas base",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
+  },
+  "dependencies": {
+    "@framework/template-base": "workspace:*",
+    "@framework/template-kit": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
 }

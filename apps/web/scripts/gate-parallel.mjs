@@ -14,17 +14,21 @@ const port = process.env.GATE_PORT ?? '3997'
 const rounds = Number(process.env.GATE_ROUNDS ?? '20')
 const concurrency = Number(process.env.GATE_CONCURRENCY ?? '32')
 
-/** Penanda per site, dari data seed (packages/db/seed). */
+/**
+ * Penanda per site, dari data seed (packages/db/seed). `paths`: [path,
+ * status, penanda tambahan khusus path itu], mis. section home dari
+ * site_themes.layouts (ADR-008).
+ */
 const SITES = {
   'tekno.localhost': {
     title: /<title>[^<]*Kabar Tekno[^<]*<\/title>/,
     markers: ['class="tpl tpl-magazine"', '.tpl-magazine{--color-primary:#0f62fe', '/media/kabar-tekno/logo.svg', '>Gadget</a>', 'Kabar Tekno'],
-    paths: [['/', 200], ['/review/ponsel-lipat-makin-murah', 200], ['/category/gadget', 200], ['/tag/android', 200], ['/search?q=ponsel', 200], ['/tidak/ada', 404]],
+    paths: [['/', 200, ['section section--hero', 'section section--latest-grid']], ['/review/ponsel-lipat-makin-murah', 200], ['/category/gadget', 200], ['/tag/android', 200], ['/search?q=ponsel', 200], ['/tidak/ada', 404]],
   },
   'kuliner.localhost': {
     title: /<title>[^<]*Dapur Nusantara[^<]*<\/title>/,
-    markers: ['class="tpl tpl-base"', '.tpl-base{--color-primary:#b3261e', '/media/dapur-nusantara/logo.svg', '>Resep</a>', 'Dapur Nusantara'],
-    paths: [['/', 200], ['/sumatera/rendang-padang-empuk', 200], ['/category/resep', 200], ['/p/kontak', 200], ['/search?q=rendang', 200], ['/tidak/ada', 404]],
+    markers: ['class="tpl tpl-news"', '.tpl-news{--color-primary:#b3261e', '/media/dapur-nusantara/logo.svg', '>Resep</a>', 'Dapur Nusantara'],
+    paths: [['/', 200, ['section section--headline-list']], ['/sumatera/rendang-padang-empuk', 200], ['/category/resep', 200], ['/p/kontak', 200], ['/search?q=rendang', 200], ['/tidak/ada', 404]],
   },
 }
 
@@ -42,7 +46,7 @@ function shuffle(items) {
 }
 
 const jobs = shuffle(Array.from({ length: rounds }, () =>
-  Object.entries(SITES).flatMap(([host, site]) => site.paths.map(([path, status]) => ({ host, path, status })))).flat())
+  Object.entries(SITES).flatMap(([host, site]) => site.paths.map(([path, status, extra = []]) => ({ host, path, status, extra })))).flat())
 
 const server = await startBuiltServer({ port, label: 'gate' })
 const failures = []
@@ -58,7 +62,7 @@ try {
       const problems = []
       if (status !== job.status) problems.push(`status ${status}, seharusnya ${job.status}`)
       if (!site.title.test(body)) problems.push('judul bukan milik site ini')
-      for (const marker of site.markers) if (!body.includes(marker)) problems.push(`tanpa penanda sendiri ${JSON.stringify(marker)}`)
+      for (const marker of [...site.markers, ...job.extra]) if (!body.includes(marker)) problems.push(`tanpa penanda sendiri ${JSON.stringify(marker)}`)
       for (const marker of foreignMarkers(job.host)) if (body.includes(marker)) problems.push(`memuat penanda site lain ${JSON.stringify(marker)}`)
       if (problems.length) failures.push(`${job.host}${job.path}: ${problems.join('; ')}`)
     }

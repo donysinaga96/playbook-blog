@@ -19,6 +19,7 @@
     "@framework/template-base": "workspace:*",
     "@framework/template-kit": "workspace:*",
     "@framework/template-magazine": "workspace:*",
+    "@framework/template-news": "workspace:*",
     "nuxt": "4.6.4",
     "vue": "^3.5.45",
     "vue-router": "^5.5.1"

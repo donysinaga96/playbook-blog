@@ -204,7 +204,22 @@ allowBuilds:
   "name": "@framework/template-news",
   "version": "0.0.0",
   "private": true,
-  "description": "Template kedua, pembuktian kontrak"
+  "description": "Template kedua: tampilan harian berita dari token, opsi, layout section, dan CSS di atas base",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
+  },
+  "dependencies": {
+    "@framework/template-base": "workspace:*",
+    "@framework/template-kit": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
 }
 ```
 
@@ -586,9 +601,12 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 
 ## Template dan theme
 
-- Setiap request halaman memuat baris aktif `site_themes`, lalu registry di
-  `apps/web/app/templates.ts` memilih template berdasarkan `template_key`. Template yang tidak
-  terdaftar (mis. `news` milik `dapur-nusantara`, baru ada di M3) jatuh ke `base`.
+- Setiap request halaman memuat baris aktif `site_themes`, lalu registry manifest di
+  `apps/web/server/utils/templates.ts` memilih template berdasarkan `template_key` dan
+  memvalidasi token, opsi, serta layout section (ADR-008). Template yang tidak terdaftar jatuh
+  ke `base`. Seed: kabar-tekno memakai `magazine`, dapur-nusantara memakai `news`.
+- Layout home diambil dari `site_themes.layouts.home`; section yang rusak dilewati, layout
+  kosong atau rusak memakai `defaultLayouts` template.
 - Token dan opsi divalidasi per key terhadap skema manifest; nilai yang salah memakai default.
 - Masalah theme (template tidak terdaftar, nilai tidak valid, key tidak dikenal) dicatat sekali
   per proses di log server: `[theme] site <kode>: ...`.
@@ -5136,6 +5154,7 @@ pnpm install
     "@framework/template-base": "workspace:*",
     "@framework/template-kit": "workspace:*",
     "@framework/template-magazine": "workspace:*",
+    "@framework/template-news": "workspace:*",
     "nuxt": "4.6.4",
     "vue": "^3.5.45",
     "vue-router": "^5.5.1"
@@ -6442,7 +6461,7 @@ export function defineManifest(input: ManifestInput): TemplateManifest {
   }
 
   if (parent && input.sections) fail('sections hanya didefinisikan template base; template turunan memakai section induknya (ADR-008)')
-  const sections = Object.freeze({ ...(input.sections ?? parent?.sections ?? {}) })
+  const sections = input.sections ? Object.freeze({ ...input.sections }) : (parent?.sections ?? Object.freeze({}))
 
   const defaultLayouts = {} as Record<LayoutPage, readonly LayoutItem[]>
   for (const page of LAYOUT_PAGES) {
@@ -9531,8 +9550,9 @@ describe('CSS template dibatasi kelas root', () => {
 import base from '@framework/template-base'
 import { createTemplateRegistry } from '@framework/template-kit'
 import magazine from '@framework/template-magazine'
+import news from '@framework/template-news'
 
-export const templateRegistry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+export const templateRegistry = createTemplateRegistry([base, magazine, news], { fallback: 'base' })
 ```
 
 26. Muat theme aktif di middleware. Hanya request halaman yang memuat theme; `/api/` dan `/media/` tidak membutuhkannya. Tambahkan juga `theme?: StoredTheme | null` ke augmentasi `RequestEventContext` di `shared/types/site-context.d.ts`. Versi akhir kedua file ada di bab berikutnya:
@@ -12580,7 +12600,7 @@ async function checkPages() {
 }
 ```
 
-3. Tulis test gate `apps/web/scripts/gate-parallel.mjs`:
+3. Tulis test gate `apps/web/scripts/gate-parallel.mjs` (file di bawah sudah versi bab "Membuat Template Kedua": kuliner memakai template news, dan halaman `/` punya penanda section):
    - Penanda setiap site diambil dari data seed: judul, kelas root template, aturan token CSS, logo, item menu, dan nama site.
    - Request ke beberapa jenis halaman di kedua domain diacak, lalu dikirim 32 sekaligus (default 240 request).
    - Setiap respons wajib memuat semua penanda site-nya sendiri dan tidak boleh memuat satu pun penanda site lain, termasuk di payload Nuxt.
@@ -12604,17 +12624,21 @@ const port = process.env.GATE_PORT ?? '3997'
 const rounds = Number(process.env.GATE_ROUNDS ?? '20')
 const concurrency = Number(process.env.GATE_CONCURRENCY ?? '32')
 
-/** Penanda per site, dari data seed (packages/db/seed). */
+/**
+ * Penanda per site, dari data seed (packages/db/seed). `paths`: [path,
+ * status, penanda tambahan khusus path itu], mis. section home dari
+ * site_themes.layouts (ADR-008).
+ */
 const SITES = {
   'tekno.localhost': {
     title: /<title>[^<]*Kabar Tekno[^<]*<\/title>/,
     markers: ['class="tpl tpl-magazine"', '.tpl-magazine{--color-primary:#0f62fe', '/media/kabar-tekno/logo.svg', '>Gadget</a>', 'Kabar Tekno'],
-    paths: [['/', 200], ['/review/ponsel-lipat-makin-murah', 200], ['/category/gadget', 200], ['/tag/android', 200], ['/search?q=ponsel', 200], ['/tidak/ada', 404]],
+    paths: [['/', 200, ['section section--hero', 'section section--latest-grid']], ['/review/ponsel-lipat-makin-murah', 200], ['/category/gadget', 200], ['/tag/android', 200], ['/search?q=ponsel', 200], ['/tidak/ada', 404]],
   },
   'kuliner.localhost': {
     title: /<title>[^<]*Dapur Nusantara[^<]*<\/title>/,
-    markers: ['class="tpl tpl-base"', '.tpl-base{--color-primary:#b3261e', '/media/dapur-nusantara/logo.svg', '>Resep</a>', 'Dapur Nusantara'],
-    paths: [['/', 200], ['/sumatera/rendang-padang-empuk', 200], ['/category/resep', 200], ['/p/kontak', 200], ['/search?q=rendang', 200], ['/tidak/ada', 404]],
+    markers: ['class="tpl tpl-news"', '.tpl-news{--color-primary:#b3261e', '/media/dapur-nusantara/logo.svg', '>Resep</a>', 'Dapur Nusantara'],
+    paths: [['/', 200, ['section section--headline-list']], ['/sumatera/rendang-padang-empuk', 200], ['/category/resep', 200], ['/p/kontak', 200], ['/search?q=rendang', 200], ['/tidak/ada', 404]],
   },
 }
 
@@ -12632,7 +12656,7 @@ function shuffle(items) {
 }
 
 const jobs = shuffle(Array.from({ length: rounds }, () =>
-  Object.entries(SITES).flatMap(([host, site]) => site.paths.map(([path, status]) => ({ host, path, status })))).flat())
+  Object.entries(SITES).flatMap(([host, site]) => site.paths.map(([path, status, extra = []]) => ({ host, path, status, extra })))).flat())
 
 const server = await startBuiltServer({ port, label: 'gate' })
 const failures = []
@@ -12648,7 +12672,7 @@ try {
       const problems = []
       if (status !== job.status) problems.push(`status ${status}, seharusnya ${job.status}`)
       if (!site.title.test(body)) problems.push('judul bukan milik site ini')
-      for (const marker of site.markers) if (!body.includes(marker)) problems.push(`tanpa penanda sendiri ${JSON.stringify(marker)}`)
+      for (const marker of [...site.markers, ...job.extra]) if (!body.includes(marker)) problems.push(`tanpa penanda sendiri ${JSON.stringify(marker)}`)
       for (const marker of foreignMarkers(job.host)) if (body.includes(marker)) problems.push(`memuat penanda site lain ${JSON.stringify(marker)}`)
       if (problems.length) failures.push(`${job.host}${job.path}: ${problems.join('; ')}`)
     }
@@ -13585,8 +13609,9 @@ git diff packages/core/src/views/__snapshots__/
 import baseManifest from '@framework/template-base/manifest'
 import { createTemplateRegistry, type ResolvedTheme, type StoredTheme } from '@framework/template-kit'
 import magazineManifest from '@framework/template-magazine/manifest'
+import newsManifest from '@framework/template-news/manifest'
 
-export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest], { fallback: 'base' })
+export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest, newsManifest], { fallback: 'base' })
 
 // Issue theme yang sama cukup dicatat sekali per proses, bukan setiap request.
 const loggedIssues = new Set<string>()
@@ -13746,3 +13771,415 @@ pnpm dev
 # http://kuliner.localhost:3000 -> section--headline-list (masih template base sampai template news ada)
 # Strip kategori tidak tampil di data seed: semua artikelnya sudah muncul di section sebelumnya.
 ```
+
+# Membuat Template Kedua
+
+1. Pahami tujuannya. Template kedua membuktikan kontrak template: site kuliner harus tampil jelas berbeda dari site teknologi tanpa satu pun komponen sendiri dan tanpa mengubah core. Yang boleh dipakai hanya token, opsi, layout section, dan CSS di bawah `.tpl-news`.
+
+2. Rancang tampilannya dulu, sebelum menulis CSS:
+   - Warna dan font sudah ditentukan token theme site (merah cabai, permukaan krem, Merriweather untuk judul, Source Sans 3 untuk isi), jadi pembeda harus datang dari struktur, bukan warna.
+   - Halaman depan dibuka dengan daftar judul (`headline-list`), bukan kartu besar bergambar seperti magazine. Judul pertama dibuat besar dengan serif, judul berikutnya dalam dua kolom bergaris vertikal. Hanya bagian ini yang dibuat mencolok; sisanya tenang.
+   - Kartu berupa media horizontal (gambar kiri, teks kanan) tanpa bayangan, dipisah garis tipis.
+   - Garis tebal warna primer di bawah menu dan di atas footer; judul section diberi garis tebal di atasnya.
+   - Hindari label huruf kapital dan pemisah `·`; label kategori cukup teks tebal berwarna primer.
+
+3. Buat paket `templates/news`. Seperti magazine, ada dua entry: `./manifest` (data saja, untuk server) dan entry utama (manifest + CSS):
+
+`templates/news/package.json`
+
+```json
+{
+  "name": "@framework/template-news",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Template kedua: tampilan harian berita dari token, opsi, layout section, dan CSS di atas base",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
+  },
+  "dependencies": {
+    "@framework/template-base": "workspace:*",
+    "@framework/template-kit": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.45"
+  },
+  "devDependencies": {
+    "vue": "^3.5.45"
+  }
+}
+```
+
+`templates/news/src/manifest.ts`
+
+```ts
+// Entry ./manifest template news: data dan skema saja, tanpa .vue/.css
+// (ADR-008). Komponen dan CSS ditambahkan di ./index.ts.
+//
+// News membuktikan kontrak template (ADR-005): tampil jelas berbeda dari
+// magazine hanya lewat token, opsi, layout section, dan CSS. Halaman depan
+// dibuka dengan daftar judul (headline-list), bukan kartu besar bergambar.
+import baseManifest from '@framework/template-base/manifest'
+import { defineManifest } from '@framework/template-kit'
+
+export default defineManifest({
+  key: 'news',
+  version: '1.0.0',
+  name: 'News',
+  extends: baseManifest,
+  tokens: {
+    defaults: {
+      color: { primary: '#b3261e', surface: '#fffbf5', text: '#1d1b16' },
+      font: { heading: 'Merriweather', body: 'Source Sans 3' },
+      radius: { card: '2px' },
+    },
+  },
+  options: {
+    defaults: { header: { style: 'left', showDate: true } },
+  },
+  defaultLayouts: {
+    home: [
+      { type: 'headline-list', props: { source: 'latest', limit: 7 } },
+      { type: 'latest-grid', props: { limit: 6 } },
+    ],
+  },
+})
+```
+
+`templates/news/src/index.ts`
+
+```ts
+// Template news: tampilan harian berita di atas komponen base, tanpa
+// override komponen (ADR-005). Manifest ada di ./manifest.ts (ADR-008).
+import base from '@framework/template-base'
+import { defineTemplate } from '@framework/template-kit'
+import manifest from './manifest'
+import './styles.css'
+
+export default defineTemplate({ manifest, extends: base })
+```
+
+4. Tulis CSS-nya. Setiap selector diawali `.tpl-news` (dijaga `tests/template-css.test.ts`). Kolom ganda daftar judul hanya di layar lebar; di ponsel semuanya satu kolom:
+
+`templates/news/src/styles.css`
+
+```css
+/*
+ * News: tampilan harian yang padat informasi. Kepala halaman rata kiri
+ * dengan garis tebal warna primer di bawah menu; halaman depan dibuka
+ * dengan judul utama besar ber-serif, judul lain dalam dua kolom
+ * bergaris; kartu berupa media horizontal (gambar kiri, teks kanan)
+ * tanpa bayangan. Semua di bawah .tpl-news agar tidak bocor ke site lain
+ * di server yang sama (ADR-005).
+ */
+
+.tpl-news {
+  --container: 70rem;
+  --rule: 3px solid var(--color-text);
+
+  font-size: 1.0625rem;
+}
+
+.tpl-news h1,
+.tpl-news h2,
+.tpl-news h3 {
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- Kepala halaman ------------------------------------------- */
+
+.tpl-news .site-header {
+  border-bottom: 0;
+}
+
+.tpl-news .site-header__inner {
+  align-items: flex-end;
+  padding-block: 1.5rem 1rem;
+}
+
+.tpl-news .site-header__logo {
+  height: 3rem;
+}
+
+.tpl-news .site-header__name {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.tpl-news .site-header__tagline {
+  align-self: flex-end;
+  padding-bottom: 0.25rem;
+  font-style: italic;
+}
+
+.tpl-news .site-header__date {
+  align-self: flex-end;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.tpl-news .site-header__nav {
+  border-top: 4px solid var(--color-primary);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl-news .menu-tree--root {
+  gap: 0 1.5rem;
+}
+
+.tpl-news .menu-tree__link {
+  padding-block: 0.75rem;
+  font-size: 0.9375rem;
+}
+
+.tpl-news .site-header .menu-tree--sub {
+  border-top: 3px solid var(--color-primary);
+}
+
+/* ---------- Judul section dan listing -------------------------------- */
+
+.tpl-news .section__head {
+  padding-top: 0.5rem;
+  border-top: var(--rule);
+}
+
+.tpl-news .section-title {
+  font-size: 1.125rem;
+}
+
+.tpl-news .section-title a:hover {
+  color: var(--color-primary);
+}
+
+.tpl-news .home__latest > .section-title {
+  padding-top: 0.5rem;
+  border-top: var(--rule);
+}
+
+.tpl-news .section__more {
+  font-weight: 600;
+}
+
+/* ---------- Daftar judul: judul utama + dua kolom -------------------- */
+
+.tpl-news .section--headline-list .section__head {
+  border-top-color: var(--color-primary);
+}
+
+.tpl-news .headline-list__item {
+  padding-block: 1rem;
+}
+
+.tpl-news .headline-list__title {
+  font-size: 1.25rem;
+  font-weight: 900;
+}
+
+.tpl-news .headline-list__item:first-child .headline-list__title {
+  font-size: clamp(1.75rem, 4.5vw, 2.75rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  max-width: 24ch;
+}
+
+@media (min-width: 48rem) {
+  .tpl-news .headline-list {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 2rem;
+  }
+
+  .tpl-news .headline-list__item:first-child {
+    grid-column: 1 / -1;
+    padding-bottom: 1.5rem;
+  }
+
+  /* Kolom kanan dipisah garis vertikal. */
+  .tpl-news .headline-list__item:nth-child(odd):not(:first-child) {
+    padding-left: 2rem;
+    border-left: 1px solid var(--c-border);
+  }
+}
+
+/* ---------- Kartu: media horizontal ---------------------------------- */
+
+.tpl-news .article-list {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  gap: 0 2rem;
+}
+
+.tpl-news .article-card {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  align-items: start;
+  gap: 1rem;
+  padding-block: 1rem;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl-news .article-card:not(:has(.article-card__media)) {
+  grid-template-columns: 1fr;
+}
+
+.tpl-news .article-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tpl-news .article-card__title {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.3;
+}
+
+.tpl-news .article-card__excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.tpl-news .article-card__meta {
+  font-size: 0.8125rem;
+}
+
+/* Kartu utama (hero, home tanpa section): gambar besar di kanan. */
+.tpl-news .article-card--lead {
+  grid-template-columns: 1fr;
+  padding-top: 0;
+}
+
+@media (min-width: 48rem) {
+  .tpl-news .article-card--lead {
+    grid-template-columns: 2fr 3fr;
+    gap: 2rem;
+  }
+
+  .tpl-news .article-card--lead .article-card__media {
+    order: 2;
+  }
+}
+
+.tpl-news .article-card--lead .article-card__title {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  line-height: 1.15;
+}
+
+/* ---------- Artikel ------------------------------------------------- */
+
+.tpl-news .article__header {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl-news .article__title {
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.1;
+}
+
+.tpl-news .article__excerpt {
+  font-family: var(--f-heading);
+  font-size: 1.1875rem;
+  line-height: 1.5;
+}
+
+.tpl-news .prose > p:first-of-type {
+  font-size: 1.1875rem;
+}
+
+.tpl-news .prose blockquote {
+  padding-left: 1rem;
+  border-left: 4px solid var(--color-primary);
+  font-family: var(--f-heading);
+  font-size: 1.25rem;
+}
+
+.tpl-news .listing__title {
+  padding-top: 0.5rem;
+  border-top: var(--rule);
+}
+
+/* Tag mengikuti sudut kartu, bukan pil bulat seperti base. */
+.tpl-news .article__tags a {
+  border-radius: var(--radius-card);
+}
+
+/* ---------- Kaki halaman -------------------------------------------- */
+
+.tpl-news .site-footer {
+  border-top: 4px solid var(--color-primary);
+}
+```
+
+5. Uji manifest news: semua view, layout, dan section dipakai bersama dari base, token dan layout bawaan berbeda, dan config theme site kuliner lolos tanpa issue. Test template hanya boleh meng-import template-kit dan base, jadi pembandingnya base, bukan magazine:
+
+`templates/news/src/manifest.test.ts`
+
+```ts
+import base from '@framework/template-base'
+import { createTemplateRegistry, VIEW_NAMES } from '@framework/template-kit'
+import { describe, expect, it } from 'vitest'
+import news from './index'
+import newsManifest from './manifest'
+
+describe('template news', () => {
+  it('manifest 1.0.0, semua view, layout, dan section dari base (tanpa override)', () => {
+    expect(news).toMatchObject({ key: 'news', version: '1.0.0', lineage: ['news', 'base'] })
+    for (const name of VIEW_NAMES) expect(news.views[name]).toBe(base.views[name])
+    expect(news.layout).toBe(base.layout)
+    expect(news.sections).toBe(base.sections)
+    expect(news.tokens).toBe(newsManifest.tokens)
+  })
+
+  it('token, opsi, dan layout home bawaan sendiri di atas base', () => {
+    expect(news.tokens.defaults).toEqual({
+      color: { primary: '#b3261e', surface: '#fffbf5', text: '#1d1b16' },
+      font: { heading: 'Merriweather', body: 'Source Sans 3' },
+      radius: { card: '2px' },
+    })
+    expect(news.options.defaults).toEqual({ header: { style: 'left', showDate: true } })
+    expect(news.defaultLayouts.home.map((s) => s.type)).toEqual(['headline-list', 'latest-grid'])
+    expect(news.defaultLayouts.home).not.toEqual(base.defaultLayouts.home)
+  })
+
+  it('config dari seed (dapur-nusantara) lolos tanpa issue', () => {
+    const registry = createTemplateRegistry([base, news], { fallback: 'base' })
+    const theme = registry.resolveTheme({
+      templateKey: 'news',
+      templateVersion: '1.0.0',
+      tokens: { color: { primary: '#b3261e', surface: '#fffbf5', text: '#1d1b16' }, font: { heading: 'Merriweather', body: 'Source Sans 3' }, radius: { card: '2px' } },
+      options: { header: { style: 'left', showDate: false } },
+      layouts: { home: [{ type: 'headline-list', props: { source: 'latest', limit: 5 } }, { type: 'category-strip', props: { categorySlug: 'resep', limit: 8 } }] },
+    })
+    expect(theme.rootClass).toBe('tpl-news')
+    expect(theme.css).toBe('.tpl-news{--color-primary:#b3261e;--color-surface:#fffbf5;--color-text:#1d1b16;--font-heading:"Merriweather";--font-body:"Source Sans 3";--radius-card:2px}')
+    expect(theme.layouts.home.map((s) => s.type)).toEqual(['headline-list', 'category-strip'])
+    expect(theme.issues).toEqual([])
+  })
+})
+```
+
+6. Daftarkan news di kedua registry (`server/utils/templates.ts` untuk manifest, `app/templates.ts` untuk definisi lengkap) dan tambahkan `"@framework/template-news": "workspace:*"` di `apps/web/package.json`, lalu jalankan `pnpm install`. Test `server/utils/templates.test.ts` gagal bila news hanya didaftarkan di salah satunya.
+
+7. Rapikan config theme site kuliner. Opsi yang tidak ada di skema template dicatat sebagai `key tidak dikenal` setiap server start. Karena template news baru dibuat sekarang, config itu cukup diperbaiki langsung (di seed dan di database dev), tanpa migrasi config. Untuk template yang sudah dipakai, perubahan seperti ini harus lewat `migrateConfig` (bab berikutnya).
+
+8. Perbarui penanda gate: site kuliner kini `class="tpl tpl-news"` dan `.tpl-news{--color-primary:...}`, dan halaman `/` setiap site wajib memuat section dari layout-nya (`section--hero` dan `section--latest-grid` untuk tekno, `section--headline-list` untuk kuliner).
+
+9. Jalankan pemeriksaan, lalu bandingkan kedua site di browser, di layar lebar dan di ponsel:
+
+```bash
+pnpm check
+pnpm build
+SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+# [smoke] tekno.localhost/ -> 200 class="tpl tpl-magazine"
+# [smoke] kuliner.localhost/ -> 200 class="tpl tpl-news"
+pnpm --filter @framework/web gate
+pnpm dev
+```
+
+10. Periksa gate milestone: news selesai tanpa komponen sendiri dan tanpa mengubah core. Perubahan core yang dibutuhkan section home sudah dicatat di ADR-008 pada bab sebelumnya.
+
