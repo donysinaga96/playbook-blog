@@ -104,6 +104,14 @@ describe('defineManifest', () => {
     expect(() => defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults: { font: { body: 'Comic Sans' } } } })).toThrow(/font.body/)
   })
 
+  it('migrateConfig: tidak diwariskan; versi mayor tanpa migrasi X.0.0 ditolak', () => {
+    const v1 = defineManifest({ key: 'mag', version: '1.1.0', name: 'Mag', extends: base, migrateConfig: { '1.1.0': (cfg) => cfg } })
+    expect(Object.keys(v1.migrateConfig)).toEqual(['1.1.0'])
+    expect(defineManifest({ key: 'child', version: '1.0.0', name: 'C', extends: v1 }).migrateConfig).toEqual({})
+    expect(() => defineManifest({ key: 'mag', version: '2.0.0', name: 'Mag', extends: base })).toThrow(/versi mayor 2 wajib punya migrateConfig "2.0.0"/)
+    expect(() => defineManifest({ key: 'mag', version: '1.0.0', name: 'Mag', extends: base, migrateConfig: { '1.1.0': (cfg) => cfg } })).toThrow(/lebih baru dari versi template/)
+  })
+
   it('menolak section di template turunan (komponen section hanya ada di base)', () => {
     expect(() => defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, sections })).toThrow(/sections hanya didefinisikan template base/)
   })

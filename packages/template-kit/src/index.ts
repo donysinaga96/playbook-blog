@@ -5,6 +5,7 @@
 // dependency zod sendiri, dan memakai versi Zod yang sama dengan validasinya.
 export { z } from 'zod'
 export * from './manifest'
+export * from './migrations'
 export { isPlainObject, mergeDeep } from './objects'
 export * from './sections'
 export * from './theme'

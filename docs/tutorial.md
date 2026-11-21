@@ -6359,10 +6359,11 @@ export function renderTokenCss(templateKey: string, tokens: TokenTree): string {
 // Semua dicek saat defineManifest/defineTemplate dipanggil, yaitu saat modul
 // di-import, jadi manifest yang salah langsung gagal di test dan build.
 //
-// Belum didukung (ditambahkan saat dibutuhkan): migrateConfig (M3),
-// override komponen (pengecualian, wajib ADR).
+// migrateConfig (lihat migrations.ts) milik template itu sendiri dan tidak
+// diwariskan. Belum didukung: override komponen (pengecualian, wajib ADR).
 import type { Component } from 'vue'
 import { z } from 'zod'
+import { migrationProblems, type ConfigMigration } from './migrations'
 import { isPlainObject, mergeDeep } from './objects'
 import { LAYOUT_PAGES, resolveLayout, type LayoutItem, type LayoutPage, type SectionDefinition } from './sections'
 import { TokenError, tokensToCssVars, type TokenTree } from './tokens'
@@ -6396,6 +6397,8 @@ export interface ManifestInput {
   sections?: Record<string, SectionDefinition>
   /** Susunan section bawaan per jenis halaman; dipakai bila layout site kosong atau rusak. */
   defaultLayouts?: Partial<Record<LayoutPage, LayoutItem[]>>
+  /** Migrasi config tersimpan, dengan kunci versi tujuan. Wajib berisi X.0.0 untuk setiap versi mayor X >= 2. */
+  migrateConfig?: Record<string, ConfigMigration>
 }
 
 export interface ConfigSpec {
@@ -6416,6 +6419,7 @@ export interface TemplateManifest {
   readonly adSlots: readonly string[]
   readonly sections: Readonly<Record<string, SectionDefinition>>
   readonly defaultLayouts: Readonly<Record<LayoutPage, readonly LayoutItem[]>>
+  readonly migrateConfig: Readonly<Record<string, ConfigMigration>>
 }
 
 export interface TemplateInput {
@@ -6472,6 +6476,10 @@ export function defineManifest(input: ManifestInput): TemplateManifest {
     defaultLayouts[page] = Object.freeze(items.map((item) => Object.freeze({ ...item })))
   }
 
+  const migrations = Object.freeze({ ...(input.migrateConfig ?? {}) })
+  const problems = migrationProblems(input.version, migrations)
+  if (problems.length > 0) fail(problems.join('; '))
+
   return Object.freeze({
     key: input.key,
     version: input.version,
@@ -6483,6 +6491,7 @@ export function defineManifest(input: ManifestInput): TemplateManifest {
     adSlots: Object.freeze([...(input.adSlots ?? parent?.adSlots ?? [])]),
     sections,
     defaultLayouts: Object.freeze(defaultLayouts),
+    migrateConfig: migrations,
   })
 }
 
@@ -6568,6 +6577,9 @@ export function mergeDeep(base: Record<string, unknown>, override: Record<string
 //  1. Baris aktif site_themes dicari template-nya di registry berdasarkan
 //     template_key. Tidak ditemukan -> template fallback (base), dicatat
 //     sebagai issue, bukan crash.
+//  1b. Config yang disimpan untuk versi lebih lama dimigrasi dulu
+//     (migrateConfig, migrations.ts). Migrasi gagal atau versi tersimpan
+//     lebih baru -> config diabaikan (default), dicatat.
 //  2. tokens dan options divalidasi skema manifest PER KEY: nilai yang tidak
 //     valid jatuh ke default, key yang tidak dikenal dibuang. Satu warna
 //     yang salah tidak merusak seluruh theme.
@@ -6583,6 +6595,7 @@ export function mergeDeep(base: Record<string, unknown>, override: Record<string
 // server ke browser; komponen diambil lagi dari registry lewat templateKey.
 import { z } from 'zod'
 import type { ConfigSchema, ConfigSpec, TemplateManifest } from './manifest'
+import { migrateConfig } from './migrations'
 import { isPlainObject } from './objects'
 import { LAYOUT_PAGES, resolveLayout, type ResolvedLayouts } from './sections'
 import { renderTokenCss, templateRootClass, type TokenTree } from './tokens'
@@ -6697,23 +6710,35 @@ export function createTemplateRegistry<T extends TemplateManifest>(templates: T[
     resolveTheme(stored) {
       const issues: string[] = []
       let template = fallback
+      // Config mentah yang divalidasi; null = pakai default template.
+      let config: { tokens: unknown; options: unknown; layouts: unknown } | null = stored
+        ? { tokens: stored.tokens, options: stored.options, layouts: stored.layouts }
+        : null
       if (stored) {
         const found = byKey.get(stored.templateKey)
         if (found) {
           template = found
-          if (major(stored.templateVersion) !== major(found.version)) {
-            issues.push(`config disimpan untuk ${found.key}@${stored.templateVersion}, template terpasang ${found.version}; migrateConfig belum didukung`)
+          const migrated = migrateConfig(
+            { tokens: stored.tokens, options: stored.options, layouts: stored.layouts, version: stored.templateVersion },
+            found.version,
+            found.migrateConfig,
+          )
+          if (migrated.ok) {
+            config = migrated.config
+          } else {
+            issues.push(`${found.key}: ${migrated.reason}; memakai default`)
+            config = null
           }
         } else {
           issues.push(`template "${stored.templateKey}" tidak terdaftar, memakai ${fallback.key}`)
         }
       }
 
-      const tokens = resolveConfig(template.tokens, stored?.tokens, 'tokens')
-      const opts = resolveConfig(template.options, stored?.options, 'options')
+      const tokens = resolveConfig(template.tokens, config?.tokens, 'tokens')
+      const opts = resolveConfig(template.options, config?.options, 'options')
       issues.push(...tokens.issues, ...opts.issues)
 
-      const storedLayouts = stored?.layouts
+      const storedLayouts = config?.layouts
       if (storedLayouts !== undefined && storedLayouts !== null && !isPlainObject(storedLayouts)) {
         issues.push('layouts: bukan object, memakai default')
       }
@@ -6752,10 +6777,6 @@ export function createTemplateRegistry<T extends TemplateManifest>(templates: T[
     },
   }
 }
-
-function major(version: string): string {
-  return version.split('.')[0] ?? version
-}
 ```
 
 6. Ekspor semuanya dari `index.ts`. `z` diekspor ulang agar template menulis skema tanpa dependency Zod sendiri:
@@ -6770,6 +6791,7 @@ function major(version: string): string {
 // dependency zod sendiri, dan memakai versi Zod yang sama dengan validasinya.
 export { z } from 'zod'
 export * from './manifest'
+export * from './migrations'
 export { isPlainObject, mergeDeep } from './objects'
 export * from './sections'
 export * from './theme'
@@ -6965,6 +6987,14 @@ describe('defineManifest', () => {
     expect(() => defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults: { font: { body: 'Comic Sans' } } } })).toThrow(/font.body/)
   })
 
+  it('migrateConfig: tidak diwariskan; versi mayor tanpa migrasi X.0.0 ditolak', () => {
+    const v1 = defineManifest({ key: 'mag', version: '1.1.0', name: 'Mag', extends: base, migrateConfig: { '1.1.0': (cfg) => cfg } })
+    expect(Object.keys(v1.migrateConfig)).toEqual(['1.1.0'])
+    expect(defineManifest({ key: 'child', version: '1.0.0', name: 'C', extends: v1 }).migrateConfig).toEqual({})
+    expect(() => defineManifest({ key: 'mag', version: '2.0.0', name: 'Mag', extends: base })).toThrow(/versi mayor 2 wajib punya migrateConfig "2.0.0"/)
+    expect(() => defineManifest({ key: 'mag', version: '1.0.0', name: 'Mag', extends: base, migrateConfig: { '1.1.0': (cfg) => cfg } })).toThrow(/lebih baru dari versi template/)
+  })
+
   it('menolak section di template turunan (komponen section hanya ada di base)', () => {
     expect(() => defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, sections })).toThrow(/sections hanya didefinisikan template base/)
   })
@@ -7085,6 +7115,15 @@ describe('createTemplateRegistry', () => {
     extends: base,
     tokens: { defaults: { color: { primary: '#0f62fe' } } },
     defaultLayouts: { home: [{ type: 'grid', props: { limit: 3 } }] },
+    migrateConfig: {
+      // 1.2.0: color.accent diganti nama menjadi color.primary.
+      '1.2.0': (cfg) => {
+        const tokens = cfg.tokens as { color?: Record<string, unknown> }
+        if (!tokens.color || !('accent' in tokens.color)) return cfg
+        const { accent, ...color } = tokens.color
+        return { ...cfg, tokens: { ...tokens, color: { ...color, primary: accent } } }
+      },
+    },
   })
   const grid = (limit: number) => ({ type: 'grid', props: { limit }, articles: { source: 'latest', limit } })
   const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
@@ -7113,10 +7152,16 @@ describe('createTemplateRegistry', () => {
     expect(registry.resolveTheme(null)).toMatchObject({ templateKey: 'base', tokens: spec.defaults, issues: [] })
   })
 
-  it('beda versi mayor dicatat (migrateConfig belum ada)', () => {
-    expect(registry.resolveTheme({ templateKey: 'magazine', templateVersion: '0.9.0', tokens: {}, options: {} }).issues).toEqual([
-      'config disimpan untuk magazine@0.9.0, template terpasang 1.2.0; migrateConfig belum didukung',
-    ])
+  it('config versi lama dimigrasi sebelum validasi (migrateConfig magazine 1.2.0)', () => {
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.0.0', tokens: { color: { accent: '#ff0000' } }, options: {} })
+    expect(theme.tokens['color']).toEqual({ primary: '#ff0000', surface: '#ffffff' })
+    expect(theme.issues).toEqual([])
+  })
+
+  it('versi tersimpan lebih baru dari terpasang -> default semua, dicatat', () => {
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '2.0.0', tokens: { radius: { card: '8px' } }, options: { showDate: true }, layouts: { home: [{ type: 'grid', props: { limit: 1 } }] } })
+    expect(theme).toMatchObject({ templateKey: 'magazine', tokens: magazine.tokens.defaults, options: { showDate: false }, layouts: { home: [grid(3)] } })
+    expect(theme.issues).toEqual(['magazine: config disimpan untuk versi 2.0.0, lebih baru dari versi terpasang 1.2.0; memakai default'])
   })
 
   it('hasil bisa dikirim sebagai JSON tanpa kehilangan data', () => {
@@ -8896,7 +8941,7 @@ defineProps<{ vm: NotFoundView }>()
 }
 ```
 
-18. Buat template magazine. Di versi akhir (bab "Menyusun Halaman Depan dari Section") manifest magazine pindah ke `src/manifest.ts`, dan `index.ts` hanya menambahkan CSS. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
+18. Buat template magazine. Di versi akhir (bab "Menyusun Halaman Depan dari Section") manifest magazine pindah ke `src/manifest.ts`, dan `index.ts` hanya menambahkan CSS. Test magazine di bab ini sudah versi 1.1.0 dari bab "Memigrasi Config Theme Antar-Versi". Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
 
 `templates/magazine/src/index.ts`
 
@@ -9444,8 +9489,8 @@ import { describe, expect, it } from 'vitest'
 import magazine from './index'
 
 describe('template magazine', () => {
-  it('manifest 1.0.0, mewarisi semua view dan layout dari base (tanpa override)', () => {
-    expect(magazine).toMatchObject({ key: 'magazine', version: '1.0.0', lineage: ['magazine', 'base'] })
+  it('mewarisi semua view dan layout dari base (tanpa override)', () => {
+    expect(magazine).toMatchObject({ key: 'magazine', lineage: ['magazine', 'base'] })
     for (const name of VIEW_NAMES) expect(magazine.views[name]).toBe(base.views[name])
     expect(magazine.layout).toBe(base.layout)
   })
@@ -9460,17 +9505,31 @@ describe('template magazine', () => {
     expect(magazine.options.defaults).toEqual({ header: { style: 'centered', showDate: true } })
   })
 
-  it('config dari seed (kabar-tekno) lolos tanpa issue', () => {
+  it('1.1.0: slot iklan di manifest, bukan di options', () => {
+    expect(magazine.version).toBe('1.1.0')
+    expect(magazine.adSlots).toEqual(['header_banner'])
+    expect(magazine.options.schema.shape).not.toHaveProperty('adSlots')
+  })
+
+  it('config 1.0.0 dari seed (kabar-tekno) dimigrasi: options.adSlots dibuang, tanpa issue', () => {
     const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+    const options = { header: { style: 'centered', showDate: true }, adSlots: { header_banner: null } }
     const theme = registry.resolveTheme({
       templateKey: 'magazine',
       templateVersion: '1.0.0',
       tokens: { color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' }, font: { heading: 'Inter', body: 'Inter' }, radius: { card: '8px' } },
-      options: { header: { style: 'centered', showDate: true }, adSlots: { header_banner: null } },
+      options,
     })
-    expect(theme.rootClass).toBe('tpl-magazine')
+    expect(theme).toMatchObject({ templateKey: 'magazine', templateVersion: '1.1.0', rootClass: 'tpl-magazine', options: { header: { style: 'centered', showDate: true } } })
     expect(theme.css).toBe('.tpl-magazine{--color-primary:#0f62fe;--color-surface:#ffffff;--color-text:#161616;--font-heading:"Inter";--font-body:"Inter";--radius-card:8px}')
-    // adSlots ada di seed tetapi belum menjadi opsi template: dibuang dan dicatat.
+    expect(theme.issues).toEqual([])
+    // Config tersimpan tidak diubah (baris database tidak ditulis ulang).
+    expect(options.adSlots).toEqual({ header_banner: null })
+  })
+
+  it('config 1.1.0 yang masih membawa adSlots tetap dicatat (migrasi hanya untuk versi lama)', () => {
+    const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.1.0', tokens: {}, options: { adSlots: {} } })
     expect(theme.issues).toEqual(['options.adSlots: key tidak dikenal, diabaikan'])
   })
 })
@@ -12919,6 +12978,19 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
    renderer (`templateKey`, `templateVersion`, `rootClass`, `tokens`, `options`, `css`);
    `issues` dan `layouts` tetap di server.
 
+8. **migrateConfig.** Manifest boleh membawa `migrateConfig: { '<versi tujuan>': fn }`.
+   Kunci adalah versi TUJUAN. Config yang disimpan untuk versi S, dengan template terpasang
+   versi T, menjalankan semua migrasi dengan kunci K, S < K ≤ T, urut naik, terhadap salinan
+   `{ tokens, options, layouts }` dan sebelum validasi. Dengan begitu versi tersimpan tanpa
+   kunci sendiri (mis. 1.0.3) tetap tertangani; contoh di guide (`'1.0.0': (cfg) => cfg`) tidak
+   menjelaskan arti kuncinya. Versi mayor X ≥ 2 wajib punya kunci `X.0.0` (dicek
+   `defineManifest`). Versi tersimpan lebih baru dari terpasang, versi tersimpan bukan semver,
+   atau migrasi yang gagal: config diabaikan (default), dicatat. Migrasi tidak diwariskan ke
+   template turunan. Baris `site_themes` tidak ditulis ulang saat render; config ditulis dalam
+   versi terpasang saat disimpan dari admin (M4). Contoh pertama: magazine 1.1.0 memindahkan
+   slot iklan dari `options.adSlots` ke `adSlots` di manifest, dan migrasi `1.1.0` membuang
+   `options.adSlots` dari config lama.
+
 ## Alternatif yang ditolak
 
 - **Validasi layout di core.** Core jadi mengenal daftar section dan skema props-nya,
@@ -12927,6 +12999,8 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
   melanggar keputusan "komponen sama, tampilan berbeda".
 - **Theme tetap diselesaikan di plugin Vue, data section diambil lewat request kedua.**
   Menambah satu putaran per halaman dan memecah view model menjadi dua sumber.
+- **Kunci migrateConfig = versi asal** (`'1.0.0': fn` berarti "dari 1.0.0"). Config yang
+  disimpan untuk versi patch tanpa kunci sendiri tidak akan pernah dimigrasi.
 - **Satu entry dengan `import()` dinamis untuk CSS.** Tetap ditolak Nitro saat bundling, dan
   aturan "manifest bebas Vue/CSS" tidak bisa diuji.
 
@@ -13547,19 +13621,24 @@ export const sectionComponents: Readonly<Record<BaseSectionType, Component>> = O
 
 11. Di `HomeView.vue`, bila `vm.sections` tidak kosong, render setiap section lewat `sectionComponents`, lalu pagination daftar terbaru. Tipe tanpa komponen dilewati. Bila kosong, tampilkan home lama (`featured` + `latest`). Gaya netral section (`.section`, `.section__head`, `.headline-list`) ada di `base.css`. Keduanya ditampilkan di bab "Membangun Sistem Template".
 
-12. Pindahkan manifest magazine ke `src/manifest.ts` dan tambahkan `defaultLayouts`. `index.ts` magazine tinggal menggabungkan manifest, induk, dan CSS:
+12. Pindahkan manifest magazine ke `src/manifest.ts` dan tambahkan `defaultLayouts`. `index.ts` magazine tinggal menggabungkan manifest, induk, dan CSS (file di bawah sudah versi 1.1.0 dari bab "Memigrasi Config Theme Antar-Versi"):
 
 `templates/magazine/src/manifest.ts`
 
 ```ts
 // Entry ./manifest template magazine: data dan skema saja, tanpa .vue/.css
 // (ADR-008). Komponen dan CSS ditambahkan di ./index.ts.
+//
+// Riwayat versi:
+//   1.0.0  rilis pertama
+//   1.1.0  slot iklan dideklarasikan di manifest (adSlots), bukan di
+//          options; migrasi membuang options.adSlots dari config lama
 import baseManifest from '@framework/template-base/manifest'
-import { defineManifest } from '@framework/template-kit'
+import { defineManifest, isPlainObject } from '@framework/template-kit'
 
 export default defineManifest({
   key: 'magazine',
-  version: '1.0.0',
+  version: '1.1.0',
   name: 'Magazine',
   extends: baseManifest,
   tokens: {
@@ -13572,11 +13651,23 @@ export default defineManifest({
   options: {
     defaults: { header: { style: 'centered', showDate: true } },
   },
+  adSlots: ['header_banner'],
   defaultLayouts: {
     home: [
       { type: 'hero', props: { source: 'featured', limit: 1 } },
       { type: 'latest-grid', props: { limit: 6 } },
     ],
+  },
+  migrateConfig: {
+    // 1.0.0 menyimpan slot iklan di options.adSlots. Sejak 1.1.0 slot
+    // dideklarasikan manifest; isi slot (kode iklan) diatur fitur iklan
+    // nanti (backlog), jadi nilai lama dibuang.
+    '1.1.0': (config) => {
+      if (!isPlainObject(config.options) || !('adSlots' in config.options)) return config
+      const options = { ...config.options }
+      delete options['adSlots']
+      return { ...config, options }
+    },
   },
 })
 ```
@@ -14182,4 +14273,330 @@ pnpm dev
 ```
 
 10. Periksa gate milestone: news selesai tanpa komponen sendiri dan tanpa mengubah core. Perubahan core yang dibutuhkan section home sudah dicatat di ADR-008 pada bab sebelumnya.
+
+# Memigrasi Config Theme Antar-Versi
+
+1. Pahami masalahnya. Setiap site menyimpan config theme (`tokens`, `options`, `layouts`) bersama versi template saat config itu disimpan (`site_themes.template_version`). Saat template naik versi dan bentuk config-nya berubah, config lama harus diubah ke bentuk baru sebelum divalidasi. Tanpa itu, nilai lama dibuang sebagai "key tidak dikenal" di setiap start, atau lebih buruk lagi, dipakai dengan arti yang salah.
+
+2. Contoh nyatanya: config magazine 1.0.0 menyimpan slot iklan di `options.adSlots`, padahal slot iklan seharusnya dideklarasikan manifest, bukan diatur per site. Log server mencatat `options.adSlots: key tidak dikenal` setiap start. Magazine 1.1.0 memindahkan deklarasi slot ke `adSlots` di manifest dan membawa migrasi yang membuang `options.adSlots` dari config lama.
+
+3. Tentukan arti kunci migrasi. Contoh di guide (`'1.0.0': (cfg) => cfg`) tidak menjelaskan apakah kuncinya versi asal atau versi tujuan. Pilih versi TUJUAN: config untuk versi S dengan template terpasang T menjalankan semua migrasi berkunci K, S < K ≤ T, urut naik. Dengan kunci versi asal, config yang disimpan untuk versi patch tanpa kunci sendiri (mis. 1.0.3) tidak akan pernah dimigrasi. Keputusan ini dicatat di ADR-008 butir 8.
+
+4. Tulis `packages/template-kit/src/migrations.ts`:
+   - `compareVersions` membandingkan semver per angka (1.10.0 lebih baru dari 1.9.0, yang salah bila dibandingkan sebagai teks).
+   - `migrateConfig` menjalankan rantai migrasi terhadap salinan config (`structuredClone`), jadi migrasi boleh mengubah argumennya tanpa merusak data asli.
+   - Versi tersimpan lebih baru dari terpasang (mis. setelah rollback deploy), versi tersimpan bukan semver, atau migrasi yang melempar error: hasilnya gagal dengan alasan yang jelas.
+   - `migrationProblems` memeriksa manifest: kunci harus semver dan tidak lebih baru dari versi template, dan setiap versi mayor X ≥ 2 wajib punya migrasi `X.0.0` (aturan ADR-005).
+
+`packages/template-kit/src/migrations.ts`
+
+```ts
+// migrateConfig (ADR-005, ADR-008): mengubah config theme yang disimpan untuk
+// versi template lama menjadi bentuk versi terpasang, sebelum divalidasi.
+//
+//   migrateConfig: {
+//     '1.1.0': (cfg) => ({ ...cfg, options: withoutKey(cfg.options, 'adSlots') }),
+//   }
+//
+// Kunci = versi TUJUAN migrasi. Config tersimpan untuk versi S dengan
+// template terpasang versi T menjalankan semua migrasi dengan kunci K,
+// S < K <= T, urut naik. Jadi versi tersimpan yang tidak punya kunci
+// sendiri (mis. 1.0.3) tetap tertangani.
+//
+// Aturan:
+//  - Versi mayor wajib punya migrasi ke X.0.0 (dicek defineManifest).
+//  - Migrasi menerima salinan config, jadi boleh mengubah argumennya.
+//  - Versi tersimpan lebih baru dari terpasang, versi tersimpan bukan
+//    semver, atau migrasi yang melempar error -> config diabaikan (default),
+//    dicatat sebagai issue. Theme tetap tampil.
+//  - Migrasi milik template itu sendiri, tidak diwariskan ke turunan.
+//  - Baris database tidak ditulis ulang di sini; config ditulis dalam versi
+//    terpasang saat disimpan dari admin (M4).
+
+/** Config theme seperti disimpan di site_themes (JSON mentah). */
+export interface StoredConfig {
+  tokens: unknown
+  options: unknown
+  layouts: unknown
+}
+
+export type ConfigMigration = (config: StoredConfig) => StoredConfig
+
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+
+type Version = [number, number, number]
+
+export function parseVersion(version: string): Version | null {
+  const m = SEMVER.exec(version)
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+
+/** <0 bila a < b, 0 bila sama, >0 bila a > b. Keduanya harus semver valid. */
+export function compareVersions(a: string, b: string): number {
+  const va = parseVersion(a)
+  const vb = parseVersion(b)
+  if (!va || !vb) throw new Error(`bukan semver: ${va ? b : a}`)
+  for (let i = 0; i < 3; i++) {
+    const diff = (va[i] as number) - (vb[i] as number)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+/** Masalah pada migrateConfig sebuah manifest; kosong bila benar. */
+export function migrationProblems(version: string, migrations: Readonly<Record<string, ConfigMigration>>): string[] {
+  const problems: string[] = []
+  for (const [key, fn] of Object.entries(migrations)) {
+    if (!parseVersion(key)) problems.push(`migrateConfig "${key}" bukan semver`)
+    else if (compareVersions(key, version) > 0) problems.push(`migrateConfig "${key}" lebih baru dari versi template ${version}`)
+    if (typeof fn !== 'function') problems.push(`migrateConfig "${key}" bukan fungsi`)
+  }
+  const current = parseVersion(version)
+  if (current) {
+    for (let major = 2; major <= current[0]; major++) {
+      if (!Object.hasOwn(migrations, `${major}.0.0`)) problems.push(`versi mayor ${major} wajib punya migrateConfig "${major}.0.0"`)
+    }
+  }
+  return problems
+}
+
+export type MigrationResult =
+  | { ok: true; config: StoredConfig; applied: string[] }
+  | { ok: false; reason: string }
+
+/** Jalankan rantai migrasi dari versi tersimpan ke versi terpasang. */
+export function migrateConfig(
+  stored: StoredConfig & { version: string },
+  installed: string,
+  migrations: Readonly<Record<string, ConfigMigration>>,
+): MigrationResult {
+  if (!parseVersion(stored.version)) return { ok: false, reason: `versi tersimpan "${stored.version}" bukan semver` }
+  const order = compareVersions(stored.version, installed)
+  if (order > 0) return { ok: false, reason: `config disimpan untuk versi ${stored.version}, lebih baru dari versi terpasang ${installed}` }
+
+  const steps = Object.keys(migrations)
+    .filter((key) => compareVersions(key, stored.version) > 0 && compareVersions(key, installed) <= 0)
+    .sort(compareVersions)
+
+  let config: StoredConfig = structuredClone({ tokens: stored.tokens, options: stored.options, layouts: stored.layouts })
+  for (const step of steps) {
+    try {
+      const next = (migrations[step] as ConfigMigration)(config)
+      if (typeof next !== 'object' || next === null) throw new Error('hasil bukan object { tokens, options, layouts }')
+      config = next
+    } catch (error) {
+      return { ok: false, reason: `migrateConfig ${step} gagal: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
+  return { ok: true, config, applied: steps }
+}
+```
+
+5. Sambungkan ke manifest dan registry (keduanya ditampilkan di bab "Membangun Sistem Template"):
+   - `defineManifest` menerima `migrateConfig`, memeriksanya dengan `migrationProblems`, dan menyimpannya di manifest. Migrasi tidak diwariskan: migrasi magazine tidak berlaku untuk template yang memperluas magazine.
+   - `resolveTheme` menjalankan migrasi sebelum validasi token, opsi, dan layout. Bila gagal, config diabaikan (default template) dan alasannya dicatat; halaman tetap tampil.
+   - Baris database tidak ditulis ulang saat render. Config akan ditulis dalam versi terpasang saat disimpan dari admin.
+
+6. Uji rantai migrasi:
+
+`packages/template-kit/src/migrations.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { compareVersions, migrateConfig, migrationProblems, type ConfigMigration, type StoredConfig } from './migrations'
+
+const stored = (version: string, options: unknown = {}): StoredConfig & { version: string } => ({ version, tokens: {}, options, layouts: {} })
+/** Migrasi yang mencatat dirinya di options.steps. */
+const mark = (step: string): ConfigMigration => (cfg) => {
+  const options = cfg.options as { steps?: string[] }
+  return { ...cfg, options: { ...options, steps: [...(options.steps ?? []), step] } }
+}
+
+describe('compareVersions', () => {
+  it.each([
+    ['1.0.0', '1.0.0', 0],
+    ['1.0.9', '1.1.0', -1],
+    ['1.10.0', '1.9.0', 1],
+    ['2.0.0', '10.0.0', -1],
+  ])('%s vs %s', (a, b, sign) => {
+    expect(Math.sign(compareVersions(a, b))).toBe(sign)
+  })
+})
+
+describe('migrateConfig', () => {
+  const migrations = { '2.0.0': mark('2.0.0'), '1.1.0': mark('1.1.0'), '1.2.0': mark('1.2.0') }
+
+  it('menjalankan migrasi di antara versi tersimpan dan terpasang, urut naik', () => {
+    const result = migrateConfig(stored('1.0.0'), '2.0.0', migrations)
+    expect(result).toMatchObject({ ok: true, applied: ['1.1.0', '1.2.0', '2.0.0'], config: { options: { steps: ['1.1.0', '1.2.0', '2.0.0'] } } })
+  })
+
+  it('versi tersimpan tanpa kunci sendiri (patch) tetap tertangani', () => {
+    expect(migrateConfig(stored('1.1.3'), '1.2.0', migrations)).toMatchObject({ ok: true, applied: ['1.2.0'] })
+  })
+
+  it('versi sama -> tanpa migrasi, config apa adanya', () => {
+    expect(migrateConfig(stored('2.0.0', { a: 1 }), '2.0.0', migrations)).toEqual({ ok: true, applied: [], config: { tokens: {}, options: { a: 1 }, layouts: {} } })
+  })
+
+  it('config asli tidak diubah walau migrasi mengubah argumennya', () => {
+    const input = stored('1.0.0', { adSlots: { x: 1 } })
+    const mutate: ConfigMigration = (cfg) => {
+      delete (cfg.options as Record<string, unknown>)['adSlots']
+      return cfg
+    }
+    expect(migrateConfig(input, '1.1.0', { '1.1.0': mutate })).toMatchObject({ ok: true, config: { options: {} } })
+    expect(input.options).toEqual({ adSlots: { x: 1 } })
+  })
+
+  it.each([
+    ['versi tersimpan lebih baru', stored('3.0.0'), /lebih baru dari versi terpasang 2\.0\.0/],
+    ['versi tersimpan bukan semver', stored('1.0'), /bukan semver/],
+  ])('gagal: %s', (_label, input, reason) => {
+    const result = migrateConfig(input, '2.0.0', migrations)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toMatch(reason)
+  })
+
+  it('migrasi yang melempar error atau mengembalikan bukan object -> gagal dengan nama langkahnya', () => {
+    const boom: ConfigMigration = () => {
+      throw new Error('rusak')
+    }
+    expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': boom })).toEqual({ ok: false, reason: 'migrateConfig 1.1.0 gagal: rusak' })
+    expect(migrateConfig(stored('1.0.0'), '1.1.0', { '1.1.0': () => null as unknown as StoredConfig })).toMatchObject({ ok: false, reason: expect.stringMatching(/1\.1\.0 gagal: hasil bukan object/) })
+  })
+})
+
+describe('migrationProblems', () => {
+  it('versi mayor wajib punya migrasi ke X.0.0', () => {
+    expect(migrationProblems('1.4.0', {})).toEqual([])
+    expect(migrationProblems('3.1.0', { '2.0.0': mark('2') })).toEqual(['versi mayor 3 wajib punya migrateConfig "3.0.0"'])
+  })
+
+  it('kunci harus semver dan tidak lebih baru dari versi template', () => {
+    expect(migrationProblems('1.1.0', { 'v1.1': mark('x'), '1.2.0': mark('y') })).toEqual([
+      'migrateConfig "v1.1" bukan semver',
+      'migrateConfig "1.2.0" lebih baru dari versi template 1.1.0',
+    ])
+  })
+})
+```
+
+7. Naikkan magazine ke 1.1.0. Slot iklan pindah ke `adSlots` manifest, dan migrasi `1.1.0` membuang `options.adSlots` hanya bila ada:
+
+`templates/magazine/src/manifest.ts`
+
+```ts
+// Entry ./manifest template magazine: data dan skema saja, tanpa .vue/.css
+// (ADR-008). Komponen dan CSS ditambahkan di ./index.ts.
+//
+// Riwayat versi:
+//   1.0.0  rilis pertama
+//   1.1.0  slot iklan dideklarasikan di manifest (adSlots), bukan di
+//          options; migrasi membuang options.adSlots dari config lama
+import baseManifest from '@framework/template-base/manifest'
+import { defineManifest, isPlainObject } from '@framework/template-kit'
+
+export default defineManifest({
+  key: 'magazine',
+  version: '1.1.0',
+  name: 'Magazine',
+  extends: baseManifest,
+  tokens: {
+    defaults: {
+      color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' },
+      font: { heading: 'Inter', body: 'Inter' },
+      radius: { card: '8px' },
+    },
+  },
+  options: {
+    defaults: { header: { style: 'centered', showDate: true } },
+  },
+  adSlots: ['header_banner'],
+  defaultLayouts: {
+    home: [
+      { type: 'hero', props: { source: 'featured', limit: 1 } },
+      { type: 'latest-grid', props: { limit: 6 } },
+    ],
+  },
+  migrateConfig: {
+    // 1.0.0 menyimpan slot iklan di options.adSlots. Sejak 1.1.0 slot
+    // dideklarasikan manifest; isi slot (kode iklan) diatur fitur iklan
+    // nanti (backlog), jadi nilai lama dibuang.
+    '1.1.0': (config) => {
+      if (!isPlainObject(config.options) || !('adSlots' in config.options)) return config
+      const options = { ...config.options }
+      delete options['adSlots']
+      return { ...config, options }
+    },
+  },
+})
+```
+
+8. Uji magazine: config 1.0.0 dari seed dimigrasi tanpa issue, config tersimpan tidak berubah, dan config yang sudah 1.1.0 tetapi masih membawa `adSlots` tetap dicatat (migrasi hanya untuk versi lama):
+
+`templates/magazine/src/manifest.test.ts`
+
+```ts
+import base from '@framework/template-base'
+import { createTemplateRegistry, VIEW_NAMES } from '@framework/template-kit'
+import { describe, expect, it } from 'vitest'
+import magazine from './index'
+
+describe('template magazine', () => {
+  it('mewarisi semua view dan layout dari base (tanpa override)', () => {
+    expect(magazine).toMatchObject({ key: 'magazine', lineage: ['magazine', 'base'] })
+    for (const name of VIEW_NAMES) expect(magazine.views[name]).toBe(base.views[name])
+    expect(magazine.layout).toBe(base.layout)
+  })
+
+  it('token dan opsi sendiri di atas skema base', () => {
+    expect(magazine.tokens.schema).toBe(base.tokens.schema)
+    expect(magazine.tokens.defaults).toEqual({
+      color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' },
+      font: { heading: 'Inter', body: 'Inter' },
+      radius: { card: '8px' },
+    })
+    expect(magazine.options.defaults).toEqual({ header: { style: 'centered', showDate: true } })
+  })
+
+  it('1.1.0: slot iklan di manifest, bukan di options', () => {
+    expect(magazine.version).toBe('1.1.0')
+    expect(magazine.adSlots).toEqual(['header_banner'])
+    expect(magazine.options.schema.shape).not.toHaveProperty('adSlots')
+  })
+
+  it('config 1.0.0 dari seed (kabar-tekno) dimigrasi: options.adSlots dibuang, tanpa issue', () => {
+    const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+    const options = { header: { style: 'centered', showDate: true }, adSlots: { header_banner: null } }
+    const theme = registry.resolveTheme({
+      templateKey: 'magazine',
+      templateVersion: '1.0.0',
+      tokens: { color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' }, font: { heading: 'Inter', body: 'Inter' }, radius: { card: '8px' } },
+      options,
+    })
+    expect(theme).toMatchObject({ templateKey: 'magazine', templateVersion: '1.1.0', rootClass: 'tpl-magazine', options: { header: { style: 'centered', showDate: true } } })
+    expect(theme.css).toBe('.tpl-magazine{--color-primary:#0f62fe;--color-surface:#ffffff;--color-text:#161616;--font-heading:"Inter";--font-body:"Inter";--radius-card:8px}')
+    expect(theme.issues).toEqual([])
+    // Config tersimpan tidak diubah (baris database tidak ditulis ulang).
+    expect(options.adSlots).toEqual({ header_banner: null })
+  })
+
+  it('config 1.1.0 yang masih membawa adSlots tetap dicatat (migrasi hanya untuk versi lama)', () => {
+    const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.1.0', tokens: {}, options: { adSlots: {} } })
+    expect(theme.issues).toEqual(['options.adSlots: key tidak dikenal, diabaikan'])
+  })
+})
+```
+
+9. Jalankan pemeriksaan. Log server tidak lagi memuat peringatan `[theme]` untuk kedua site:
+
+```bash
+pnpm check
+pnpm build
+SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+pnpm --filter @framework/web gate
+# tanpa baris "[theme] site kabar-tekno: options.adSlots: key tidak dikenal"
+```
 

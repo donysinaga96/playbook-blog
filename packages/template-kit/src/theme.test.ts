@@ -77,6 +77,15 @@ describe('createTemplateRegistry', () => {
     extends: base,
     tokens: { defaults: { color: { primary: '#0f62fe' } } },
     defaultLayouts: { home: [{ type: 'grid', props: { limit: 3 } }] },
+    migrateConfig: {
+      // 1.2.0: color.accent diganti nama menjadi color.primary.
+      '1.2.0': (cfg) => {
+        const tokens = cfg.tokens as { color?: Record<string, unknown> }
+        if (!tokens.color || !('accent' in tokens.color)) return cfg
+        const { accent, ...color } = tokens.color
+        return { ...cfg, tokens: { ...tokens, color: { ...color, primary: accent } } }
+      },
+    },
   })
   const grid = (limit: number) => ({ type: 'grid', props: { limit }, articles: { source: 'latest', limit } })
   const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
@@ -105,10 +114,16 @@ describe('createTemplateRegistry', () => {
     expect(registry.resolveTheme(null)).toMatchObject({ templateKey: 'base', tokens: spec.defaults, issues: [] })
   })
 
-  it('beda versi mayor dicatat (migrateConfig belum ada)', () => {
-    expect(registry.resolveTheme({ templateKey: 'magazine', templateVersion: '0.9.0', tokens: {}, options: {} }).issues).toEqual([
-      'config disimpan untuk magazine@0.9.0, template terpasang 1.2.0; migrateConfig belum didukung',
-    ])
+  it('config versi lama dimigrasi sebelum validasi (migrateConfig magazine 1.2.0)', () => {
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.0.0', tokens: { color: { accent: '#ff0000' } }, options: {} })
+    expect(theme.tokens['color']).toEqual({ primary: '#ff0000', surface: '#ffffff' })
+    expect(theme.issues).toEqual([])
+  })
+
+  it('versi tersimpan lebih baru dari terpasang -> default semua, dicatat', () => {
+    const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '2.0.0', tokens: { radius: { card: '8px' } }, options: { showDate: true }, layouts: { home: [{ type: 'grid', props: { limit: 1 } }] } })
+    expect(theme).toMatchObject({ templateKey: 'magazine', tokens: magazine.tokens.defaults, options: { showDate: false }, layouts: { home: [grid(3)] } })
+    expect(theme.issues).toEqual(['magazine: config disimpan untuk versi 2.0.0, lebih baru dari versi terpasang 1.2.0; memakai default'])
   })
 
   it('hasil bisa dikirim sebagai JSON tanpa kehilangan data', () => {

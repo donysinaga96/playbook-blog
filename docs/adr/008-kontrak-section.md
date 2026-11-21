@@ -72,6 +72,19 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
    renderer (`templateKey`, `templateVersion`, `rootClass`, `tokens`, `options`, `css`);
    `issues` dan `layouts` tetap di server.
 
+8. **migrateConfig.** Manifest boleh membawa `migrateConfig: { '<versi tujuan>': fn }`.
+   Kunci adalah versi TUJUAN. Config yang disimpan untuk versi S, dengan template terpasang
+   versi T, menjalankan semua migrasi dengan kunci K, S < K ≤ T, urut naik, terhadap salinan
+   `{ tokens, options, layouts }` dan sebelum validasi. Dengan begitu versi tersimpan tanpa
+   kunci sendiri (mis. 1.0.3) tetap tertangani; contoh di guide (`'1.0.0': (cfg) => cfg`) tidak
+   menjelaskan arti kuncinya. Versi mayor X ≥ 2 wajib punya kunci `X.0.0` (dicek
+   `defineManifest`). Versi tersimpan lebih baru dari terpasang, versi tersimpan bukan semver,
+   atau migrasi yang gagal: config diabaikan (default), dicatat. Migrasi tidak diwariskan ke
+   template turunan. Baris `site_themes` tidak ditulis ulang saat render; config ditulis dalam
+   versi terpasang saat disimpan dari admin (M4). Contoh pertama: magazine 1.1.0 memindahkan
+   slot iklan dari `options.adSlots` ke `adSlots` di manifest, dan migrasi `1.1.0` membuang
+   `options.adSlots` dari config lama.
+
 ## Alternatif yang ditolak
 
 - **Validasi layout di core.** Core jadi mengenal daftar section dan skema props-nya,
@@ -80,6 +93,8 @@ Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak
   melanggar keputusan "komponen sama, tampilan berbeda".
 - **Theme tetap diselesaikan di plugin Vue, data section diambil lewat request kedua.**
   Menambah satu putaran per halaman dan memecah view model menjadi dua sumber.
+- **Kunci migrateConfig = versi asal** (`'1.0.0': fn` berarti "dari 1.0.0"). Config yang
+  disimpan untuk versi patch tanpa kunci sendiri tidak akan pernah dimigrasi.
 - **Satu entry dengan `import()` dinamis untuk CSS.** Tetap ditolak Nitro saat bundling, dan
   aturan "manifest bebas Vue/CSS" tidak bisa diuji.
 

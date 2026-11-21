@@ -4,6 +4,9 @@
 //  1. Baris aktif site_themes dicari template-nya di registry berdasarkan
 //     template_key. Tidak ditemukan -> template fallback (base), dicatat
 //     sebagai issue, bukan crash.
+//  1b. Config yang disimpan untuk versi lebih lama dimigrasi dulu
+//     (migrateConfig, migrations.ts). Migrasi gagal atau versi tersimpan
+//     lebih baru -> config diabaikan (default), dicatat.
 //  2. tokens dan options divalidasi skema manifest PER KEY: nilai yang tidak
 //     valid jatuh ke default, key yang tidak dikenal dibuang. Satu warna
 //     yang salah tidak merusak seluruh theme.
@@ -19,6 +22,7 @@
 // server ke browser; komponen diambil lagi dari registry lewat templateKey.
 import { z } from 'zod'
 import type { ConfigSchema, ConfigSpec, TemplateManifest } from './manifest'
+import { migrateConfig } from './migrations'
 import { isPlainObject } from './objects'
 import { LAYOUT_PAGES, resolveLayout, type ResolvedLayouts } from './sections'
 import { renderTokenCss, templateRootClass, type TokenTree } from './tokens'
@@ -133,23 +137,35 @@ export function createTemplateRegistry<T extends TemplateManifest>(templates: T[
     resolveTheme(stored) {
       const issues: string[] = []
       let template = fallback
+      // Config mentah yang divalidasi; null = pakai default template.
+      let config: { tokens: unknown; options: unknown; layouts: unknown } | null = stored
+        ? { tokens: stored.tokens, options: stored.options, layouts: stored.layouts }
+        : null
       if (stored) {
         const found = byKey.get(stored.templateKey)
         if (found) {
           template = found
-          if (major(stored.templateVersion) !== major(found.version)) {
-            issues.push(`config disimpan untuk ${found.key}@${stored.templateVersion}, template terpasang ${found.version}; migrateConfig belum didukung`)
+          const migrated = migrateConfig(
+            { tokens: stored.tokens, options: stored.options, layouts: stored.layouts, version: stored.templateVersion },
+            found.version,
+            found.migrateConfig,
+          )
+          if (migrated.ok) {
+            config = migrated.config
+          } else {
+            issues.push(`${found.key}: ${migrated.reason}; memakai default`)
+            config = null
           }
         } else {
           issues.push(`template "${stored.templateKey}" tidak terdaftar, memakai ${fallback.key}`)
         }
       }
 
-      const tokens = resolveConfig(template.tokens, stored?.tokens, 'tokens')
-      const opts = resolveConfig(template.options, stored?.options, 'options')
+      const tokens = resolveConfig(template.tokens, config?.tokens, 'tokens')
+      const opts = resolveConfig(template.options, config?.options, 'options')
       issues.push(...tokens.issues, ...opts.issues)
 
-      const storedLayouts = stored?.layouts
+      const storedLayouts = config?.layouts
       if (storedLayouts !== undefined && storedLayouts !== null && !isPlainObject(storedLayouts)) {
         issues.push('layouts: bukan object, memakai default')
       }
@@ -187,8 +203,4 @@ export function createTemplateRegistry<T extends TemplateManifest>(templates: T[
       }
     },
   }
-}
-
-function major(version: string): string {
-  return version.split('.')[0] ?? version
 }

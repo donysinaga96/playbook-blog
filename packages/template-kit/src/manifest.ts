@@ -22,10 +22,11 @@
 // Semua dicek saat defineManifest/defineTemplate dipanggil, yaitu saat modul
 // di-import, jadi manifest yang salah langsung gagal di test dan build.
 //
-// Belum didukung (ditambahkan saat dibutuhkan): migrateConfig (M3),
-// override komponen (pengecualian, wajib ADR).
+// migrateConfig (lihat migrations.ts) milik template itu sendiri dan tidak
+// diwariskan. Belum didukung: override komponen (pengecualian, wajib ADR).
 import type { Component } from 'vue'
 import { z } from 'zod'
+import { migrationProblems, type ConfigMigration } from './migrations'
 import { isPlainObject, mergeDeep } from './objects'
 import { LAYOUT_PAGES, resolveLayout, type LayoutItem, type LayoutPage, type SectionDefinition } from './sections'
 import { TokenError, tokensToCssVars, type TokenTree } from './tokens'
@@ -59,6 +60,8 @@ export interface ManifestInput {
   sections?: Record<string, SectionDefinition>
   /** Susunan section bawaan per jenis halaman; dipakai bila layout site kosong atau rusak. */
   defaultLayouts?: Partial<Record<LayoutPage, LayoutItem[]>>
+  /** Migrasi config tersimpan, dengan kunci versi tujuan. Wajib berisi X.0.0 untuk setiap versi mayor X >= 2. */
+  migrateConfig?: Record<string, ConfigMigration>
 }
 
 export interface ConfigSpec {
@@ -79,6 +82,7 @@ export interface TemplateManifest {
   readonly adSlots: readonly string[]
   readonly sections: Readonly<Record<string, SectionDefinition>>
   readonly defaultLayouts: Readonly<Record<LayoutPage, readonly LayoutItem[]>>
+  readonly migrateConfig: Readonly<Record<string, ConfigMigration>>
 }
 
 export interface TemplateInput {
@@ -135,6 +139,10 @@ export function defineManifest(input: ManifestInput): TemplateManifest {
     defaultLayouts[page] = Object.freeze(items.map((item) => Object.freeze({ ...item })))
   }
 
+  const migrations = Object.freeze({ ...(input.migrateConfig ?? {}) })
+  const problems = migrationProblems(input.version, migrations)
+  if (problems.length > 0) fail(problems.join('; '))
+
   return Object.freeze({
     key: input.key,
     version: input.version,
@@ -146,6 +154,7 @@ export function defineManifest(input: ManifestInput): TemplateManifest {
     adSlots: Object.freeze([...(input.adSlots ?? parent?.adSlots ?? [])]),
     sections,
     defaultLayouts: Object.freeze(defaultLayouts),
+    migrateConfig: migrations,
   })
 }
 

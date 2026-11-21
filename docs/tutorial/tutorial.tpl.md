@@ -902,7 +902,7 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
 @@include templates/base/package.json json@@
 
-18. Buat template magazine. Di versi akhir (bab "Menyusun Halaman Depan dari Section") manifest magazine pindah ke `src/manifest.ts`, dan `index.ts` hanya menambahkan CSS. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
+18. Buat template magazine. Di versi akhir (bab "Menyusun Halaman Depan dari Section") manifest magazine pindah ke `src/manifest.ts`, dan `index.ts` hanya menambahkan CSS. Test magazine di bab ini sudah versi 1.1.0 dari bab "Memigrasi Config Theme Antar-Versi". Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
 
 @@include templates/magazine/src/index.ts ts@@
 
@@ -1309,7 +1309,7 @@ git diff packages/core/src/views/__snapshots__/
 
 11. Di `HomeView.vue`, bila `vm.sections` tidak kosong, render setiap section lewat `sectionComponents`, lalu pagination daftar terbaru. Tipe tanpa komponen dilewati. Bila kosong, tampilkan home lama (`featured` + `latest`). Gaya netral section (`.section`, `.section__head`, `.headline-list`) ada di `base.css`. Keduanya ditampilkan di bab "Membangun Sistem Template".
 
-12. Pindahkan manifest magazine ke `src/manifest.ts` dan tambahkan `defaultLayouts`. `index.ts` magazine tinggal menggabungkan manifest, induk, dan CSS:
+12. Pindahkan manifest magazine ke `src/manifest.ts` dan tambahkan `defaultLayouts`. `index.ts` magazine tinggal menggabungkan manifest, induk, dan CSS (file di bawah sudah versi 1.1.0 dari bab "Memigrasi Config Theme Antar-Versi"):
 
 @@include templates/magazine/src/manifest.ts ts@@
 
@@ -1399,4 +1399,47 @@ pnpm dev
 ```
 
 10. Periksa gate milestone: news selesai tanpa komponen sendiri dan tanpa mengubah core. Perubahan core yang dibutuhkan section home sudah dicatat di ADR-008 pada bab sebelumnya.
+
+# Memigrasi Config Theme Antar-Versi
+
+1. Pahami masalahnya. Setiap site menyimpan config theme (`tokens`, `options`, `layouts`) bersama versi template saat config itu disimpan (`site_themes.template_version`). Saat template naik versi dan bentuk config-nya berubah, config lama harus diubah ke bentuk baru sebelum divalidasi. Tanpa itu, nilai lama dibuang sebagai "key tidak dikenal" di setiap start, atau lebih buruk lagi, dipakai dengan arti yang salah.
+
+2. Contoh nyatanya: config magazine 1.0.0 menyimpan slot iklan di `options.adSlots`, padahal slot iklan seharusnya dideklarasikan manifest, bukan diatur per site. Log server mencatat `options.adSlots: key tidak dikenal` setiap start. Magazine 1.1.0 memindahkan deklarasi slot ke `adSlots` di manifest dan membawa migrasi yang membuang `options.adSlots` dari config lama.
+
+3. Tentukan arti kunci migrasi. Contoh di guide (`'1.0.0': (cfg) => cfg`) tidak menjelaskan apakah kuncinya versi asal atau versi tujuan. Pilih versi TUJUAN: config untuk versi S dengan template terpasang T menjalankan semua migrasi berkunci K, S < K ≤ T, urut naik. Dengan kunci versi asal, config yang disimpan untuk versi patch tanpa kunci sendiri (mis. 1.0.3) tidak akan pernah dimigrasi. Keputusan ini dicatat di ADR-008 butir 8.
+
+4. Tulis `packages/template-kit/src/migrations.ts`:
+   - `compareVersions` membandingkan semver per angka (1.10.0 lebih baru dari 1.9.0, yang salah bila dibandingkan sebagai teks).
+   - `migrateConfig` menjalankan rantai migrasi terhadap salinan config (`structuredClone`), jadi migrasi boleh mengubah argumennya tanpa merusak data asli.
+   - Versi tersimpan lebih baru dari terpasang (mis. setelah rollback deploy), versi tersimpan bukan semver, atau migrasi yang melempar error: hasilnya gagal dengan alasan yang jelas.
+   - `migrationProblems` memeriksa manifest: kunci harus semver dan tidak lebih baru dari versi template, dan setiap versi mayor X ≥ 2 wajib punya migrasi `X.0.0` (aturan ADR-005).
+
+@@include packages/template-kit/src/migrations.ts ts@@
+
+5. Sambungkan ke manifest dan registry (keduanya ditampilkan di bab "Membangun Sistem Template"):
+   - `defineManifest` menerima `migrateConfig`, memeriksanya dengan `migrationProblems`, dan menyimpannya di manifest. Migrasi tidak diwariskan: migrasi magazine tidak berlaku untuk template yang memperluas magazine.
+   - `resolveTheme` menjalankan migrasi sebelum validasi token, opsi, dan layout. Bila gagal, config diabaikan (default template) dan alasannya dicatat; halaman tetap tampil.
+   - Baris database tidak ditulis ulang saat render. Config akan ditulis dalam versi terpasang saat disimpan dari admin.
+
+6. Uji rantai migrasi:
+
+@@include packages/template-kit/src/migrations.test.ts ts@@
+
+7. Naikkan magazine ke 1.1.0. Slot iklan pindah ke `adSlots` manifest, dan migrasi `1.1.0` membuang `options.adSlots` hanya bila ada:
+
+@@include templates/magazine/src/manifest.ts ts@@
+
+8. Uji magazine: config 1.0.0 dari seed dimigrasi tanpa issue, config tersimpan tidak berubah, dan config yang sudah 1.1.0 tetapi masih membawa `adSlots` tetap dicatat (migrasi hanya untuk versi lama):
+
+@@include templates/magazine/src/manifest.test.ts ts@@
+
+9. Jalankan pemeriksaan. Log server tidak lagi memuat peringatan `[theme]` untuk kedua site:
+
+```bash
+pnpm check
+pnpm build
+SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
+pnpm --filter @framework/web gate
+# tanpa baris "[theme] site kabar-tekno: options.adSlots: key tidak dikenal"
+```
 

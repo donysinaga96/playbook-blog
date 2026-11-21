@@ -10,11 +10,11 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M0 — Fondasi | 10 / 10 | ✅ Lulus 17 Nov 2026 — pipeline #3078334327 (commit 9df99b4) |
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
-| M3 — Template kedua (titik evaluasi) | 18 / 25 | — |
+| M3 — Template kedua (titik evaluasi) | 22 / 25 | — |
 | M4 — Admin minimal | 0 / 27 | — (draf; usulan A–G menunggu persetujuan) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
 
-**Task berikutnya:** M3 3.3 (migrateConfig); 3.0–3.2 selesai 21 Nov 2026 (3.2 belum di-commit). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M3 3.4 (skrip cek browser) dan 3.5 (penutup); 3.0–3.3 selesai 21 Nov 2026. Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -170,10 +170,10 @@ Baris `› Skill` menyebut skill Claude Code yang dipakai untuk task di atasnya 
 - › Skill: `frontend-design:frontend-design` untuk arah visual news yang jelas berbeda dari magazine (tipografi, header, kartu), hanya lewat token dan CSS; `/run` + screenshot dari skrip 3.4 untuk membandingkan tiga site
 
 **3.3 migrateConfig [D]**
-- [ ] `resolveTheme`: migrasi berantai dari versi tersimpan ke versi terpasang untuk tokens, options, dan layouts, sebelum validasi; wajib untuk mayor, boleh untuk minor
-- [ ] Versi tersimpan lebih baru dari terpasang → default + issue; migrasi yang melempar error → default + issue; baris database tidak ditulis ulang (config ditulis saat disimpan dari admin, M4)
-- [ ] Magazine 1.1.0 dengan migrasi `1.0.0 → 1.1.0` yang membuang `options.adSlots`; peringatan di log hilang
-- [ ] Test template-kit: rantai migrasi, versi lebih baru, migrasi error
+- [x] `resolveTheme`: migrasi berantai dari versi tersimpan ke versi terpasang untuk tokens, options, dan layouts, sebelum validasi; wajib untuk mayor, boleh untuk minor
+- [x] Versi tersimpan lebih baru dari terpasang → default + issue; migrasi yang melempar error → default + issue; baris database tidak ditulis ulang (config ditulis saat disimpan dari admin, M4)
+- [x] Magazine 1.1.0 dengan migrasi `1.0.0 → 1.1.0` yang membuang `options.adSlots`; peringatan di log hilang — slot `header_banner` kini di `adSlots` manifest; kunci migrateConfig = versi tujuan (ADR-008 butir 8)
+- [x] Test template-kit: rantai migrasi, versi lebih baru, migrasi error
 
 **3.4 Test pembukti dan cek browser [E] [F]**
 - [x] Smoke dan gate paralel: kuliner `tpl-news` beserta marker news; tiga template dari satu server
