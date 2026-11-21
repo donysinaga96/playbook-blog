@@ -5,15 +5,19 @@
 // Satu-satunya tempat yang menyusun data untuk template: URL dari
 // createUrlBuilder, tanggal dengan locale dan zona waktu site, gambar
 // lewat resolver media. Template tidak pernah melihat repository.
-import type {
-  ArticleCardView,
-  BlockView,
-  ChromeView,
-  ImageView,
-  LinkView,
-  MenuItemView,
-  PageViewModel,
-  PaginationView,
+import {
+  SECTION_LIMITS,
+  type ArticleCardView,
+  type ArticlesRequest,
+  type BlockView,
+  type ChromeView,
+  type ImageView,
+  type LinkView,
+  type MenuItemView,
+  type PageViewModel,
+  type PaginationView,
+  type ResolvedSection,
+  type SectionView,
 } from '@framework/template-kit'
 import type { Block, LenientBody } from '../content/blocks'
 import { embedSrc } from '../content/embed'
@@ -39,6 +43,11 @@ export interface PageRequest {
    * mis. https://tekno.example. Dihitung middleware dari request.
    */
   origin: string
+  /**
+   * Section per jenis halaman dari theme aktif, sudah divalidasi registry
+   * template (ADR-008). Kosong atau tidak ada = tanpa section.
+   */
+  layouts?: { home?: readonly ResolvedSection[] }
 }
 
 export interface RenderedPage {
@@ -99,7 +108,7 @@ export function createPageBuilder(
 
       const built = await (async (): Promise<Built | Redirect | null> => {
         switch (route.kind) {
-          case 'home': return page === null ? null : home(ctx, page)
+          case 'home': return page === null ? null : home(ctx, page, request.layouts?.home ?? [])
           case 'category': return page === null ? null : category(ctx, route.slug, page)
           case 'tag': return page === null ? null : tag(ctx, route.slug, page)
           case 'author': return page === null ? null : author(ctx, route.slug, page)
@@ -147,7 +156,46 @@ export function createPageBuilder(
 
   // ---------- Jenis halaman ------------------------------------------------
 
-  async function home(ctx: BuildContext, page: number): Promise<Built | null> {
+  async function home(ctx: BuildContext, page: number, plans: readonly ResolvedSection[]): Promise<Built | null> {
+    const seo: SeoInput = { title: null, description: null, type: 'website', image: null, canonicalPath: ctx.urls.withPage(ctx.urls.home(), page), page }
+    const home = ctx.urls.home()
+
+    if (plans.length > 0) {
+      // Mode section (ADR-008). Halaman 1 = section. ?page=N (N >= 2) =
+      // arsip terbaru yang dimulai dari artikel paling baru (halaman arsip
+      // N-1), supaya tidak ada artikel yang tidak terjangkau dari pagination
+      // hanya karena section menampilkan lebih sedikit dari pageSize.
+      if (page === 1) {
+        const [sections, latest] = await Promise.all([
+          sectionViews(ctx, plans),
+          content.listPublishedArticles(ctx.site.id, { page: 1, pageSize }),
+        ])
+        return {
+          vm: {
+            view: 'home',
+            sections,
+            featured: [],
+            // Semua section dilewati (mis. kategori sudah dihapus): tetap tampilkan daftar terbaru.
+            latest: sections.length > 0 ? [] : latest.items.map((a) => card(ctx, a)),
+            pagination: pagination(ctx, { page: 1, totalPages: latest.totalPages + 1 }, home),
+          },
+          seo,
+        }
+      }
+      const archive = await content.listPublishedArticles(ctx.site.id, { page: page - 1, pageSize })
+      if (page - 1 > archive.totalPages) return null
+      return {
+        vm: {
+          view: 'home',
+          sections: [],
+          featured: [],
+          latest: archive.items.map((a) => card(ctx, a)),
+          pagination: pagination(ctx, { page, totalPages: archive.totalPages + 1 }, home),
+        },
+        seo,
+      }
+    }
+
     const [featured, latest] = await Promise.all([
       page === 1 ? content.listPublishedArticles(ctx.site.id, { featuredOnly: true, pageSize: 1 }) : null,
       content.listPublishedArticles(ctx.site.id, { page, pageSize }),
@@ -158,11 +206,72 @@ export function createPageBuilder(
     return {
       vm: {
         view: 'home',
+        sections: [],
         featured: featuredItems.map((a) => card(ctx, a)),
         latest: latest.items.filter((a) => !shown.has(a.id)).map((a) => card(ctx, a)),
-        pagination: pagination(ctx, latest, ctx.urls.home()),
+        pagination: pagination(ctx, latest, home),
       },
-      seo: { title: null, description: null, type: 'website', image: null, canonicalPath: ctx.urls.withPage(ctx.urls.home(), page), page },
+      seo,
+    }
+  }
+
+  /**
+   * Menjalankan permintaan data section (ADR-008), berurutan: artikel yang
+   * sudah tampil di section sebelumnya dikecualikan di query (excludeIds),
+   * jadi setiap section tetap terisi penuh bila artikelnya cukup. Batas
+   * jumlah section dan limit dijaga ulang di sini: core tidak bergantung
+   * pada validasi pemanggil.
+   */
+  async function sectionViews(ctx: BuildContext, plans: readonly ResolvedSection[]): Promise<SectionView[]> {
+    const shown: string[] = []
+    const out: SectionView[] = []
+    for (const plan of plans.slice(0, SECTION_LIMITS.maxSectionsPerPage)) {
+      const request = plan.articles
+      if (!request) {
+        out.push({ type: plan.type, props: plan.props, articles: [], link: null })
+        continue
+      }
+      const limit = Math.min(Math.max(Math.trunc(request.limit) || 1, 1), SECTION_LIMITS.maxArticles)
+      const data = await sectionArticles(ctx, request, limit, shown)
+      if (!data) continue
+      for (const a of data.items) shown.push(a.id)
+      out.push({ type: plan.type, props: plan.props, articles: data.items.map((a) => card(ctx, a)), link: data.link })
+    }
+    return out
+  }
+
+  /** Null = sumber tidak ada (kategori/tag tidak dikenal): section dilewati dan dicatat. */
+  async function sectionArticles(ctx: BuildContext, request: ArticlesRequest, size: number, excludeIds: readonly string[]): Promise<SectionData | null> {
+    const siteId = ctx.site.id
+    switch (request.source) {
+      case 'latest':
+        return { items: (await content.listPublishedArticles(siteId, { pageSize: size, excludeIds })).items, link: null }
+      case 'featured':
+        return { items: (await content.listPublishedArticles(siteId, { featuredOnly: true, pageSize: size, excludeIds })).items, link: null }
+      case 'category': {
+        const slug = request.slug ?? ''
+        const [found, list] = await Promise.all([
+          content.getCategory(siteId, slug),
+          content.listPublishedArticles(siteId, { categorySlug: slug, pageSize: size, excludeIds }),
+        ])
+        if (!found) {
+          ctx.issues.push(`section: kategori "${slug}" tidak ada di site ini, section dilewati`)
+          return null
+        }
+        return { items: list.items, link: { label: found.name, href: ctx.urls.category(found.slug) } }
+      }
+      case 'tag': {
+        const slug = request.slug ?? ''
+        const [found, list] = await Promise.all([
+          content.getTag(siteId, slug),
+          content.listPublishedArticles(siteId, { tagSlug: slug, pageSize: size, excludeIds }),
+        ])
+        if (!found) {
+          ctx.issues.push(`section: tag "${slug}" tidak ada di site ini, section dilewati`)
+          return null
+        }
+        return { items: list.items, link: { label: found.name, href: ctx.urls.tag(found.slug) } }
+      }
     }
   }
 
@@ -426,6 +535,11 @@ interface BuildContext {
   issues: string[]
 }
 
+interface SectionData {
+  items: ArticleSummary[]
+  link: LinkView | null
+}
+
 /** View model halaman + bahan SEO-nya. */
 interface Built {
   vm: PageViewModel
@@ -476,7 +590,7 @@ export function pageWindow(page: number, totalPages: number): (number | null)[] 
   return out
 }
 
-function pagination(ctx: BuildContext, list: Page<unknown>, baseHref: string): PaginationView {
+function pagination(ctx: BuildContext, list: Pick<Page<unknown>, 'page' | 'totalPages'>, baseHref: string): PaginationView {
   const { page, totalPages } = list
   const href = (n: number) => ctx.urls.withPage(baseHref, n)
   return {

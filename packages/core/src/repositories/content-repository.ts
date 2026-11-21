@@ -9,6 +9,7 @@ import {
   desc,
   eq,
   inArray,
+  notInArray,
   pages,
   redirects,
   sql,
@@ -79,6 +80,8 @@ export interface ArticleListQuery extends PageQuery {
   /** Penulis HIDDEN dianggap tidak ada. */
   authorSlug?: string
   featuredOnly?: boolean
+  /** Artikel yang tidak diikutkan (mis. sudah tampil di section sebelumnya). Paling banyak 200 id. */
+  excludeIds?: readonly string[]
 }
 
 export interface PageDetail {
@@ -119,6 +122,9 @@ export interface SitemapEntries {
   tags: { id: string; slug: string }[]
   authors: { id: string; slug: string }[]
 }
+
+/** Batas excludeIds per query, agar daftar dari pemanggil tidak membuat query tanpa batas. */
+export const MAX_EXCLUDE_IDS = 200
 
 /** Batas URL per file sitemap (protokol sitemaps.org). */
 export const SITEMAP_MAX_ARTICLES = 50_000
@@ -250,6 +256,9 @@ export function createContentRepository(ctx: RepositoryContext) {
       const conditions = [eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now())]
 
       if (query.featuredOnly) conditions.push(eq(articles.isFeatured, true))
+      if (query.excludeIds && query.excludeIds.length > 0) {
+        conditions.push(notInArray(articles.id, [...query.excludeIds].slice(0, MAX_EXCLUDE_IDS)))
+      }
 
       if (query.categorySlug !== undefined) {
         const ids = await categoryScopeIds(siteId, query.categorySlug)

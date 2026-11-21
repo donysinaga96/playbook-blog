@@ -1,6 +1,6 @@
 # Usulan M3 — Template kedua
 
-Status: menunggu persetujuan (ditulis 20 Nov 2026, dibahas 21 Nov 2026).
+Status: semua usulan disetujui 21 Nov 2026 (ditulis 20 Nov 2026).
 Latar belakang dan pemeriksaan poin M3 ada di [TASKS.md](../TASKS.md#m3--template-kedua-titik-evaluasi).
 Setelah disetujui, usulan dimasukkan ke rincian M3 di TASKS.md (ditandai [A]–[F]) seperti M2.
 
@@ -23,9 +23,9 @@ Setelah disetujui, usulan dimasukkan ke rincian M3 di TASKS.md (ditandai [A]–[
 
 | Usulan | Disetujui? | Catatan |
 |---|---|---|
-| A — ADR-008 kontrak section | | |
-| B — Manifest server tanpa Vue/CSS | | |
-| C — Aturan layout tahan data buruk | | |
-| D — migrateConfig magazine 1.1.0 | | |
-| E — Test pembukti | | |
-| F — Skrip cek browser di repo | | |
+| A — ADR-008 kontrak section | Ya, 21 Nov 2026 | |
+| B — Manifest server tanpa Vue/CSS | Ya, 21 Nov 2026 | |
+| C — Aturan layout tahan data buruk | Ya, 21 Nov 2026 | |
+| D — migrateConfig magazine 1.1.0 | Ya, 21 Nov 2026 | |
+| E — Test pembukti | Ya, 21 Nov 2026 | |
+| F — Skrip cek browser di repo | Ya, 21 Nov 2026 | |

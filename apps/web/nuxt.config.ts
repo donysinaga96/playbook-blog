@@ -7,7 +7,8 @@ export default defineNuxtConfig({
   typescript: { strict: true },
   // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
   // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.
+  // Server juga memakai entry ./manifest template (ADR-008).
   nitro: {
-    externals: { inline: ['@framework/core', '@framework/db'] },
+    externals: { inline: ['@framework/core', '@framework/db', '@framework/template-kit', /^@framework\/template-/] },
   },
 })

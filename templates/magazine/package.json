@@ -5,7 +5,8 @@
   "description": "Template pertama: tampilan majalah dari token, opsi, dan CSS di atas base",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
   },
   "dependencies": {
     "@framework/template-base": "workspace:*",

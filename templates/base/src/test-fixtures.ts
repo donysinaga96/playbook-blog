@@ -68,7 +68,7 @@ export const pagination: PaginationView = {
 const noPages: PaginationView = { page: 1, totalPages: 1, prevHref: null, nextHref: null, pages: [] }
 
 export const views: { [V in ViewName]: ViewModelOf<V> } = {
-  home: { view: 'home', featured: [card(1, { isFeatured: true, image })], latest: [card(2), card(3)], pagination },
+  home: { view: 'home', sections: [], featured: [card(1, { isFeatured: true, image })], latest: [card(2), card(3)], pagination },
   article: {
     view: 'article',
     breadcrumb: [{ label: 'Beranda', href: '/' }, { label: 'Gadget', href: '/kategori/gadget' }, { label: 'Artikel 1', href: '/gadget/artikel-1' }],
@@ -110,3 +110,19 @@ export const views: { [V in ViewName]: ViewModelOf<V> } = {
 
 /** Pastikan fixture mencakup setiap jenis halaman (gagal compile bila ada yang kurang). */
 export const allViews: PageViewModel[] = Object.values(views)
+
+/** Home halaman 1 dengan layout section (ADR-008): semua section base + satu tipe tak dikenal. */
+export const homeWithSections: ViewModelOf<'home'> = {
+  view: 'home',
+  sections: [
+    { type: 'hero', props: { source: 'featured', limit: 1 }, articles: [card(1, { isFeatured: true, image })], link: null },
+    { type: 'latest-grid', props: { limit: 6 }, articles: [card(2), card(3)], link: null },
+    { type: 'headline-list', props: { source: 'latest', limit: 5, title: 'Kabar <b>cepat</b>' }, articles: [card(4)], link: null },
+    { type: 'category-strip', props: { categorySlug: 'gadget', limit: 4 }, articles: [card(5)], link: { label: 'Gadget', href: '/category/gadget' } },
+    { type: 'carousel', props: {}, articles: [card(6)], link: null },
+    { type: 'category-strip', props: { categorySlug: 'kosong', limit: 4 }, articles: [], link: { label: 'Kosong', href: '/category/kosong' } },
+  ],
+  featured: [],
+  latest: [],
+  pagination,
+}

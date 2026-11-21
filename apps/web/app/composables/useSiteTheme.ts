@@ -4,8 +4,14 @@
 import type { SeoMeta } from '@framework/core'
 import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
 
+/**
+ * Bagian theme yang dikirim ke browser. `issues` (diagnosis internal) dan
+ * `layouts` (sudah dipakai core untuk view model) tidak ikut payload.
+ */
+export type PublicTheme = Omit<ResolvedTheme, 'issues' | 'layouts'>
+
 export function useSiteTheme() {
-  return useState<ResolvedTheme | null>('site-theme', () => null)
+  return useState<PublicTheme | null>('site-theme', () => null)
 }
 
 export interface PageState {

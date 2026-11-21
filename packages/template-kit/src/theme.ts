@@ -8,12 +8,19 @@
 //     valid jatuh ke default, key yang tidak dikenal dibuang. Satu warna
 //     yang salah tidak merusak seluruh theme.
 //  3. Token dijadikan CSS variable di bawah kelas root .tpl-<key>.
+//  4. layouts divalidasi per halaman (resolveLayout, ADR-008): section yang
+//     rusak dilewati, layout kosong atau rusak -> defaultLayouts manifest.
+//
+// Registry cukup berisi manifest (entry ./manifest), jadi bisa dipakai di
+// server sebelum view model dibangun (ADR-008). Renderer Vue mendaftarkan
+// definisi lengkap (manifest + komponen) dan memakai get() untuk komponen.
 //
 // Hasilnya (ResolvedTheme) hanya berisi data JSON, jadi bisa dikirim dari
 // server ke browser; komponen diambil lagi dari registry lewat templateKey.
 import { z } from 'zod'
-import type { ConfigSchema, ConfigSpec, TemplateDefinition } from './manifest'
+import type { ConfigSchema, ConfigSpec, TemplateManifest } from './manifest'
 import { isPlainObject } from './objects'
+import { LAYOUT_PAGES, resolveLayout, type ResolvedLayouts } from './sections'
 import { renderTokenCss, templateRootClass, type TokenTree } from './tokens'
 
 /** Bentuk baris site_themes yang dibutuhkan registry. */
@@ -22,6 +29,8 @@ export interface StoredTheme {
   templateVersion: string
   tokens: unknown
   options: unknown
+  /** Susunan section per jenis halaman; boleh tidak ada (= defaultLayouts). */
+  layouts?: unknown
 }
 
 export interface ResolvedTheme {
@@ -32,6 +41,8 @@ export interface ResolvedTheme {
   rootClass: string
   tokens: Record<string, unknown>
   options: Record<string, unknown>
+  /** Section per jenis halaman, sudah divalidasi; permintaan datanya dijalankan core. */
+  layouts: ResolvedLayouts
   /** Satu aturan CSS berisi variabel token, untuk <style> di <head>. */
   css: string
   /** Hal yang perlu dicatat ke log: fallback template, nilai tidak valid. Kosong bila bersih. */
@@ -93,19 +104,19 @@ export function resolveConfig(spec: ConfigSpec, raw: unknown, label = 'config'):
   return { value: whole.data as Record<string, unknown>, issues }
 }
 
-export interface TemplateRegistry {
+export interface TemplateRegistry<T extends TemplateManifest = TemplateManifest> {
   /** Template terdaftar, urut sesuai pendaftaran. */
-  readonly templates: readonly TemplateDefinition[]
-  readonly fallback: TemplateDefinition
+  readonly templates: readonly T[]
+  readonly fallback: T
   /** Template berdasarkan key; fallback bila tidak terdaftar. */
-  get(key: string): TemplateDefinition
+  get(key: string): T
   has(key: string): boolean
   /** Theme aktif site -> template + config tervalidasi. Null (site tanpa theme) -> fallback dengan default. */
   resolveTheme(stored: StoredTheme | null): ResolvedTheme
 }
 
-export function createTemplateRegistry(templates: TemplateDefinition[], options: { fallback: string }): TemplateRegistry {
-  const byKey = new Map<string, TemplateDefinition>()
+export function createTemplateRegistry<T extends TemplateManifest>(templates: T[], options: { fallback: string }): TemplateRegistry<T> {
+  const byKey = new Map<string, T>()
   for (const template of templates) {
     if (byKey.has(template.key)) throw new Error(`template "${template.key}" didaftarkan dua kali`)
     byKey.set(template.key, template)
@@ -138,6 +149,23 @@ export function createTemplateRegistry(templates: TemplateDefinition[], options:
       const opts = resolveConfig(template.options, stored?.options, 'options')
       issues.push(...tokens.issues, ...opts.issues)
 
+      const storedLayouts = stored?.layouts
+      if (storedLayouts !== undefined && storedLayouts !== null && !isPlainObject(storedLayouts)) {
+        issues.push('layouts: bukan object, memakai default')
+      }
+      const layoutSource = isPlainObject(storedLayouts) ? storedLayouts : {}
+      const layouts = {} as ResolvedLayouts
+      for (const page of LAYOUT_PAGES) {
+        const resolved = resolveLayout({
+          sections: template.sections,
+          raw: layoutSource[page],
+          fallback: template.defaultLayouts[page],
+          label: `layouts.${page}`,
+        })
+        layouts[page] = resolved.sections
+        issues.push(...resolved.issues)
+      }
+
       let css: string
       try {
         css = renderTokenCss(template.key, tokens.value as TokenTree)
@@ -153,6 +181,7 @@ export function createTemplateRegistry(templates: TemplateDefinition[], options:
         rootClass: templateRootClass(template.key),
         tokens: tokens.value,
         options: opts.value,
+        layouts,
         css,
         issues,
       }

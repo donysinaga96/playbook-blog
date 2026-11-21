@@ -2113,6 +2113,7 @@ Alternatif yang ditolak, Konsekuensi, dan Status (Diusulkan, Diterima, Diganti o
 | [005](005-kontrak-template.md) | Kontrak template: komponen sama, tampilan berbeda | Diterima |
 | [006](006-skema-url.md) | Skema URL publik: permalink artikel per site, prefix Inggris, `/p/{slug}`, `?page=N` | Diterima |
 | [007](007-render-halaman-server.md) | Halaman publik dirender penuh di server; view model dibangun di Nitro | Diterima |
+| [008](008-kontrak-section.md) | Section di base, manifest server (`./manifest`), theme diselesaikan sebelum view model | Diterima |
 ```
 
 3. ADR-001, mode deploy. Satu schema, dua mode, dan konsekuensinya: repository tetap wajib menerima `siteId` walau berjalan di mode single-site, dan tidak boleh ada global state di SSR:
@@ -2604,7 +2605,7 @@ export * from './schema/schema'
 // Operator query diekspor ulang agar HANYA paket ini yang bergantung pada
 // drizzle-orm. Paket lain (core) memakai operator dari sini; dengan begitu
 // hanya ada satu salinan drizzle-orm di runtime.
-export { and, asc, count, desc, eq, inArray, isNotNull, lte, or, sql } from 'drizzle-orm'
+export { and, asc, count, desc, eq, inArray, isNotNull, lte, notInArray, or, sql } from 'drizzle-orm'
 export type { SQL } from 'drizzle-orm'
 export type { PgColumn } from 'drizzle-orm/pg-core'
 ```
@@ -3525,6 +3526,7 @@ import {
   desc,
   eq,
   inArray,
+  notInArray,
   pages,
   redirects,
   sql,
@@ -3595,6 +3597,8 @@ export interface ArticleListQuery extends PageQuery {
   /** Penulis HIDDEN dianggap tidak ada. */
   authorSlug?: string
   featuredOnly?: boolean
+  /** Artikel yang tidak diikutkan (mis. sudah tampil di section sebelumnya). Paling banyak 200 id. */
+  excludeIds?: readonly string[]
 }
 
 export interface PageDetail {
@@ -3635,6 +3639,9 @@ export interface SitemapEntries {
   tags: { id: string; slug: string }[]
   authors: { id: string; slug: string }[]
 }
+
+/** Batas excludeIds per query, agar daftar dari pemanggil tidak membuat query tanpa batas. */
+export const MAX_EXCLUDE_IDS = 200
 
 /** Batas URL per file sitemap (protokol sitemaps.org). */
 export const SITEMAP_MAX_ARTICLES = 50_000
@@ -3766,6 +3773,9 @@ export function createContentRepository(ctx: RepositoryContext) {
       const conditions = [eq(articles.siteId, siteId), publiclyVisible(articles, ctx.now())]
 
       if (query.featuredOnly) conditions.push(eq(articles.isFeatured, true))
+      if (query.excludeIds && query.excludeIds.length > 0) {
+        conditions.push(notInArray(articles.id, [...query.excludeIds].slice(0, MAX_EXCLUDE_IDS)))
+      }
 
       if (query.categorySlug !== undefined) {
         const ids = await categoryScopeIds(siteId, query.categorySlug)
@@ -5137,7 +5147,7 @@ pnpm install
 }
 ```
 
-5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime.:
+5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Paket template-kit dan template ditambahkan ke daftar itu di bab "Menyusun Halaman Depan dari Section":
 
 `apps/web/nuxt.config.ts`
 
@@ -5151,8 +5161,9 @@ export default defineNuxtConfig({
   typescript: { strict: true },
   // Paket workspace diekspor sebagai source TypeScript (./src/index.ts),
   // jadi harus ikut di-bundle, bukan di-import dari node_modules saat runtime.
+  // Server juga memakai entry ./manifest template (ADR-008).
   nitro: {
-    externals: { inline: ['@framework/core', '@framework/db'] },
+    externals: { inline: ['@framework/core', '@framework/db', '@framework/template-kit', /^@framework\/template-/] },
   },
 })
 ```
@@ -5804,7 +5815,7 @@ export default defineNitroPlugin(() => {
 })
 ```
 
-10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
+10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template" dan berubah menjadi `ResolvedTheme` di bab "Menyusun Halaman Depan dari Section") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
 
 `apps/web/shared/types/site-context.d.ts`
 
@@ -5812,7 +5823,7 @@ export default defineNitroPlugin(() => {
 // Data per request yang diisi middleware server/middleware/site.ts.
 // Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
 import type { SeoMeta, SiteInfo } from '@framework/core'
-import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
 
 declare module 'nuxt/schema' {
   interface RequestEventContext {
@@ -5822,8 +5833,11 @@ declare module 'nuxt/schema' {
     siteDomain?: string
     /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
     siteOrigin?: string
-    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
-    theme?: StoredTheme | null
+    /**
+     * Theme aktif yang sudah diselesaikan registry manifest (ADR-008): template
+     * (bisa fallback), token, opsi, layout section. Hanya untuk request halaman.
+     */
+    theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
   }
@@ -5837,7 +5851,7 @@ export {}
     - `Host` dibaca dari header `Host`, bukan `X-Forwarded-Host`, karena header itu bisa dipalsukan klien. Reverse proxy di produksi wajib meneruskan `Host` asli.
     - `X-Forwarded-Proto` boleh dipercaya karena hanya menentukan `http` atau `https` pada URL redirect ke domain primary site yang sama.
     - Redirect mempertahankan path, query, dan port.
-    - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template".
+    - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template", lalu dipindah ke sebelum view model di bab "Menyusun Halaman Depan dari Section".
 
 `apps/web/server/middleware/site.ts`
 
@@ -5845,7 +5859,8 @@ export {}
 // Host request -> site, untuk setiap request (ADR-001).
 //
 //   site ditemukan  -> event.context.site / siteDomain; untuk request
-//                      halaman juga theme + view model (event.context.page),
+//                      halaman juga theme yang sudah diselesaikan
+//                      (event.context.theme) + view model (event.context.page),
 //                      atau redirect (permalink kanonik, tabel redirects)
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
@@ -5856,6 +5871,7 @@ import { resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
+import { resolveSiteTheme } from '../utils/templates'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -5879,11 +5895,16 @@ export default defineEventHandler(async (event) => {
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
-    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
-    const [theme, built] = await Promise.all([
-      useRepositories().sites.getActiveTheme(site.id),
-      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
-    ])
+    // Halaman publik: theme diselesaikan dulu (layout section menentukan data
+    // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
+    const theme = resolveSiteTheme(site, await useRepositories().sites.getActiveTheme(site.id))
+    const built = await usePageBuilder().build({
+      site,
+      pathname: url.pathname,
+      searchParams: url.searchParams,
+      origin: event.context.siteOrigin,
+      layouts: theme.layouts,
+    })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme
@@ -6072,10 +6093,30 @@ export type BlockViewType = BlockView['type']
 
 // ---------- View per jenis halaman --------------------------------------
 
+/**
+ * Satu section halaman (ADR-008), dirender komponen section di base
+ * berdasarkan `type`.
+ */
+export interface SectionView {
+  /** Tipe section dari manifest base, mis. 'hero', 'latest-grid'. */
+  type: string
+  /** Props tervalidasi skema section (mis. judul pengganti). */
+  props: Record<string, unknown>
+  articles: ArticleCardView[]
+  /** Kategori atau tag yang ditampilkan section, untuk judul dan tautan "lihat semua"; null untuk sumber latest/featured. */
+  link: LinkView | null
+}
+
 export interface HomeView {
   view: 'home'
+  /**
+   * Halaman 1 dengan layout section: diisi, dan featured + latest kosong.
+   * Halaman 2 dst. (dan site tanpa section): kosong, featured + latest diisi.
+   */
+  sections: SectionView[]
   featured: ArticleCardView[]
   latest: ArticleCardView[]
+  /** Selalu pagination daftar terbaru, juga di halaman 1 dengan section. */
   pagination: PaginationView
 }
 
@@ -6270,30 +6311,41 @@ export function renderTokenCss(templateKey: string, tokens: TokenTree): string {
 }
 ```
 
-4. Tulis `defineTemplate` di `manifest.ts`. Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri: skema token/opsi, default (digabung per key dengan `mergeDeep`), lokasi menu, layout, dan view. Semuanya diperiksa saat modul di-import: format key, semver, default lolos skema dan bisa dijadikan CSS, serta view lengkap. Manifest yang salah langsung gagal di test dan build:
+4. Tulis `defineTemplate` di `manifest.ts`. Catatan: file `manifest.ts`, `theme.ts`, `index.ts`, `view-models.ts`, dan test template-kit di bab ini sudah versi akhir dari bab "Menyusun Halaman Depan dari Section", yang memecah manifest menjadi `defineManifest` (tanpa Vue) dan `defineTemplate` (manifest + komponen) serta menambah section. Bila mengikuti urutan bab, buat juga `sections.ts` dari bab itu sekarang. Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri: skema token/opsi, default (digabung per key dengan `mergeDeep`), lokasi menu, layout, dan view. Semuanya diperiksa saat modul di-import: format key, semver, default lolos skema dan bisa dijadikan CSS, serta view lengkap. Manifest yang salah langsung gagal di test dan build:
 
 `packages/template-kit/src/manifest.ts`
 
 ```ts
-// Manifest template (ADR-005): satu paket = satu defineTemplate().
+// Manifest dan definisi template (ADR-005, ADR-008).
 //
-//   export default defineTemplate({
-//     key: 'magazine', version: '1.0.0', name: 'Magazine', extends: base,
+// Satu paket template punya dua entry:
+//
+//   ./manifest  defineManifest({ key, version, tokens, options, sections, defaultLayouts, ... })
+//               Hanya data dan skema Zod, tanpa .vue/.css, sehingga bisa
+//               di-import server (Nitro) untuk menyelesaikan theme sebelum
+//               view model dibangun.
+//   .           defineTemplate({ manifest, extends, layout, views })
+//               Manifest + komponen Vue + CSS, untuk renderer.
+//
+//   export default defineManifest({
+//     key: 'magazine', version: '1.0.0', name: 'Magazine', extends: baseManifest,
 //     tokens: { defaults: { color: { primary: '#0f62fe' } } },
 //   })
 //
-// Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri:
+// Manifest dengan `extends` mewarisi semua yang tidak ia definisikan sendiri:
 // skema token/opsi, default (digabung per key), lokasi menu, slot iklan,
-// layout, dan view. Template tanpa `extends` (base) wajib lengkap.
+// section, dan defaultLayouts. Manifest tanpa `extends` (base) wajib lengkap.
+// Section hanya didefinisikan base, karena komponennya hanya ada di base.
 //
-// Semua dicek saat defineTemplate dipanggil, yaitu saat modul di-import,
-// jadi manifest yang salah langsung gagal di test dan build.
+// Semua dicek saat defineManifest/defineTemplate dipanggil, yaitu saat modul
+// di-import, jadi manifest yang salah langsung gagal di test dan build.
 //
-// Belum didukung (ditambahkan saat dibutuhkan): sections dan defaultLayouts
-// (M3), migrateConfig (M3), override komponen (pengecualian, wajib ADR).
+// Belum didukung (ditambahkan saat dibutuhkan): migrateConfig (M3),
+// override komponen (pengecualian, wajib ADR).
 import type { Component } from 'vue'
 import { z } from 'zod'
 import { isPlainObject, mergeDeep } from './objects'
+import { LAYOUT_PAGES, resolveLayout, type LayoutItem, type LayoutPage, type SectionDefinition } from './sections'
 import { TokenError, tokensToCssVars, type TokenTree } from './tokens'
 import { VIEW_NAMES, type ViewName } from './view-models'
 
@@ -6310,19 +6362,21 @@ export interface ConfigInput {
   defaults: Record<string, unknown>
 }
 
-export interface TemplateInput {
+export interface ManifestInput {
   /** Huruf kecil, angka, tanda hubung; dipakai di site_themes.template_key dan kelas root .tpl-<key>. */
   key: string
   /** Semver, mis. 1.0.0. */
   version: string
   name: string
-  extends?: TemplateDefinition
+  extends?: TemplateManifest
   tokens?: ConfigInput
   options?: ConfigInput
   menuLocations?: string[]
   adSlots?: string[]
-  layout?: ComponentLoader
-  views?: Partial<Record<ViewName, ComponentLoader>>
+  /** Hanya untuk manifest tanpa extends (base). */
+  sections?: Record<string, SectionDefinition>
+  /** Susunan section bawaan per jenis halaman; dipakai bila layout site kosong atau rusak. */
+  defaultLayouts?: Partial<Record<LayoutPage, LayoutItem[]>>
 }
 
 export interface ConfigSpec {
@@ -6330,8 +6384,8 @@ export interface ConfigSpec {
   defaults: Record<string, unknown>
 }
 
-/** Hasil defineTemplate: sudah lengkap, warisan sudah diterapkan. */
-export interface TemplateDefinition {
+/** Hasil defineManifest: sudah lengkap, warisan sudah diterapkan. Bebas Vue/CSS. */
+export interface TemplateManifest {
   readonly key: string
   readonly version: string
   readonly name: string
@@ -6341,6 +6395,20 @@ export interface TemplateDefinition {
   readonly options: ConfigSpec
   readonly menuLocations: readonly string[]
   readonly adSlots: readonly string[]
+  readonly sections: Readonly<Record<string, SectionDefinition>>
+  readonly defaultLayouts: Readonly<Record<LayoutPage, readonly LayoutItem[]>>
+}
+
+export interface TemplateInput {
+  manifest: TemplateManifest
+  /** Definisi induk; wajib bila manifest punya extends, dan key-nya harus sama. */
+  extends?: TemplateDefinition
+  layout?: ComponentLoader
+  views?: Partial<Record<ViewName, ComponentLoader>>
+}
+
+/** Manifest + komponen. Hasil defineTemplate; dipakai renderer Vue. */
+export interface TemplateDefinition extends TemplateManifest {
   readonly layout: ComponentLoader
   readonly views: Readonly<Record<ViewName, ComponentLoader>>
 }
@@ -6352,7 +6420,7 @@ export class TemplateDefinitionError extends Error {
 const TEMPLATE_KEY = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 
-export function defineTemplate(input: TemplateInput): TemplateDefinition {
+export function defineManifest(input: ManifestInput): TemplateManifest {
   const fail = (message: string): never => {
     throw new TemplateDefinitionError(`template "${input.key}": ${message}`)
   }
@@ -6373,10 +6441,17 @@ export function defineTemplate(input: TemplateInput): TemplateDefinition {
     fail(`default tokens tidak bisa dijadikan CSS variable: ${error instanceof TokenError ? error.message : String(error)}`)
   }
 
-  const layout = input.layout ?? parent?.layout ?? fail('layout wajib untuk template tanpa extends')
-  const views = { ...parent?.views, ...input.views }
-  const missing = VIEW_NAMES.filter((name) => !views[name])
-  if (missing.length > 0) fail(`view belum ada: ${missing.join(', ')}`)
+  if (parent && input.sections) fail('sections hanya didefinisikan template base; template turunan memakai section induknya (ADR-008)')
+  const sections = Object.freeze({ ...(input.sections ?? parent?.sections ?? {}) })
+
+  const defaultLayouts = {} as Record<LayoutPage, readonly LayoutItem[]>
+  for (const page of LAYOUT_PAGES) {
+    const items = input.defaultLayouts?.[page] ?? parent?.defaultLayouts[page] ?? []
+    // Layout bawaan harus bersih: setiap section dikenal dan props-nya valid.
+    const resolved = resolveLayout({ sections, raw: items, fallback: [], label: `defaultLayouts.${page}` })
+    if (resolved.issues.length > 0) fail(resolved.issues.join('; '))
+    defaultLayouts[page] = Object.freeze(items.map((item) => Object.freeze({ ...item })))
+  }
 
   return Object.freeze({
     key: input.key,
@@ -6387,6 +6462,30 @@ export function defineTemplate(input: TemplateInput): TemplateDefinition {
     options,
     menuLocations: Object.freeze([...(input.menuLocations ?? parent?.menuLocations ?? [])]),
     adSlots: Object.freeze([...(input.adSlots ?? parent?.adSlots ?? [])]),
+    sections,
+    defaultLayouts: Object.freeze(defaultLayouts),
+  })
+}
+
+export function defineTemplate(input: TemplateInput): TemplateDefinition {
+  const { manifest } = input
+  const fail = (message: string): never => {
+    throw new TemplateDefinitionError(`template "${manifest.key}": ${message}`)
+  }
+
+  const parent = input.extends
+  const manifestParent = manifest.lineage[1]
+  if (manifestParent !== parent?.key) {
+    fail(`extends (${parent?.key ?? 'tidak ada'}) harus sama dengan induk manifest (${manifestParent ?? 'tidak ada'})`)
+  }
+
+  const layout = input.layout ?? parent?.layout ?? fail('layout wajib untuk template tanpa extends')
+  const views = { ...parent?.views, ...input.views }
+  const missing = VIEW_NAMES.filter((name) => !views[name])
+  if (missing.length > 0) fail(`view belum ada: ${missing.join(', ')}`)
+
+  return Object.freeze({
+    ...manifest,
     layout,
     views: Object.freeze(views as Record<ViewName, ComponentLoader>),
   })
@@ -6454,12 +6553,19 @@ export function mergeDeep(base: Record<string, unknown>, override: Record<string
 //     valid jatuh ke default, key yang tidak dikenal dibuang. Satu warna
 //     yang salah tidak merusak seluruh theme.
 //  3. Token dijadikan CSS variable di bawah kelas root .tpl-<key>.
+//  4. layouts divalidasi per halaman (resolveLayout, ADR-008): section yang
+//     rusak dilewati, layout kosong atau rusak -> defaultLayouts manifest.
+//
+// Registry cukup berisi manifest (entry ./manifest), jadi bisa dipakai di
+// server sebelum view model dibangun (ADR-008). Renderer Vue mendaftarkan
+// definisi lengkap (manifest + komponen) dan memakai get() untuk komponen.
 //
 // Hasilnya (ResolvedTheme) hanya berisi data JSON, jadi bisa dikirim dari
 // server ke browser; komponen diambil lagi dari registry lewat templateKey.
 import { z } from 'zod'
-import type { ConfigSchema, ConfigSpec, TemplateDefinition } from './manifest'
+import type { ConfigSchema, ConfigSpec, TemplateManifest } from './manifest'
 import { isPlainObject } from './objects'
+import { LAYOUT_PAGES, resolveLayout, type ResolvedLayouts } from './sections'
 import { renderTokenCss, templateRootClass, type TokenTree } from './tokens'
 
 /** Bentuk baris site_themes yang dibutuhkan registry. */
@@ -6468,6 +6574,8 @@ export interface StoredTheme {
   templateVersion: string
   tokens: unknown
   options: unknown
+  /** Susunan section per jenis halaman; boleh tidak ada (= defaultLayouts). */
+  layouts?: unknown
 }
 
 export interface ResolvedTheme {
@@ -6478,6 +6586,8 @@ export interface ResolvedTheme {
   rootClass: string
   tokens: Record<string, unknown>
   options: Record<string, unknown>
+  /** Section per jenis halaman, sudah divalidasi; permintaan datanya dijalankan core. */
+  layouts: ResolvedLayouts
   /** Satu aturan CSS berisi variabel token, untuk <style> di <head>. */
   css: string
   /** Hal yang perlu dicatat ke log: fallback template, nilai tidak valid. Kosong bila bersih. */
@@ -6539,19 +6649,19 @@ export function resolveConfig(spec: ConfigSpec, raw: unknown, label = 'config'):
   return { value: whole.data as Record<string, unknown>, issues }
 }
 
-export interface TemplateRegistry {
+export interface TemplateRegistry<T extends TemplateManifest = TemplateManifest> {
   /** Template terdaftar, urut sesuai pendaftaran. */
-  readonly templates: readonly TemplateDefinition[]
-  readonly fallback: TemplateDefinition
+  readonly templates: readonly T[]
+  readonly fallback: T
   /** Template berdasarkan key; fallback bila tidak terdaftar. */
-  get(key: string): TemplateDefinition
+  get(key: string): T
   has(key: string): boolean
   /** Theme aktif site -> template + config tervalidasi. Null (site tanpa theme) -> fallback dengan default. */
   resolveTheme(stored: StoredTheme | null): ResolvedTheme
 }
 
-export function createTemplateRegistry(templates: TemplateDefinition[], options: { fallback: string }): TemplateRegistry {
-  const byKey = new Map<string, TemplateDefinition>()
+export function createTemplateRegistry<T extends TemplateManifest>(templates: T[], options: { fallback: string }): TemplateRegistry<T> {
+  const byKey = new Map<string, T>()
   for (const template of templates) {
     if (byKey.has(template.key)) throw new Error(`template "${template.key}" didaftarkan dua kali`)
     byKey.set(template.key, template)
@@ -6584,6 +6694,23 @@ export function createTemplateRegistry(templates: TemplateDefinition[], options:
       const opts = resolveConfig(template.options, stored?.options, 'options')
       issues.push(...tokens.issues, ...opts.issues)
 
+      const storedLayouts = stored?.layouts
+      if (storedLayouts !== undefined && storedLayouts !== null && !isPlainObject(storedLayouts)) {
+        issues.push('layouts: bukan object, memakai default')
+      }
+      const layoutSource = isPlainObject(storedLayouts) ? storedLayouts : {}
+      const layouts = {} as ResolvedLayouts
+      for (const page of LAYOUT_PAGES) {
+        const resolved = resolveLayout({
+          sections: template.sections,
+          raw: layoutSource[page],
+          fallback: template.defaultLayouts[page],
+          label: `layouts.${page}`,
+        })
+        layouts[page] = resolved.sections
+        issues.push(...resolved.issues)
+      }
+
       let css: string
       try {
         css = renderTokenCss(template.key, tokens.value as TokenTree)
@@ -6599,6 +6726,7 @@ export function createTemplateRegistry(templates: TemplateDefinition[], options:
         rootClass: templateRootClass(template.key),
         tokens: tokens.value,
         options: opts.value,
+        layouts,
         css,
         issues,
       }
@@ -6624,6 +6752,7 @@ function major(version: string): string {
 export { z } from 'zod'
 export * from './manifest'
 export { isPlainObject, mergeDeep } from './objects'
+export * from './sections'
 export * from './theme'
 export * from './tokens'
 export * from './view-models'
@@ -6713,14 +6842,28 @@ describe('renderTokenCss', () => {
 ```ts
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { defineTemplate, TemplateDefinitionError, type ComponentLoader, type TemplateInput } from './manifest'
+import {
+  defineManifest,
+  defineTemplate,
+  TemplateDefinitionError,
+  type ComponentLoader,
+  type ManifestInput,
+} from './manifest'
+import { defineSection } from './sections'
 import { VIEW_NAMES, type ViewName } from './view-models'
 
-// Komponen palsu: manifest hanya menyimpan loader, tidak memanggilnya.
+// Komponen palsu: definisi hanya menyimpan loader, tidak memanggilnya.
 const loader = (name: string): ComponentLoader => async () => ({ default: { name } })
 const allViews = Object.fromEntries(VIEW_NAMES.map((v) => [v, loader(v)])) as Record<ViewName, ComponentLoader>
 
-const baseInput: TemplateInput = {
+const sections = {
+  grid: defineSection({
+    props: z.object({ limit: z.number().int().min(1).max(12).default(6) }),
+    data: ({ limit }) => ({ source: 'latest', limit }),
+  }),
+}
+
+const baseInput: ManifestInput = {
   key: 'base',
   version: '1.0.0',
   name: 'Base',
@@ -6736,47 +6879,51 @@ const baseInput: TemplateInput = {
     defaults: { header: { style: 'left', showDate: false } },
   },
   menuLocations: ['header', 'footer'],
-  layout: loader('Layout'),
-  views: allViews,
+  sections,
+  defaultLayouts: { home: [{ type: 'grid', props: { limit: 9 } }] },
 }
 
-describe('defineTemplate', () => {
-  const base = defineTemplate(baseInput)
+describe('defineManifest', () => {
+  const base = defineManifest(baseInput)
 
-  it('template dasar lengkap', () => {
+  it('manifest dasar lengkap, tanpa komponen', () => {
     expect(base).toMatchObject({ key: 'base', version: '1.0.0', lineage: ['base'], menuLocations: ['header', 'footer'], adSlots: [] })
-    expect(Object.keys(base.views).sort()).toEqual([...VIEW_NAMES].sort())
+    expect(Object.keys(base.sections)).toEqual(['grid'])
+    expect(base.defaultLayouts.home).toEqual([{ type: 'grid', props: { limit: 9 } }])
+    expect(base).not.toHaveProperty('views')
     expect(Object.isFrozen(base)).toBe(true)
   })
 
-  it('extends: mewarisi skema, view, layout; default digabung per key', () => {
-    const home = loader('MagazineHome')
-    const magazine = defineTemplate({
+  it('extends: mewarisi skema, section, dan defaultLayouts; default digabung per key', () => {
+    const magazine = defineManifest({
       key: 'magazine',
       version: '1.0.0',
       name: 'Magazine',
       extends: base,
       tokens: { defaults: { color: { primary: '#0f62fe' } } },
       options: { defaults: { header: { style: 'centered' } } },
-      views: { home },
     })
     expect(magazine.lineage).toEqual(['magazine', 'base'])
     expect(magazine.tokens.schema).toBe(base.tokens.schema)
     expect(magazine.tokens.defaults).toEqual({ color: { primary: '#0f62fe', text: '#111111' }, font: { body: 'Inter' } })
     expect(magazine.options.defaults).toEqual({ header: { style: 'centered', showDate: false } })
-    expect(magazine.views.home).toBe(home)
-    expect(magazine.views.article).toBe(base.views.article)
-    expect(magazine.layout).toBe(base.layout)
+    expect(magazine.sections).toEqual(base.sections)
+    expect(magazine.defaultLayouts.home).toEqual(base.defaultLayouts.home)
     expect(magazine.menuLocations).toEqual(['header', 'footer'])
+  })
+
+  it('turunan boleh mengganti defaultLayouts', () => {
+    const news = defineManifest({ key: 'news', version: '1.0.0', name: 'News', extends: base, defaultLayouts: { home: [{ type: 'grid' }] } })
+    expect(news.defaultLayouts.home).toEqual([{ type: 'grid' }])
   })
 
   it('default dari input tidak diubah', () => {
     const defaults = { color: { primary: '#0f62fe' } }
-    defineTemplate({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults } })
+    defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults } })
     expect(defaults).toEqual({ color: { primary: '#0f62fe' } })
   })
 
-  it.each<[string, Partial<TemplateInput>, RegExp]>([
+  it.each<[string, Partial<ManifestInput>, RegExp]>([
     ['key huruf besar', { key: 'Magazine' }, /key harus/],
     ['key diawali angka', { key: '1mag' }, /key harus/],
     ['version bukan semver', { version: '1.0' }, /bukan semver/],
@@ -6784,19 +6931,55 @@ describe('defineTemplate', () => {
     ['tanpa skema tokens', { tokens: { defaults: {} } }, /tokens.schema wajib/],
     ['default tidak lolos skema', { tokens: { ...baseInput.tokens!, defaults: { color: { primary: 'merah', text: '#111111' }, font: { body: 'Inter' } } } }, /tokens.defaults tidak lolos skema -> color.primary/],
     ['default token tidak bisa jadi CSS', { tokens: { schema: z.object({ color: z.object({ primary: z.string() }) }), defaults: { color: { primary: 'red;}' } } } }, /CSS variable/],
-    ['tanpa layout', { layout: undefined }, /layout wajib/],
-    ['view kurang', { views: { home: loader('Home') } }, /view belum ada: article/],
+    ['defaultLayouts memakai section tidak dikenal', { defaultLayouts: { home: [{ type: 'carousel' }] } }, /section "carousel" tidak dikenal/],
+    ['defaultLayouts dengan props salah', { defaultLayouts: { home: [{ type: 'grid', props: { limit: 99 } }] } }, /props section "grid" tidak valid/],
   ])('menolak: %s', (_label, patch, message) => {
-    expect(() => defineTemplate({ ...baseInput, ...patch })).toThrow(TemplateDefinitionError)
-    expect(() => defineTemplate({ ...baseInput, ...patch })).toThrow(message)
+    expect(() => defineManifest({ ...baseInput, ...patch })).toThrow(TemplateDefinitionError)
+    expect(() => defineManifest({ ...baseInput, ...patch })).toThrow(message)
   })
 
   it('menolak key yang sama dengan induk', () => {
-    expect(() => defineTemplate({ key: 'base', version: '2.0.0', name: 'Base 2', extends: base })).toThrow(/sama dengan induknya/)
+    expect(() => defineManifest({ key: 'base', version: '2.0.0', name: 'Base 2', extends: base })).toThrow(/sama dengan induknya/)
   })
 
   it('menolak default turunan yang melanggar skema induk', () => {
-    expect(() => defineTemplate({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults: { font: { body: 'Comic Sans' } } } })).toThrow(/font.body/)
+    expect(() => defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, tokens: { defaults: { font: { body: 'Comic Sans' } } } })).toThrow(/font.body/)
+  })
+
+  it('menolak section di template turunan (komponen section hanya ada di base)', () => {
+    expect(() => defineManifest({ key: 'x', version: '1.0.0', name: 'X', extends: base, sections })).toThrow(/sections hanya didefinisikan template base/)
+  })
+})
+
+describe('defineTemplate', () => {
+  const baseManifest = defineManifest(baseInput)
+  const base = defineTemplate({ manifest: baseManifest, layout: loader('Layout'), views: allViews })
+  const magazineManifest = defineManifest({ key: 'magazine', version: '1.0.0', name: 'Magazine', extends: baseManifest })
+
+  it('manifest + komponen', () => {
+    expect(base).toMatchObject({ key: 'base', version: '1.0.0', lineage: ['base'] })
+    expect(base.tokens).toBe(baseManifest.tokens)
+    expect(base.sections).toBe(baseManifest.sections)
+    expect(Object.keys(base.views).sort()).toEqual([...VIEW_NAMES].sort())
+    expect(Object.isFrozen(base)).toBe(true)
+  })
+
+  it('extends: mewarisi layout dan view, boleh mengganti sebagian view', () => {
+    const home = loader('MagazineHome')
+    const magazine = defineTemplate({ manifest: magazineManifest, extends: base, views: { home } })
+    expect(magazine.views.home).toBe(home)
+    expect(magazine.views.article).toBe(base.views.article)
+    expect(magazine.layout).toBe(base.layout)
+  })
+
+  it.each<[string, () => unknown, RegExp]>([
+    ['tanpa layout', () => defineTemplate({ manifest: baseManifest, views: allViews }), /layout wajib/],
+    ['view kurang', () => defineTemplate({ manifest: baseManifest, layout: loader('L'), views: { home: loader('Home') } }), /view belum ada: article/],
+    ['extends tidak sesuai induk manifest', () => defineTemplate({ manifest: magazineManifest }), /extends \(tidak ada\) harus sama dengan induk manifest \(base\)/],
+    ['extends pada manifest tanpa induk', () => defineTemplate({ manifest: baseManifest, extends: base }), /extends \(base\) harus sama dengan induk manifest \(tidak ada\)/],
+  ])('menolak: %s', (_label, make, message) => {
+    expect(make).toThrow(TemplateDefinitionError)
+    expect(make).toThrow(message)
   })
 })
 ```
@@ -6806,9 +6989,9 @@ describe('defineTemplate', () => {
 ```ts
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { defineTemplate, type ComponentLoader, type ConfigSpec } from './manifest'
+import { defineManifest, type ConfigSpec } from './manifest'
+import { defineSection } from './sections'
 import { createTemplateRegistry, resolveConfig } from './theme'
-import { VIEW_NAMES, type ViewName } from './view-models'
 
 const hex = z.string().regex(/^#[0-9a-f]{6}$/i)
 const spec: ConfigSpec = {
@@ -6864,10 +7047,27 @@ describe('resolveConfig', () => {
 })
 
 describe('createTemplateRegistry', () => {
-  const loader: ComponentLoader = async () => ({ default: {} })
-  const views = Object.fromEntries(VIEW_NAMES.map((v) => [v, loader])) as Record<ViewName, ComponentLoader>
-  const base = defineTemplate({ key: 'base', version: '1.0.0', name: 'Base', tokens: spec, options: { schema: z.object({ showDate: z.boolean() }), defaults: { showDate: false } }, layout: loader, views })
-  const magazine = defineTemplate({ key: 'magazine', version: '1.2.0', name: 'Magazine', extends: base, tokens: { defaults: { color: { primary: '#0f62fe' } } } })
+  const sections = {
+    grid: defineSection({ props: z.object({ limit: z.number().int().min(1).max(12).default(6) }), data: ({ limit }) => ({ source: 'latest', limit }) }),
+  }
+  const base = defineManifest({
+    key: 'base',
+    version: '1.0.0',
+    name: 'Base',
+    tokens: spec,
+    options: { schema: z.object({ showDate: z.boolean() }), defaults: { showDate: false } },
+    sections,
+    defaultLayouts: { home: [{ type: 'grid' }] },
+  })
+  const magazine = defineManifest({
+    key: 'magazine',
+    version: '1.2.0',
+    name: 'Magazine',
+    extends: base,
+    tokens: { defaults: { color: { primary: '#0f62fe' } } },
+    defaultLayouts: { home: [{ type: 'grid', props: { limit: 3 } }] },
+  })
+  const grid = (limit: number) => ({ type: 'grid', props: { limit }, articles: { source: 'latest', limit } })
   const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
 
   it('theme tersimpan -> template, config tervalidasi, dan CSS', () => {
@@ -6878,6 +7078,7 @@ describe('createTemplateRegistry', () => {
       rootClass: 'tpl-magazine',
       tokens: { color: { primary: '#0f62fe', surface: '#ffffff' }, radius: { card: '8px' }, scale: 1 },
       options: { showDate: true },
+      layouts: { home: [grid(3)] },
       css: '.tpl-magazine{--color-primary:#0f62fe;--color-surface:#ffffff;--radius-card:8px;--scale:1}',
       issues: [],
     })
@@ -6902,6 +7103,20 @@ describe('createTemplateRegistry', () => {
   it('hasil bisa dikirim sebagai JSON tanpa kehilangan data', () => {
     const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.0.0', tokens: {}, options: {} })
     expect(JSON.parse(JSON.stringify(theme))).toEqual(theme)
+  })
+
+  it('layout tersimpan divalidasi; rusak -> defaultLayouts template, dicatat', () => {
+    const stored = { templateKey: 'magazine', templateVersion: '1.2.0', tokens: {}, options: {} }
+    expect(registry.resolveTheme({ ...stored, layouts: { home: [{ type: 'grid', props: { limit: 5 } }] } })).toMatchObject({ layouts: { home: [grid(5)] }, issues: [] })
+    expect(registry.resolveTheme({ ...stored, layouts: { home: [{ type: 'hero' }] } })).toMatchObject({
+      layouts: { home: [grid(3)] },
+      issues: ['layouts.home[0]: section "hero" tidak dikenal, dilewati', 'layouts.home: tidak ada section yang valid, memakai default'],
+    })
+    expect(registry.resolveTheme({ ...stored, layouts: 'home' })).toMatchObject({ layouts: { home: [grid(3)] }, issues: ['layouts: bukan object, memakai default'] })
+  })
+
+  it('fallback memakai defaultLayouts base, bukan milik template yang tidak terdaftar', () => {
+    expect(registry.resolveTheme(null).layouts).toEqual({ home: [grid(6)] })
   })
 
   it('get: key tidak dikenal -> fallback', () => {
@@ -7091,27 +7306,24 @@ export const baseOptionDefaults: BaseOptions = {
 }
 ```
 
-12. Tulis manifest base. Setiap view dimuat saat dibutuhkan (`() => import(...)`), dan CSS serta font di-import sebagai efek samping modul:
+12. Tulis manifest base. File `index.ts`, `HomeView.vue`, `base.css`, `package.json`, `test-fixtures.ts`, dan `render.test.ts` base di bab ini juga sudah versi akhir: entry `./manifest`, folder `sections/`, dan home berbasis section dijelaskan di bab "Menyusun Halaman Depan dari Section". Setiap view dimuat saat dibutuhkan (`() => import(...)`), dan CSS serta font di-import sebagai efek samping modul:
 
 `templates/base/src/index.ts`
 
 ```ts
 // Template base: semua komponen UI default, dipakai bersama oleh semua
 // template (ADR-005). Gaya netral; template lain membedakan diri lewat
-// token, opsi, dan CSS di bawah kelas root-nya.
+// token, opsi, layout section, dan CSS di bawah kelas root-nya.
+//
+// Manifest (skema, section, defaultLayouts) ada di ./manifest.ts agar bisa
+// dipakai server tanpa Vue/CSS (ADR-008); di sini ditambah komponen.
 import { defineTemplate } from '@framework/template-kit'
-import { baseOptionDefaults, baseOptionsSchema, baseTokenDefaults, baseTokenSchema } from './config'
+import manifest from './manifest'
 import './styles/fonts.css'
 import './styles/base.css'
 
 export default defineTemplate({
-  key: 'base',
-  version: '1.0.0',
-  name: 'Base',
-  tokens: { schema: baseTokenSchema, defaults: baseTokenDefaults },
-  options: { schema: baseOptionsSchema, defaults: baseOptionDefaults },
-  menuLocations: ['header', 'footer'],
-  adSlots: [],
+  manifest,
   layout: () => import('./TemplateLayout.vue'),
   views: {
     home: () => import('./views/HomeView.vue'),
@@ -7126,6 +7338,7 @@ export default defineTemplate({
 })
 
 export * from './config'
+export { sectionComponents } from './sections/components'
 ```
 
 13. Self-host font. Paket `@fontsource` berisi file woff2 dan `@font-face` dengan `unicode-range`, sehingga browser hanya mengunduh family dan subset yang dipakai:
@@ -7678,37 +7891,60 @@ import type { HomeView } from '@framework/template-kit'
 import ArticleCard from '../components/ArticleCard.vue'
 import ArticleList from '../components/ArticleList.vue'
 import PaginationNav from '../components/PaginationNav.vue'
+import { sectionComponents } from '../sections/components'
 
 defineProps<{ vm: HomeView }>()
+
+// Tipe section yang tidak punya komponen tidak dirender (core sudah
+// memvalidasi layout terhadap manifest, ini hanya jaring pengaman).
+function sectionComponent(type: string) {
+  return Object.hasOwn(sectionComponents, type) ? sectionComponents[type as keyof typeof sectionComponents] : null
+}
 </script>
 
 <template>
   <div class="view view--home">
-    <section
-      v-if="vm.featured.length > 0"
-      class="home__featured"
-      aria-label="Pilihan redaksi"
-    >
-      <ArticleCard
-        v-for="(article, index) in vm.featured"
-        :key="article.href"
-        :article="article"
-        :lead="index === 0"
-      />
-    </section>
-    <section
-      class="home__latest"
-      aria-labelledby="judul-terbaru"
-    >
-      <h2
-        id="judul-terbaru"
-        class="section-title"
+    <template v-if="vm.sections.length > 0">
+      <template
+        v-for="(section, index) in vm.sections"
+        :key="index"
       >
-        Terbaru
-      </h2>
-      <ArticleList :articles="vm.latest" />
+        <component
+          :is="sectionComponent(section.type)"
+          v-if="sectionComponent(section.type)"
+          :section="section"
+          :index="index"
+        />
+      </template>
       <PaginationNav :pagination="vm.pagination" />
-    </section>
+    </template>
+    <template v-else>
+      <section
+        v-if="vm.featured.length > 0"
+        class="home__featured"
+        aria-label="Pilihan redaksi"
+      >
+        <ArticleCard
+          v-for="(article, index) in vm.featured"
+          :key="article.href"
+          :article="article"
+          :lead="index === 0"
+        />
+      </section>
+      <section
+        class="home__latest"
+        aria-labelledby="judul-terbaru"
+      >
+        <h2
+          id="judul-terbaru"
+          class="section-title"
+        >
+          Terbaru
+        </h2>
+        <ArticleList :articles="vm.latest" />
+        <PaginationNav :pagination="vm.pagination" />
+      </section>
+    </template>
   </div>
 </template>
 ```
@@ -8299,6 +8535,86 @@ defineProps<{ vm: NotFoundView }>()
   margin-bottom: 1rem;
 }
 
+/* ---------- Section home (ADR-008) ------------------------------------ */
+
+.tpl .section + .section {
+  margin-top: 2.5rem;
+}
+
+.tpl .section--hero {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.tpl .section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.tpl .section__head .section__title {
+  margin: 0;
+}
+
+.tpl .section__title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tpl .section__more {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.tpl .headline-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tpl .headline-list__item {
+  display: grid;
+  gap: 0.125rem;
+  padding-block: 0.875rem;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl .headline-list__item:first-child {
+  padding-top: 0;
+}
+
+.tpl .headline-list__category {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tpl .headline-list__title {
+  color: inherit;
+  font-family: var(--f-heading);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.3;
+  text-decoration: none;
+}
+
+.tpl .headline-list__title:hover {
+  text-decoration: underline;
+}
+
+.tpl .headline-list__date {
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .view--home > .pagination {
+  margin-top: 2.5rem;
+}
+
 /* ---------- Artikel dan halaman --------------------------------------- */
 
 .tpl .article,
@@ -8543,7 +8859,8 @@ defineProps<{ vm: NotFoundView }>()
   "description": "Semua komponen UI default; dipakai bersama oleh semua template",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
@@ -8560,33 +8877,20 @@ defineProps<{ vm: NotFoundView }>()
 }
 ```
 
-18. Buat template magazine. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
+18. Buat template magazine. Di versi akhir (bab "Menyusun Halaman Depan dari Section") manifest magazine pindah ke `src/manifest.ts`, dan `index.ts` hanya menambahkan CSS. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
 
 `templates/magazine/src/index.ts`
 
 ```ts
-// Template magazine 1.0.0: tampilan majalah yang dibangun hanya dari token,
-// opsi, dan CSS di atas komponen base. Tidak ada override komponen (ADR-005).
-import { defineTemplate } from '@framework/template-kit'
+// Template magazine: tampilan majalah yang dibangun hanya dari token, opsi,
+// layout section, dan CSS di atas komponen base. Tidak ada override
+// komponen (ADR-005). Manifest ada di ./manifest.ts (ADR-008).
 import base from '@framework/template-base'
+import { defineTemplate } from '@framework/template-kit'
+import manifest from './manifest'
 import './styles.css'
 
-export default defineTemplate({
-  key: 'magazine',
-  version: '1.0.0',
-  name: 'Magazine',
-  extends: base,
-  tokens: {
-    defaults: {
-      color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' },
-      font: { heading: 'Inter', body: 'Inter' },
-      radius: { card: '8px' },
-    },
-  },
-  options: {
-    defaults: { header: { style: 'centered', showDate: true } },
-  },
-})
+export default defineTemplate({ manifest, extends: base })
 ```
 
 `templates/magazine/src/styles.css`
@@ -8751,7 +9055,8 @@ export default defineTemplate({
   "description": "Template pertama: tampilan majalah dari token, opsi, dan CSS di atas base",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
   },
   "dependencies": {
     "@framework/template-base": "workspace:*",
@@ -8906,7 +9211,7 @@ export const pagination: PaginationView = {
 const noPages: PaginationView = { page: 1, totalPages: 1, prevHref: null, nextHref: null, pages: [] }
 
 export const views: { [V in ViewName]: ViewModelOf<V> } = {
-  home: { view: 'home', featured: [card(1, { isFeatured: true, image })], latest: [card(2), card(3)], pagination },
+  home: { view: 'home', sections: [], featured: [card(1, { isFeatured: true, image })], latest: [card(2), card(3)], pagination },
   article: {
     view: 'article',
     breadcrumb: [{ label: 'Beranda', href: '/' }, { label: 'Gadget', href: '/kategori/gadget' }, { label: 'Artikel 1', href: '/gadget/artikel-1' }],
@@ -8948,6 +9253,22 @@ export const views: { [V in ViewName]: ViewModelOf<V> } = {
 
 /** Pastikan fixture mencakup setiap jenis halaman (gagal compile bila ada yang kurang). */
 export const allViews: PageViewModel[] = Object.values(views)
+
+/** Home halaman 1 dengan layout section (ADR-008): semua section base + satu tipe tak dikenal. */
+export const homeWithSections: ViewModelOf<'home'> = {
+  view: 'home',
+  sections: [
+    { type: 'hero', props: { source: 'featured', limit: 1 }, articles: [card(1, { isFeatured: true, image })], link: null },
+    { type: 'latest-grid', props: { limit: 6 }, articles: [card(2), card(3)], link: null },
+    { type: 'headline-list', props: { source: 'latest', limit: 5, title: 'Kabar <b>cepat</b>' }, articles: [card(4)], link: null },
+    { type: 'category-strip', props: { categorySlug: 'gadget', limit: 4 }, articles: [card(5)], link: { label: 'Gadget', href: '/category/gadget' } },
+    { type: 'carousel', props: {}, articles: [card(6)], link: null },
+    { type: 'category-strip', props: { categorySlug: 'kosong', limit: 4 }, articles: [], link: { label: 'Kosong', href: '/category/kosong' } },
+  ],
+  featured: [],
+  latest: [],
+  pagination,
+}
 ```
 
 `templates/base/src/render.test.ts`
@@ -8965,7 +9286,7 @@ import { renderToString } from 'vue/server-renderer'
 import base from './index'
 import { baseOptionDefaults } from './config'
 import SmartImage from './components/SmartImage.vue'
-import { chrome, image, views } from './test-fixtures'
+import { chrome, homeWithSections, image, views } from './test-fixtures'
 
 async function load(loader: ComponentLoader): Promise<Component> {
   const mod = await loader()
@@ -8989,6 +9310,25 @@ describe('template base: view', () => {
     expect(html).toContain('aria-current="page"')
     expect(html).toContain('pagination__gap')
     expect(html).toContain('rel="next"')
+  })
+
+  it('home dengan section: setiap tipe dirender dari base, urutan sesuai layout, pagination tetap', async () => {
+    const html = await render(await load(base.views.home), { vm: homeWithSections })
+    const order = ['section--hero', 'section--latest-grid', 'section--headline-list', 'section--category-strip'].map((c) => html.indexOf(c))
+    expect(order.every((i) => i >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(html).toContain('article-card--lead')
+    expect(html).toContain('Kabar &lt;b&gt;cepat&lt;/b&gt;')
+    expect(html).toContain('<a href="/category/gadget">Gadget</a>')
+    expect(html).toContain('Lihat semua')
+    expect(html).toContain('aria-labelledby="section-3-title"')
+    expect(html).toContain('id="section-3-title"')
+    expect(html).toContain('rel="next"')
+    // Tipe tanpa komponen dan section kosong tidak merender apa-apa.
+    expect(html).not.toContain('Artikel 6')
+    expect(html).not.toContain('Kosong')
+    // Mode section tidak merender daftar lama.
+    expect(html).not.toContain('judul-terbaru')
   })
 
   it('artikel: semua tipe block, teks di-escape', async () => {
@@ -9182,8 +9522,10 @@ describe('CSS template dibatasi kelas root', () => {
 `apps/web/app/templates.ts`
 
 ```ts
-// Registry template yang di-bundle aplikasi ini. Menambah template = daftar
-// di sini (dan dependency di package.json); core tidak berubah (ADR-005).
+// Registry template (manifest + komponen) yang di-bundle aplikasi ini.
+// Menambah template = daftar di sini, di server/utils/templates.ts (entry
+// ./manifest, ADR-008), dan dependency di package.json; core tidak berubah
+// (ADR-005).
 // Mode single-site nanti cukup mendaftarkan template yang dipakai (env
 // TEMPLATES, ADR-001) agar bundle kecil.
 import base from '@framework/template-base'
@@ -9848,7 +10190,7 @@ describe('createDateFormatter', () => {
 })
 ```
 
-8. Tulis pembangun halaman di `build-page.ts`. Fungsi `build({ site, pathname, searchParams })` mengembalikan salah satu dari (file di bawah sudah memuat tambahan SEO dan `origin` dari bab "Menambahkan Embed, SEO, dan Feed"):
+8. Tulis pembangun halaman di `build-page.ts`. Fungsi `build({ site, pathname, searchParams })` mengembalikan salah satu dari (file di bawah sudah memuat tambahan SEO dan `origin` dari bab "Menambahkan Embed, SEO, dan Feed", serta section home dari bab "Menyusun Halaman Depan dari Section"):
    - `render` dengan status 200 atau 404, berisi `chrome` (identitas site, menu dengan URL jadi, tanggal hari ini) dan `vm` (view model halaman);
    - `redirect`: slash di ujung, artikel di path non-kanonik, atau aturan di tabel `redirects` (dicek sebelum 404).
 
@@ -9867,15 +10209,19 @@ describe('createDateFormatter', () => {
 // Satu-satunya tempat yang menyusun data untuk template: URL dari
 // createUrlBuilder, tanggal dengan locale dan zona waktu site, gambar
 // lewat resolver media. Template tidak pernah melihat repository.
-import type {
-  ArticleCardView,
-  BlockView,
-  ChromeView,
-  ImageView,
-  LinkView,
-  MenuItemView,
-  PageViewModel,
-  PaginationView,
+import {
+  SECTION_LIMITS,
+  type ArticleCardView,
+  type ArticlesRequest,
+  type BlockView,
+  type ChromeView,
+  type ImageView,
+  type LinkView,
+  type MenuItemView,
+  type PageViewModel,
+  type PaginationView,
+  type ResolvedSection,
+  type SectionView,
 } from '@framework/template-kit'
 import type { Block, LenientBody } from '../content/blocks'
 import { embedSrc } from '../content/embed'
@@ -9901,6 +10247,11 @@ export interface PageRequest {
    * mis. https://tekno.example. Dihitung middleware dari request.
    */
   origin: string
+  /**
+   * Section per jenis halaman dari theme aktif, sudah divalidasi registry
+   * template (ADR-008). Kosong atau tidak ada = tanpa section.
+   */
+  layouts?: { home?: readonly ResolvedSection[] }
 }
 
 export interface RenderedPage {
@@ -9961,7 +10312,7 @@ export function createPageBuilder(
 
       const built = await (async (): Promise<Built | Redirect | null> => {
         switch (route.kind) {
-          case 'home': return page === null ? null : home(ctx, page)
+          case 'home': return page === null ? null : home(ctx, page, request.layouts?.home ?? [])
           case 'category': return page === null ? null : category(ctx, route.slug, page)
           case 'tag': return page === null ? null : tag(ctx, route.slug, page)
           case 'author': return page === null ? null : author(ctx, route.slug, page)
@@ -10009,7 +10360,46 @@ export function createPageBuilder(
 
   // ---------- Jenis halaman ------------------------------------------------
 
-  async function home(ctx: BuildContext, page: number): Promise<Built | null> {
+  async function home(ctx: BuildContext, page: number, plans: readonly ResolvedSection[]): Promise<Built | null> {
+    const seo: SeoInput = { title: null, description: null, type: 'website', image: null, canonicalPath: ctx.urls.withPage(ctx.urls.home(), page), page }
+    const home = ctx.urls.home()
+
+    if (plans.length > 0) {
+      // Mode section (ADR-008). Halaman 1 = section. ?page=N (N >= 2) =
+      // arsip terbaru yang dimulai dari artikel paling baru (halaman arsip
+      // N-1), supaya tidak ada artikel yang tidak terjangkau dari pagination
+      // hanya karena section menampilkan lebih sedikit dari pageSize.
+      if (page === 1) {
+        const [sections, latest] = await Promise.all([
+          sectionViews(ctx, plans),
+          content.listPublishedArticles(ctx.site.id, { page: 1, pageSize }),
+        ])
+        return {
+          vm: {
+            view: 'home',
+            sections,
+            featured: [],
+            // Semua section dilewati (mis. kategori sudah dihapus): tetap tampilkan daftar terbaru.
+            latest: sections.length > 0 ? [] : latest.items.map((a) => card(ctx, a)),
+            pagination: pagination(ctx, { page: 1, totalPages: latest.totalPages + 1 }, home),
+          },
+          seo,
+        }
+      }
+      const archive = await content.listPublishedArticles(ctx.site.id, { page: page - 1, pageSize })
+      if (page - 1 > archive.totalPages) return null
+      return {
+        vm: {
+          view: 'home',
+          sections: [],
+          featured: [],
+          latest: archive.items.map((a) => card(ctx, a)),
+          pagination: pagination(ctx, { page, totalPages: archive.totalPages + 1 }, home),
+        },
+        seo,
+      }
+    }
+
     const [featured, latest] = await Promise.all([
       page === 1 ? content.listPublishedArticles(ctx.site.id, { featuredOnly: true, pageSize: 1 }) : null,
       content.listPublishedArticles(ctx.site.id, { page, pageSize }),
@@ -10020,11 +10410,72 @@ export function createPageBuilder(
     return {
       vm: {
         view: 'home',
+        sections: [],
         featured: featuredItems.map((a) => card(ctx, a)),
         latest: latest.items.filter((a) => !shown.has(a.id)).map((a) => card(ctx, a)),
-        pagination: pagination(ctx, latest, ctx.urls.home()),
+        pagination: pagination(ctx, latest, home),
       },
-      seo: { title: null, description: null, type: 'website', image: null, canonicalPath: ctx.urls.withPage(ctx.urls.home(), page), page },
+      seo,
+    }
+  }
+
+  /**
+   * Menjalankan permintaan data section (ADR-008), berurutan: artikel yang
+   * sudah tampil di section sebelumnya dikecualikan di query (excludeIds),
+   * jadi setiap section tetap terisi penuh bila artikelnya cukup. Batas
+   * jumlah section dan limit dijaga ulang di sini: core tidak bergantung
+   * pada validasi pemanggil.
+   */
+  async function sectionViews(ctx: BuildContext, plans: readonly ResolvedSection[]): Promise<SectionView[]> {
+    const shown: string[] = []
+    const out: SectionView[] = []
+    for (const plan of plans.slice(0, SECTION_LIMITS.maxSectionsPerPage)) {
+      const request = plan.articles
+      if (!request) {
+        out.push({ type: plan.type, props: plan.props, articles: [], link: null })
+        continue
+      }
+      const limit = Math.min(Math.max(Math.trunc(request.limit) || 1, 1), SECTION_LIMITS.maxArticles)
+      const data = await sectionArticles(ctx, request, limit, shown)
+      if (!data) continue
+      for (const a of data.items) shown.push(a.id)
+      out.push({ type: plan.type, props: plan.props, articles: data.items.map((a) => card(ctx, a)), link: data.link })
+    }
+    return out
+  }
+
+  /** Null = sumber tidak ada (kategori/tag tidak dikenal): section dilewati dan dicatat. */
+  async function sectionArticles(ctx: BuildContext, request: ArticlesRequest, size: number, excludeIds: readonly string[]): Promise<SectionData | null> {
+    const siteId = ctx.site.id
+    switch (request.source) {
+      case 'latest':
+        return { items: (await content.listPublishedArticles(siteId, { pageSize: size, excludeIds })).items, link: null }
+      case 'featured':
+        return { items: (await content.listPublishedArticles(siteId, { featuredOnly: true, pageSize: size, excludeIds })).items, link: null }
+      case 'category': {
+        const slug = request.slug ?? ''
+        const [found, list] = await Promise.all([
+          content.getCategory(siteId, slug),
+          content.listPublishedArticles(siteId, { categorySlug: slug, pageSize: size, excludeIds }),
+        ])
+        if (!found) {
+          ctx.issues.push(`section: kategori "${slug}" tidak ada di site ini, section dilewati`)
+          return null
+        }
+        return { items: list.items, link: { label: found.name, href: ctx.urls.category(found.slug) } }
+      }
+      case 'tag': {
+        const slug = request.slug ?? ''
+        const [found, list] = await Promise.all([
+          content.getTag(siteId, slug),
+          content.listPublishedArticles(siteId, { tagSlug: slug, pageSize: size, excludeIds }),
+        ])
+        if (!found) {
+          ctx.issues.push(`section: tag "${slug}" tidak ada di site ini, section dilewati`)
+          return null
+        }
+        return { items: list.items, link: { label: found.name, href: ctx.urls.tag(found.slug) } }
+      }
     }
   }
 
@@ -10288,6 +10739,11 @@ interface BuildContext {
   issues: string[]
 }
 
+interface SectionData {
+  items: ArticleSummary[]
+  link: LinkView | null
+}
+
 /** View model halaman + bahan SEO-nya. */
 interface Built {
   vm: PageViewModel
@@ -10338,7 +10794,7 @@ export function pageWindow(page: number, totalPages: number): (number | null)[] 
   return out
 }
 
-function pagination(ctx: BuildContext, list: Page<unknown>, baseHref: string): PaginationView {
+function pagination(ctx: BuildContext, list: Pick<Page<unknown>, 'page' | 'totalPages'>, baseHref: string): PaginationView {
   const { page, totalPages } = list
   const href = (n: number) => ctx.urls.withPage(baseHref, n)
   return {
@@ -10365,6 +10821,7 @@ function pagination(ctx: BuildContext, list: Page<unknown>, baseHref: string): P
 //  2. Terhadap database dev yang di-seed (dilewati tanpa DATABASE_URL), jam
 //     dipatok 19 Nov 2026: setiap jenis halaman, redirect, 404, dua site.
 import { createDatabase } from '@framework/db'
+import { SECTION_LIMITS, type ResolvedSection } from '@framework/template-kit'
 import { afterAll, describe, expect, it } from 'vitest'
 import { parseBodyLenient } from '../content/blocks'
 import { parseSiteSettings } from '../site/settings'
@@ -10403,15 +10860,15 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
     return sites.get(code) as SiteInfo
   }
 
-  async function build(code: string, url: string): Promise<PageResult> {
+  async function build(code: string, url: string, home?: ResolvedSection[]): Promise<PageResult> {
     const parsed = new URL(url, 'http://x')
     const origin = code === 'kabar-tekno' ? 'https://tekno.localhost' : 'https://kuliner.localhost'
-    const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin }
+    const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin, layouts: home ? { home } : undefined }
     return builder.build(request)
   }
 
-  async function render(code: string, url: string) {
-    const result = await build(code, url)
+  async function render(code: string, url: string, home?: ResolvedSection[]) {
+    const result = await build(code, url, home)
     if (result.kind !== 'render') throw new Error(`${url}: diharapkan render, dapat ${JSON.stringify(result)}`)
     return result
   }
@@ -10461,6 +10918,96 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
     expect(second.page.vm.pagination).toMatchObject({ prevHref: '/', nextHref: null })
     expect((await render('kabar-tekno', '/?page=3')).status).toBe(404)
     expect((await render('kabar-tekno', '/?page=abc')).status).toBe(404)
+  })
+
+  // ---------- Section home (ADR-008) ----------
+  const plan = (type: string, articles: ResolvedSection['articles'], props: Record<string, unknown> = {}): ResolvedSection => ({ type, props, articles })
+
+  it('home dengan section: data per section, tanpa artikel ganda, tautan kategori/tag; pagination tetap', async () => {
+    const { page, issues } = await render('kabar-tekno', '/', [
+      plan('hero', { source: 'featured', limit: 1 }, { source: 'featured', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 6 }),
+      plan('category-strip', { source: 'category', slug: 'gadget', limit: 4 }),
+      plan('tag-strip', { source: 'tag', slug: 'android', limit: 4 }),
+      plan('note', null, { text: 'Halo' }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections.map((s) => [s.type, s.articles.map((a) => a.href), s.link])).toEqual([
+      ['hero', ['/review/ponsel-lipat-makin-murah'], null],
+      ['latest-grid', ['/kecerdasan-buatan/cara-kerja-model-bahasa'], null],
+      // Ponsel ada di sub-kategori gadget dan bertag android, tetapi sudah tampil di hero.
+      ['category-strip', [], { label: 'Gadget', href: '/category/gadget' }],
+      ['tag-strip', [], { label: 'Android', href: '/tag/android' }],
+      ['note', [], null],
+    ])
+    expect(page.vm.sections[0]?.props).toEqual({ source: 'featured', limit: 1 })
+    expect(page.vm.featured).toEqual([])
+    expect(page.vm.latest).toEqual([])
+    // 2 artikel, pageSize 1: halaman 1 = section, halaman 2-3 = arsip.
+    expect(page.vm.pagination).toMatchObject({ page: 1, totalPages: 3, nextHref: '/?page=2' })
+    expect(issues).toEqual([])
+  })
+
+  it('section yang meminta lebih banyak tetap terisi setelah artikel ganda dibuang', async () => {
+    const { page } = await render('kabar-tekno', '/', [
+      plan('hero', { source: 'latest', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections.map((s) => s.articles.map((a) => a.href))).toEqual([
+      ['/kecerdasan-buatan/cara-kerja-model-bahasa'],
+      ['/review/ponsel-lipat-makin-murah'],
+    ])
+  })
+
+  it('mode section: ?page=N adalah arsip dari artikel terbaru, jadi tidak ada artikel yang terlewat', async () => {
+    const layout = [plan('hero', { source: 'featured', limit: 1 })]
+    const pages = await Promise.all(['/?page=2', '/?page=3'].map((url) => render('kabar-tekno', url, layout)))
+    const vms = pages.map(({ page }) => {
+      if (page.vm.view !== 'home') throw new Error('bukan home')
+      return page.vm
+    })
+    expect(vms.map((vm) => vm.sections)).toEqual([[], []])
+    expect(vms.map((vm) => vm.latest.map((a) => a.href))).toEqual([['/kecerdasan-buatan/cara-kerja-model-bahasa'], ['/review/ponsel-lipat-makin-murah']])
+    expect(vms[0]?.pagination).toMatchObject({ page: 2, totalPages: 3, prevHref: '/', nextHref: '/?page=3' })
+    expect((await render('kabar-tekno', '/?page=4', layout)).status).toBe(404)
+  })
+
+  it('section berikutnya tetap terisi walau artikelnya sudah banyak dipakai section sebelumnya', async () => {
+    const { page } = await render('kabar-tekno', '/', [
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections.map((s) => s.articles.map((a) => a.href))).toEqual([
+      ['/kecerdasan-buatan/cara-kerja-model-bahasa'],
+      ['/review/ponsel-lipat-makin-murah'],
+      [],
+    ])
+  })
+
+  it('kategori atau tag tidak dikenal: section dilewati dan dicatat; tanpa section tersisa = daftar terbaru', async () => {
+    const { page, issues } = await render('kabar-tekno', '/', [
+      plan('category-strip', { source: 'category', slug: 'resep', limit: 4 }),
+      plan('tag-strip', { source: 'tag', slug: 'tidak-ada', limit: 4 }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections).toEqual([])
+    expect(page.vm.latest.map((a) => a.href)).toEqual(['/kecerdasan-buatan/cara-kerja-model-bahasa'])
+    // Kategori "resep" milik site lain: tidak boleh terbaca dari site ini.
+    expect(issues).toEqual([
+      'section: kategori "resep" tidak ada di site ini, section dilewati',
+      'section: tag "tidak-ada" tidak ada di site ini, section dilewati',
+    ])
+  })
+
+  it('jumlah section dan limit dijaga ulang di core', async () => {
+    const many = Array.from({ length: SECTION_LIMITS.maxSectionsPerPage + 4 }, () => plan('latest-grid', { source: 'latest', limit: 999 }))
+    const { page } = await render('kabar-tekno', '/', many)
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections).toHaveLength(SECTION_LIMITS.maxSectionsPerPage)
+    expect(page.vm.sections[0]?.articles).toHaveLength(2)
   })
 
   it('artikel: breadcrumb dengan induk kategori, tag, block body termasuk gambar', async () => {
@@ -10647,7 +11194,7 @@ export function useFeedBuilder() {
 }
 ```
 
-12. Bangun halaman di middleware, setelah site ditemukan. Theme dan view model dimuat paralel. Redirect langsung dikirim dari middleware, `issues` dicatat ke log, dan hasilnya disimpan di `event.context.page`. Perhitungan `siteOrigin` dan prefix feed ditambahkan di bab "Menambahkan Embed, SEO, dan Feed":
+12. Bangun halaman di middleware, setelah site ditemukan. Di bab ini theme dan view model dimuat paralel; sejak bab "Menyusun Halaman Depan dari Section" theme diselesaikan lebih dulu (file di bawah sudah versi itu). Redirect langsung dikirim dari middleware, `issues` dicatat ke log, dan hasilnya disimpan di `event.context.page`. Perhitungan `siteOrigin` dan prefix feed ditambahkan di bab "Menambahkan Embed, SEO, dan Feed":
 
 `apps/web/server/middleware/site.ts`
 
@@ -10655,7 +11202,8 @@ export function useFeedBuilder() {
 // Host request -> site, untuk setiap request (ADR-001).
 //
 //   site ditemukan  -> event.context.site / siteDomain; untuk request
-//                      halaman juga theme + view model (event.context.page),
+//                      halaman juga theme yang sudah diselesaikan
+//                      (event.context.theme) + view model (event.context.page),
 //                      atau redirect (permalink kanonik, tabel redirects)
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
@@ -10666,6 +11214,7 @@ import { resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
+import { resolveSiteTheme } from '../utils/templates'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -10689,11 +11238,16 @@ export default defineEventHandler(async (event) => {
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
-    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
-    const [theme, built] = await Promise.all([
-      useRepositories().sites.getActiveTheme(site.id),
-      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
-    ])
+    // Halaman publik: theme diselesaikan dulu (layout section menentukan data
+    // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
+    const theme = resolveSiteTheme(site, await useRepositories().sites.getActiveTheme(site.id))
+    const built = await usePageBuilder().build({
+      site,
+      pathname: url.pathname,
+      searchParams: url.searchParams,
+      origin: event.context.siteOrigin,
+      layouts: theme.layouts,
+    })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme
@@ -10719,7 +11273,7 @@ export default defineEventHandler(async (event) => {
 // Data per request yang diisi middleware server/middleware/site.ts.
 // Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
 import type { SeoMeta, SiteInfo } from '@framework/core'
-import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
 
 declare module 'nuxt/schema' {
   interface RequestEventContext {
@@ -10729,8 +11283,11 @@ declare module 'nuxt/schema' {
     siteDomain?: string
     /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
     siteOrigin?: string
-    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
-    theme?: StoredTheme | null
+    /**
+     * Theme aktif yang sudah diselesaikan registry manifest (ADR-008): template
+     * (bisa fallback), token, opsi, layout section. Hanya untuk request halaman.
+     */
+    theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
   }
@@ -10739,43 +11296,32 @@ declare module 'nuxt/schema' {
 export {}
 ```
 
-13. Ganti plugin `site.server.ts`: tidak lagi membangun chrome sementara, cukup menyalin `event.context.page` ke state dan memasang status 404 lewat `setResponseStatus`. Request yang sampai ke renderer tanpa halaman (mis. `/api/tidak-ada`) juga dijawab 404:
+13. Ganti plugin `site.server.ts` (versi di bawah dari bab "Menyusun Halaman Depan dari Section": theme sudah diselesaikan di middleware): tidak lagi membangun chrome sementara, cukup menyalin `event.context.page` ke state dan memasang status 404 lewat `setResponseStatus`. Request yang sampai ke renderer tanpa halaman (mis. `/api/tidak-ada`) juga dijawab 404:
 
 `apps/web/app/plugins/site.server.ts`
 
 ```ts
 // Khusus server (.server.ts), tidak ikut ke bundle browser. Menyalin hasil
-// server/middleware/site.ts (event.context) ke state halaman (ADR-007):
-// theme diselesaikan lewat registry, view model dipakai apa adanya.
+// server/middleware/site.ts (event.context) ke state halaman (ADR-007).
+// Theme sudah diselesaikan di middleware (ADR-008); issue-nya dicatat di sana.
 //
 // Kode app/ tidak pernah memanggil repository; dari @framework/core hanya
 // boleh import tipe (dijaga ESLint).
-import { templateRegistry } from '../templates'
-
-// Issue theme yang sama cukup dicatat sekali per proses, bukan setiap request.
-const loggedIssues = new Set<string>()
-const MAX_LOGGED = 1000
-
 export default defineNuxtPlugin(() => {
   const event = useRequestEvent()
   const context = event?.context
   const site = context?.site
   const page = context?.page
-  if (!event || !site || !page) {
+  if (!event || !site || !page || !context.theme) {
     // Request tanpa halaman yang sampai ke renderer (mis. /api/tidak-ada).
     if (event) setResponseStatus(event, 404)
     return
   }
 
-  const theme = templateRegistry.resolveTheme(context.theme ?? null)
-  for (const issue of theme.issues) {
-    const key = `${site.id}:${issue}`
-    if (loggedIssues.has(key) || loggedIssues.size >= MAX_LOGGED) continue
-    loggedIssues.add(key)
-    console.warn(`[theme] site ${site.code}: ${issue}`)
-  }
-
-  useSiteTheme().value = theme
+  // Hanya field yang dibutuhkan renderer; issue dan layout tidak dikirim ke
+  // browser (payload Nuxt terbaca publik).
+  const { templateKey, templateVersion, rootClass, tokens, options, css } = context.theme
+  useSiteTheme().value = { templateKey, templateVersion, rootClass, tokens, options, css }
   usePageState().value = page
   if (page.status !== 200) setResponseStatus(event, page.status)
 })
@@ -10790,8 +11336,14 @@ export default defineNuxtPlugin(() => {
 import type { SeoMeta } from '@framework/core'
 import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
 
+/**
+ * Bagian theme yang dikirim ke browser. `issues` (diagnosis internal) dan
+ * `layouts` (sudah dipakai core untuk view model) tidak ikut payload.
+ */
+export type PublicTheme = Omit<ResolvedTheme, 'issues' | 'layouts'>
+
 export function useSiteTheme() {
-  return useState<ResolvedTheme | null>('site-theme', () => null)
+  return useState<PublicTheme | null>('site-theme', () => null)
 }
 
 export interface PageState {
@@ -11575,7 +12127,8 @@ describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role
 // Host request -> site, untuk setiap request (ADR-001).
 //
 //   site ditemukan  -> event.context.site / siteDomain; untuk request
-//                      halaman juga theme + view model (event.context.page),
+//                      halaman juga theme yang sudah diselesaikan
+//                      (event.context.theme) + view model (event.context.page),
 //                      atau redirect (permalink kanonik, tabel redirects)
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
@@ -11586,6 +12139,7 @@ import { resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
+import { resolveSiteTheme } from '../utils/templates'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -11609,11 +12163,16 @@ export default defineEventHandler(async (event) => {
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
-    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
-    const [theme, built] = await Promise.all([
-      useRepositories().sites.getActiveTheme(site.id),
-      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
-    ])
+    // Halaman publik: theme diselesaikan dulu (layout section menentukan data
+    // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
+    const theme = resolveSiteTheme(site, await useRepositories().sites.getActiveTheme(site.id))
+    const built = await usePageBuilder().build({
+      site,
+      pathname: url.pathname,
+      searchParams: url.searchParams,
+      origin: event.context.siteOrigin,
+      layouts: theme.layouts,
+    })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme
@@ -11639,7 +12198,7 @@ export default defineEventHandler(async (event) => {
 // Data per request yang diisi middleware server/middleware/site.ts.
 // Disimpan di event.context, tidak di modul (ADR-001: tanpa state global SSR).
 import type { SeoMeta, SiteInfo } from '@framework/core'
-import type { ChromeView, PageViewModel, StoredTheme } from '@framework/template-kit'
+import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
 
 declare module 'nuxt/schema' {
   interface RequestEventContext {
@@ -11649,8 +12208,11 @@ declare module 'nuxt/schema' {
     siteDomain?: string
     /** Origin domain primary untuk URL absolut, mis. https://tekno.example. */
     siteOrigin?: string
-    /** Baris site_themes aktif (mentah), hanya untuk request halaman; null = site belum punya theme. */
-    theme?: StoredTheme | null
+    /**
+     * Theme aktif yang sudah diselesaikan registry manifest (ADR-008): template
+     * (bisa fallback), token, opsi, layout section. Hanya untuk request halaman.
+     */
+    theme?: ResolvedTheme
     /** Halaman publik siap render (ADR-007); tidak ada untuk /api, /media, dan redirect. */
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
   }
@@ -11849,8 +12411,14 @@ body {
 import type { SeoMeta } from '@framework/core'
 import type { ChromeView, PageViewModel, ResolvedTheme } from '@framework/template-kit'
 
+/**
+ * Bagian theme yang dikirim ke browser. `issues` (diagnosis internal) dan
+ * `layouts` (sudah dipakai core untuk view model) tidak ikut payload.
+ */
+export type PublicTheme = Omit<ResolvedTheme, 'issues' | 'layouts'>
+
 export function useSiteTheme() {
-  return useState<ResolvedTheme | null>('site-theme', () => null)
+  return useState<PublicTheme | null>('site-theme', () => null)
 }
 
 export interface PageState {
@@ -12148,6 +12716,7 @@ import { createDatabase } from '@framework/db'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createMediaUrlResolver } from '../media/storage'
 import { createRepositories, type SiteInfo } from '../repositories'
+import type { ResolvedSection } from '@framework/template-kit'
 import { createPageBuilder, type PageResult } from './build-page'
 
 const NOW = new Date('2026-11-19T05:00:00Z')
@@ -12174,7 +12743,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis hal
   }
   const sites = new Map<string, SiteInfo>()
 
-  async function build(code: string, url: string): Promise<PageResult> {
+  async function build(code: string, url: string, home?: ResolvedSection[]): Promise<PageResult> {
     let site = sites.get(code)
     if (!site) {
       site = (await repos.sites.findByCode(code)) ?? undefined
@@ -12182,7 +12751,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis hal
       sites.set(code, site)
     }
     const parsed = new URL(url, 'http://x')
-    return builder.build({ site, pathname: parsed.pathname, searchParams: parsed.searchParams, origin: origins[code] ?? '' })
+    return builder.build({ site, pathname: parsed.pathname, searchParams: parsed.searchParams, origin: origins[code] ?? '', layouts: home ? { home } : undefined })
   }
 
   // Chrome (header, menu, footer) sama untuk semua halaman satu site: cukup sekali.
@@ -12211,6 +12780,28 @@ describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis hal
       : result
     expect(stable(snapshot as PageResult)).toMatchSnapshot()
   })
+
+  // Home dengan section (ADR-008). Layout sama dengan layouts di seed, sudah
+  // dalam bentuk hasil registry template; core tidak mengenal manifest.
+  const seedLayouts: Record<string, ResolvedSection[]> = {
+    'kabar-tekno': [
+      { type: 'hero', props: { source: 'featured', limit: 1 }, articles: { source: 'featured', limit: 1 } },
+      { type: 'latest-grid', props: { limit: 6 }, articles: { source: 'latest', limit: 6 } },
+      { type: 'category-strip', props: { categorySlug: 'gadget', limit: 4 }, articles: { source: 'category', slug: 'gadget', limit: 4 } },
+    ],
+    'dapur-nusantara': [
+      { type: 'headline-list', props: { source: 'latest', limit: 5 }, articles: { source: 'latest', limit: 5 } },
+      { type: 'category-strip', props: { categorySlug: 'resep', limit: 8 }, articles: { source: 'category', slug: 'resep', limit: 8 } },
+    ],
+  }
+
+  it.each(Object.keys(seedLayouts))('home dengan section: %s', async (code) => {
+    const result = await build(code, '/', seedLayouts[code])
+    const snapshot = result.kind === 'render'
+      ? { kind: result.kind, status: result.status, vm: result.page.vm, seo: result.page.seo, issues: result.issues }
+      : result
+    expect(stable(snapshot as PageResult)).toMatchSnapshot()
+  })
 })
 ```
 
@@ -12222,3 +12813,936 @@ git diff packages/core/src/views/__snapshots__/
 ```
 
 9. Jalankan `pnpm check`, build, smoke, dan gate. Bila semuanya hijau dan pipeline CI hijau, tahap tampilan pertama selesai.
+
+# Menyusun Halaman Depan dari Section
+
+1. Pahami masalahnya. Setiap site menyimpan susunan halaman depan di kolom `site_themes.layouts`, misalnya `[{ "type": "hero", "props": { "source": "featured", "limit": 1 } }, { "type": "latest-grid", "props": { "limit": 6 } }]`. Data setiap section diambil core, tetapi sampai bab sebelumnya theme baru diselesaikan di plugin Vue, setelah view model jadi. Ada dua hambatan lain: Nitro tidak bisa meng-import manifest template karena manifest ikut meng-import `.vue` dan `.css`, dan contoh di guide menaruh komponen section di setiap template, padahal semua template memakai komponen base. Keputusannya dicatat sebagai ADR:
+
+`docs/adr/008-kontrak-section.md`
+
+```markdown
+# ADR-008: Kontrak section dan manifest server
+
+- Status: Diterima
+- Tanggal: 2026-11-21
+- Memperbaiki: ADR-005 (kontrak template), ADR-007 (alur render)
+
+## Konteks
+
+M3 menambah layout home berbasis section dari `site_themes.layouts` (mis. magazine: `hero`,
+`latest-grid`, `category-strip`; news: `headline-list`, `category-strip`). Menurut guide, core
+mengambil data setiap section. Sampai M2, theme baru diselesaikan di plugin Vue
+(`app/plugins/site.server.ts`) setelah view model selesai dibangun di Nitro (ADR-007), jadi
+core tidak tahu section apa yang harus diisi.
+
+Ada dua hambatan lain:
+
+- Manifest template di-import bersama komponen `.vue` dan CSS (`import './styles.css'`).
+  Nitro tidak bisa memuat keduanya, jadi server tidak bisa memakai manifest.
+- Contoh manifest di guide menaruh komponen section di paket template (`./sections/Hero.vue`).
+  Ini bertentangan dengan ADR-005: semua template memakai komponen dari base.
+
+Gate M3 mengizinkan perubahan core asalkan dicatat sebagai ADR perbaikan kontrak.
+
+## Keputusan
+
+1. **Komponen section hanya ada di base** (`templates/base/src/sections/`) dan dipakai
+   bersama. Template memilih susunan dan props section lewat `defaultLayouts` di manifest dan
+   `site_themes.layouts` per site, lalu menatanya lewat CSS di bawah kelas root. Template
+   turunan tidak boleh mendefinisikan section (`defineManifest` menolaknya).
+2. **Section dideklarasikan di manifest base** dengan `defineSection({ props, data })`:
+   - `props`: skema Zod, dengan `.default()` untuk field opsional;
+   - `data(props)`: permintaan data dengan kosakata dari template-kit, saat ini
+     `{ source: 'latest' | 'featured' | 'category' | 'tag', slug?, limit }`.
+   Core yang menjalankan permintaan itu; template tetap tidak pernah query. Menambah sumber
+   data = versi minor template-kit + dukungan di core.
+3. **Satu paket template punya dua entry.** `./manifest` (`defineManifest`) hanya berisi data
+   dan skema: key, versi, tokens, options, menu, slot iklan, sections, defaultLayouts. Entry
+   utama (`defineTemplate({ manifest, extends, layout, views })`) menambahkan komponen dan
+   CSS. `tests/template-manifest.test.ts` memastikan entry `./manifest` tidak menjangkau
+   `.vue`/`.css`, termasuk lewat import tidak langsung.
+4. **Theme diselesaikan di server sebelum view model.** `server/utils/templates.ts` memegang
+   registry manifest; `server/middleware/site.ts` memanggil `resolveTheme` dulu, lalu
+   meneruskan `theme.layouts` ke page builder. Hasilnya (`ResolvedTheme`, data JSON) disimpan
+   di `event.context.theme`; plugin Vue hanya menyalinnya ke state. Issue theme dicatat sekali
+   per proses di server. `app/templates.ts` tetap mendaftarkan definisi lengkap untuk
+   komponen; kedua daftar harus berisi template yang sama.
+5. **Aturan layout tahan data buruk** (`resolveLayout` di template-kit):
+   - item yang bukan `{ type, props }`, tipe tidak dikenal, props tidak valid, atau
+     permintaan data yang tidak valid: section dilewati dan dicatat;
+   - `layouts.<halaman>` tidak ada, kosong, bukan array, atau tidak menyisakan section valid:
+     memakai `defaultLayouts` manifest;
+   - batas: paling banyak 8 section per halaman dan 12 artikel per section
+     (`SECTION_LIMITS`); `limit` di luar batas dijepit. Core menjaga batas yang sama lagi,
+     tanpa bergantung pada validasi pemanggil;
+   - `defaultLayouts` milik manifest sendiri harus bersih; manifest yang salah gagal saat
+     di-import.
+6. **View model home.** `HomeView` mendapat field `sections: SectionView[]` (menambah field =
+   aman menurut ADR-005). Untuk site yang punya section (termasuk lewat `defaultLayouts`):
+   - halaman 1: `sections` diisi, `featured` dan `latest` kosong. Bila semua section dilewati
+     (mis. kategori sudah dihapus), `latest` berisi daftar terbaru agar halaman tidak kosong;
+   - `?page=N` (N ≥ 2): arsip terbaru yang dimulai dari artikel paling baru (halaman arsip
+     N-1), dengan `totalPages` = jumlah halaman arsip + 1. Ini mengubah arti `?page=N` dari
+     ADR-006 untuk site dengan section. Tanpa perubahan ini, artikel di antara jumlah yang
+     tampil di section dan `pageSize` tidak terjangkau dari pagination (temuan code review
+     21 Nov 2026);
+   - section dijalankan berurutan, dan artikel yang sudah tampil di section sebelumnya
+     dikecualikan di query (`excludeIds`, paling banyak 200 id), jadi setiap section terisi
+     penuh bila artikelnya cukup. Kategori atau tag yang tidak ada di site itu: section
+     dilewati dan dicatat.
+   Site tanpa section tetap memakai `featured` + `latest` dengan pagination seperti ADR-006.
+7. **Diagnosis tidak dikirim ke browser.** Plugin Vue hanya menyalin field theme yang dibutuhkan
+   renderer (`templateKey`, `templateVersion`, `rootClass`, `tokens`, `options`, `css`);
+   `issues` dan `layouts` tetap di server.
+
+## Alternatif yang ditolak
+
+- **Validasi layout di core.** Core jadi mengenal daftar section dan skema props-nya,
+  padahal itu milik template (bertentangan dengan ADR-005).
+- **Komponen section di setiap paket template** (contoh di guide). Menggandakan komponen dan
+  melanggar keputusan "komponen sama, tampilan berbeda".
+- **Theme tetap diselesaikan di plugin Vue, data section diambil lewat request kedua.**
+  Menambah satu putaran per halaman dan memecah view model menjadi dua sumber.
+- **Satu entry dengan `import()` dinamis untuk CSS.** Tetap ditolak Nitro saat bundling, dan
+  aturan "manifest bebas Vue/CSS" tidak bisa diuji.
+
+## Konsekuensi
+
+- Menambah template = daftarkan entry `./manifest` di `server/utils/templates.ts` dan entry
+  utama di `app/templates.ts`, plus dependency di `apps/web/package.json`.
+  `server/utils/templates.test.ts` gagal bila kedua daftar berbeda.
+- Menambah tipe section = definisi di `sections/definitions.ts` + komponen di
+  `sections/components.ts` (key sama) di base. Itu versi minor base.
+- Theme diselesaikan sebelum view model, jadi query theme dan query halaman tidak lagi
+  paralel. Tambahannya satu query ringan per request halaman, ditambah query section yang
+  berurutan (paling banyak 8) di halaman 1 home.
+- `nitro.externals.inline` memuat paket template agar entry `./manifest` ikut di-bundle.
+```
+
+2. Tulis kontrak section di `packages/template-kit/src/sections.ts`:
+   - `defineSection({ props, data })`: skema props Zod (field opsional memakai `.default()`) dan fungsi yang mengubah props menjadi permintaan data `{ source, slug?, limit }`.
+   - `resolveLayout`: memvalidasi layout satu halaman. Item yang rusak dilewati dan dicatat; layout yang tidak ada, kosong, bukan array, atau tidak menyisakan section valid diganti `defaultLayouts`. Nama seperti `toString` tidak boleh dianggap section, jadi pencarian memakai `Object.hasOwn`.
+   - `SECTION_LIMITS`: 8 section per halaman dan 12 artikel per section. `limit` di luar batas dijepit, dan permintaan data dicek ulang apa pun skema props-nya.
+
+`packages/template-kit/src/sections.ts`
+
+```ts
+// Section: potongan halaman (hero, daftar terbaru, strip kategori, ...) yang
+// disusun per site lewat site_themes.layouts (ADR-008).
+//
+//   manifest base:   sections: { 'latest-grid': defineSection({ props, data }) }
+//   site_themes:     layouts: { home: [{ type: 'latest-grid', props: { limit: 6 } }] }
+//   resolveLayout:   -> [{ type, props tervalidasi, articles: permintaan data }]
+//   core:            menjalankan permintaan data -> SectionView di view model
+//
+// Komponen section hanya ada di template base dan dipakai bersama (ADR-005);
+// manifest menyatakan skema props dan data yang dibutuhkan dengan kosakata
+// di bawah. Core yang mengambil data, template tidak pernah query.
+//
+// Data buruk tidak membuat halaman crash: section yang tidak dikenal atau
+// props-nya salah dilewati dan dicatat; layout yang kosong atau rusak
+// diganti defaultLayouts dari manifest.
+import { z } from 'zod'
+import { isPlainObject } from './objects'
+
+/** Sumber artikel yang bisa diminta section. Menambah sumber = versi minor template-kit + dukungan di core. */
+export const ARTICLE_SOURCES = ['latest', 'featured', 'category', 'tag'] as const
+export type ArticleSource = (typeof ARTICLE_SOURCES)[number]
+
+/** Permintaan data satu section; dijalankan core. */
+export interface ArticlesRequest {
+  source: ArticleSource
+  /** Wajib untuk source category dan tag. */
+  slug?: string
+  /** Jumlah artikel, 1..SECTION_LIMITS.maxArticles. */
+  limit: number
+}
+
+/** Batas agar satu baris config tidak memicu query tanpa batas. Dijaga di sini dan diulang di core. */
+export const SECTION_LIMITS = Object.freeze({
+  /** Artikel per section. */
+  maxArticles: 12,
+  /** Section per halaman; sisanya dibuang dan dicatat. */
+  maxSectionsPerPage: 8,
+})
+
+/** Jenis halaman yang punya layout section. Saat ini hanya home. */
+export const LAYOUT_PAGES = ['home'] as const
+export type LayoutPage = (typeof LAYOUT_PAGES)[number]
+
+export interface SectionInput<P extends z.ZodObject> {
+  /** Skema props; field opsional memakai .default() agar props kosong tetap valid. */
+  props: P
+  /** Data yang dibutuhkan section; null = tanpa data. Tanpa `data` = section tanpa data. */
+  data?: (props: z.output<P>) => ArticlesRequest | null
+}
+
+export interface SectionDefinition {
+  readonly props: z.ZodObject
+  readonly data: (props: Record<string, unknown>) => ArticlesRequest | null
+}
+
+export function defineSection<P extends z.ZodObject>(input: SectionInput<P>): SectionDefinition {
+  const data = input.data
+  return Object.freeze({
+    props: input.props,
+    data: data ? (props: Record<string, unknown>) => data(props as z.output<P>) : () => null,
+  })
+}
+
+/** Bentuk satu item layout seperti disimpan di site_themes.layouts. */
+export interface LayoutItem {
+  type: string
+  props?: Record<string, unknown>
+}
+
+/** Section yang sudah divalidasi, siap dijalankan core. Hanya data JSON. */
+export interface ResolvedSection {
+  type: string
+  props: Record<string, unknown>
+  articles: ArticlesRequest | null
+}
+
+export type ResolvedLayouts = Record<LayoutPage, ResolvedSection[]>
+
+export interface ResolveLayoutInput {
+  sections: Readonly<Record<string, SectionDefinition>>
+  /** Nilai mentah layouts[page] dari database. */
+  raw: unknown
+  /** defaultLayouts[page] dari manifest; dipakai bila raw kosong atau tidak valid. */
+  fallback: readonly LayoutItem[]
+  /** Untuk pesan issue, mis. 'layouts.home'. */
+  label: string
+}
+
+export interface ResolveLayoutResult {
+  sections: ResolvedSection[]
+  issues: string[]
+}
+
+/** Validasi layout satu halaman (aturan di atas). */
+export function resolveLayout(input: ResolveLayoutInput): ResolveLayoutResult {
+  const { sections, raw, fallback, label } = input
+  const useFallback = (issues: string[]): ResolveLayoutResult => {
+    const resolved = resolveItems(sections, fallback, `${label} (default)`)
+    return { sections: resolved.sections, issues: [...issues, ...resolved.issues] }
+  }
+
+  if (raw === undefined || raw === null) return useFallback([])
+  if (!Array.isArray(raw)) return useFallback([`${label}: bukan array, memakai default`])
+  if (raw.length === 0) return useFallback([])
+
+  const resolved = resolveItems(sections, raw, label)
+  if (resolved.sections.length === 0) {
+    return useFallback([...resolved.issues, `${label}: tidak ada section yang valid, memakai default`])
+  }
+  return resolved
+}
+
+function resolveItems(sections: Readonly<Record<string, SectionDefinition>>, items: readonly unknown[], label: string): ResolveLayoutResult {
+  const issues: string[] = []
+  const out: ResolvedSection[] = []
+  let overflow = false
+
+  items.forEach((item, index) => {
+    const at = `${label}[${index}]`
+    if (out.length >= SECTION_LIMITS.maxSectionsPerPage) {
+      overflow = true
+      return
+    }
+    if (!isPlainObject(item) || typeof item['type'] !== 'string') {
+      issues.push(`${at}: bukan section ({ type, props }), dilewati`)
+      return
+    }
+    const type = item['type']
+    const definition = Object.hasOwn(sections, type) ? sections[type] : undefined
+    if (!definition) {
+      issues.push(`${at}: section "${type}" tidak dikenal, dilewati`)
+      return
+    }
+    const rawProps = item['props'] ?? {}
+    const parsed = definition.props.safeParse(rawProps)
+    if (!parsed.success) {
+      const detail = parsed.error.issues.map((i) => `${i.path.join('.') || '(akar)'}: ${i.message}`).join('; ')
+      issues.push(`${at}: props section "${type}" tidak valid (${detail}), dilewati`)
+      return
+    }
+    const props = parsed.data as Record<string, unknown>
+
+    let articles: ArticlesRequest | null
+    try {
+      articles = normalizeRequest(definition.data(props))
+    } catch (error) {
+      issues.push(`${at}: data section "${type}" tidak valid (${error instanceof Error ? error.message : String(error)}), dilewati`)
+      return
+    }
+    out.push({ type, props, articles })
+  })
+
+  if (overflow) issues.push(`${label}: lebih dari ${SECTION_LIMITS.maxSectionsPerPage} section, sisanya diabaikan`)
+  return { sections: out, issues }
+}
+
+const requestSchema = z.object({
+  source: z.enum(ARTICLE_SOURCES),
+  slug: z.string().trim().min(1).max(200).optional(),
+  limit: z.number().int(),
+})
+
+/** Bentuk permintaan dicek ulang dan limit dijepit ke 1..maxArticles. */
+function normalizeRequest(request: ArticlesRequest | null): ArticlesRequest | null {
+  if (request === null) return null
+  const parsed = requestSchema.safeParse(request)
+  if (!parsed.success) throw new Error(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '))
+  const { source, slug } = parsed.data
+  if ((source === 'category' || source === 'tag') && !slug) throw new Error(`source ${source} butuh slug`)
+  const limit = Math.min(Math.max(parsed.data.limit, 1), SECTION_LIMITS.maxArticles)
+  return slug && (source === 'category' || source === 'tag') ? { source, slug, limit } : { source, limit }
+}
+```
+
+3. Pecah `manifest.ts` menjadi dua fungsi (file lengkap di bab "Membangun Sistem Template"):
+   - `defineManifest`: key, versi, tokens, options, menu, slot iklan, `sections`, dan `defaultLayouts`. Tidak ada komponen, jadi aman di-import server. Template turunan mewarisi section induknya dan tidak boleh mendefinisikan section sendiri. `defaultLayouts` harus bersih; manifest dengan layout bawaan yang salah gagal saat di-import.
+   - `defineTemplate({ manifest, extends, layout, views })`: manifest + komponen. `extends` harus menunjuk definisi dengan key yang sama dengan induk manifest.
+
+4. Di `theme.ts`, buat registry generik (`createTemplateRegistry<T extends TemplateManifest>`), sehingga server cukup mendaftarkan manifest dan renderer Vue mendaftarkan definisi lengkap. `resolveTheme` kini juga menerima `layouts` dan mengembalikan `layouts.home` yang sudah divalidasi. Di `view-models.ts`, tambahkan `SectionView` dan field `sections` pada `HomeView`. Ekspor `sections.ts` dari `index.ts`.
+
+5. Uji aturan layout:
+
+`packages/template-kit/src/sections.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
+import { defineSection, resolveLayout, SECTION_LIMITS, type LayoutItem } from './sections'
+
+const sections = {
+  hero: defineSection({
+    props: z.object({ source: z.enum(['featured', 'latest']).default('featured'), limit: z.number().int().min(1).max(3).default(1) }),
+    data: ({ source, limit }) => ({ source, limit }),
+  }),
+  strip: defineSection({
+    props: z.object({ categorySlug: z.string().min(1), limit: z.number().int().min(1).max(12).default(4) }),
+    data: ({ categorySlug, limit }) => ({ source: 'category', slug: categorySlug, limit }),
+  }),
+  note: defineSection({ props: z.object({ text: z.string().default('Halo') }) }),
+}
+const fallback: LayoutItem[] = [{ type: 'hero' }]
+const resolve = (raw: unknown) => resolveLayout({ sections, raw, fallback, label: 'layouts.home' })
+
+describe('resolveLayout', () => {
+  it('layout valid -> props tervalidasi (dengan default) dan permintaan data', () => {
+    expect(resolve([{ type: 'hero', props: { limit: 2 } }, { type: 'strip', props: { categorySlug: 'gadget' } }, { type: 'note' }])).toEqual({
+      sections: [
+        { type: 'hero', props: { source: 'featured', limit: 2 }, articles: { source: 'featured', limit: 2 } },
+        { type: 'strip', props: { categorySlug: 'gadget', limit: 4 }, articles: { source: 'category', slug: 'gadget', limit: 4 } },
+        { type: 'note', props: { text: 'Halo' }, articles: null },
+      ],
+      issues: [],
+    })
+  })
+
+  it('section tidak dikenal atau props salah dilewati dan dicatat; sisanya tetap', () => {
+    const { sections: out, issues } = resolve([
+      { type: 'carousel' },
+      { type: 'hero', props: { limit: 9 } },
+      'hero',
+      { type: 'strip', props: { categorySlug: 'resep', limit: 8, extra: true } },
+    ])
+    expect(out).toEqual([{ type: 'strip', props: { categorySlug: 'resep', limit: 8 }, articles: { source: 'category', slug: 'resep', limit: 8 } }])
+    expect(issues).toEqual([
+      'layouts.home[0]: section "carousel" tidak dikenal, dilewati',
+      expect.stringMatching(/^layouts\.home\[1\]: props section "hero" tidak valid \(limit: .+\), dilewati$/),
+      'layouts.home[2]: bukan section ({ type, props }), dilewati',
+    ])
+  })
+
+  it('nama section dari prototype object tidak dianggap dikenal', () => {
+    expect(resolve([{ type: 'toString' }, { type: 'note' }]).issues).toEqual(['layouts.home[0]: section "toString" tidak dikenal, dilewati'])
+  })
+
+  it.each([undefined, null, []])('layout kosong (%j) -> defaultLayouts tanpa issue', (raw) => {
+    expect(resolve(raw)).toEqual({ sections: [{ type: 'hero', props: { source: 'featured', limit: 1 }, articles: { source: 'featured', limit: 1 } }], issues: [] })
+  })
+
+  it('layout bukan array -> default, dicatat', () => {
+    const result = resolve({ type: 'hero' })
+    expect(result.sections.map((s) => s.type)).toEqual(['hero'])
+    expect(result.issues).toEqual(['layouts.home: bukan array, memakai default'])
+  })
+
+  it('tidak ada section yang valid -> default, dicatat', () => {
+    const result = resolve([{ type: 'carousel' }])
+    expect(result.sections.map((s) => s.type)).toEqual(['hero'])
+    expect(result.issues).toEqual([
+      'layouts.home[0]: section "carousel" tidak dikenal, dilewati',
+      'layouts.home: tidak ada section yang valid, memakai default',
+    ])
+  })
+
+  it(`lebih dari ${SECTION_LIMITS.maxSectionsPerPage} section -> sisanya dibuang, dicatat sekali`, () => {
+    const result = resolve(Array.from({ length: SECTION_LIMITS.maxSectionsPerPage + 3 }, () => ({ type: 'note' })))
+    expect(result.sections).toHaveLength(SECTION_LIMITS.maxSectionsPerPage)
+    expect(result.issues).toEqual([`layouts.home: lebih dari ${SECTION_LIMITS.maxSectionsPerPage} section, sisanya diabaikan`])
+  })
+
+  it('permintaan data dijepit dan dicek, apa pun skema props-nya', () => {
+    const loose = {
+      big: defineSection({ props: z.object({}), data: () => ({ source: 'latest', limit: 500 }) }),
+      zero: defineSection({ props: z.object({}), data: () => ({ source: 'latest', limit: 0 }) }),
+      noslug: defineSection({ props: z.object({}), data: () => ({ source: 'tag', limit: 3 }) }),
+      bad: defineSection({ props: z.object({}), data: () => ({ source: 'random' as 'latest', limit: 3 }) }),
+      boom: defineSection({ props: z.object({}), data: () => { throw new Error('rusak') } }),
+    }
+    const result = resolveLayout({ sections: loose, raw: ['big', 'zero', 'noslug', 'bad', 'boom'].map((type) => ({ type })), fallback: [], label: 'l' })
+    expect(result.sections).toEqual([
+      { type: 'big', props: {}, articles: { source: 'latest', limit: SECTION_LIMITS.maxArticles } },
+      { type: 'zero', props: {}, articles: { source: 'latest', limit: 1 } },
+    ])
+    expect(result.issues).toEqual([
+      'l[2]: data section "noslug" tidak valid (source tag butuh slug), dilewati',
+      expect.stringMatching(/^l\[3\]: data section "bad" tidak valid \(source: .+\), dilewati$/),
+      'l[4]: data section "boom" tidak valid (rusak), dilewati',
+    ])
+  })
+
+  it('slug hanya ikut untuk source category dan tag', () => {
+    const odd = { s: defineSection({ props: z.object({}), data: () => ({ source: 'latest', slug: 'x', limit: 2 }) }) }
+    expect(resolveLayout({ sections: odd, raw: [{ type: 's' }], fallback: [], label: 'l' }).sections[0]?.articles).toEqual({ source: 'latest', limit: 2 })
+  })
+})
+```
+
+6. Di template base, tulis definisi section terpisah dari komponennya. Nama section mengikuti data yang sudah ada di seed (`hero`, `latest-grid`, `headline-list`, `category-strip`; props `categorySlug`):
+
+`templates/base/src/sections/definitions.ts`
+
+```ts
+// Definisi section base (ADR-008): skema props + data yang dibutuhkan.
+// Bebas Vue/CSS karena di-import entry ./manifest yang dipakai server.
+// Komponennya ada di ./components.ts dengan key yang sama.
+//
+// Props dari site_themes.layouts; field yang tidak diisi memakai default.
+// Batas limit per section diulang di template-kit dan core
+// (SECTION_LIMITS.maxArticles = 12).
+import { defineSection, z } from '@framework/template-kit'
+
+const limit = (fallback: number, max = 12) => z.number().int().min(1).max(max).default(fallback)
+/** Judul pengganti; tanpa judul = judul bawaan komponen. */
+const title = z.string().trim().min(1).max(80).optional()
+const slug = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'slug huruf kecil, angka, tanda hubung')
+
+export const baseSections = {
+  /** Artikel utama berukuran besar di puncak halaman. */
+  hero: defineSection({
+    props: z.object({
+      source: z.enum(['featured', 'latest']).default('featured'),
+      limit: limit(1, 3),
+    }),
+    data: ({ source, limit }) => ({ source, limit }),
+  }),
+
+  /** Grid kartu artikel terbaru. */
+  'latest-grid': defineSection({
+    props: z.object({ title, limit: limit(6) }),
+    data: ({ limit }) => ({ source: 'latest', limit }),
+  }),
+
+  /** Daftar judul ringkas tanpa gambar. */
+  'headline-list': defineSection({
+    props: z.object({
+      title,
+      source: z.enum(['latest', 'featured']).default('latest'),
+      limit: limit(5),
+    }),
+    data: ({ source, limit }) => ({ source, limit }),
+  }),
+
+  /** Deret kartu dari satu kategori (termasuk sub-kategorinya), dengan tautan ke kategori. */
+  'category-strip': defineSection({
+    props: z.object({ title, categorySlug: slug, limit: limit(4) }),
+    data: ({ categorySlug, limit }) => ({ source: 'category', slug: categorySlug, limit }),
+  }),
+}
+
+export type BaseSectionType = keyof typeof baseSections
+```
+
+7. Buat entry `./manifest` base. File ini hanya meng-import template-kit, `config.ts`, dan `definitions.ts`:
+
+`templates/base/src/manifest.ts`
+
+```ts
+// Entry ./manifest template base: data dan skema saja, tanpa .vue/.css,
+// sehingga server (Nitro) bisa menyelesaikan theme dan layout sebelum view
+// model dibangun (ADR-008). Komponen dan CSS ditambahkan di ./index.ts.
+import { defineManifest } from '@framework/template-kit'
+import { baseOptionDefaults, baseOptionsSchema, baseTokenDefaults, baseTokenSchema } from './config'
+import { baseSections } from './sections/definitions'
+
+export default defineManifest({
+  key: 'base',
+  version: '1.0.0',
+  name: 'Base',
+  tokens: { schema: baseTokenSchema, defaults: baseTokenDefaults },
+  options: { schema: baseOptionsSchema, defaults: baseOptionDefaults },
+  menuLocations: ['header', 'footer'],
+  adSlots: [],
+  sections: baseSections,
+  defaultLayouts: {
+    home: [
+      { type: 'hero', props: { source: 'featured', limit: 1 } },
+      { type: 'latest-grid', props: { limit: 9 } },
+    ],
+  },
+})
+
+export * from './config'
+export { baseSections, type BaseSectionType } from './sections/definitions'
+```
+
+8. Daftarkan entry itu di `exports` `package.json` base (`"./manifest": "./src/manifest.ts"`), lalu ubah `index.ts` base menjadi `defineTemplate({ manifest, layout, views })` dengan import CSS (file lengkap di bab "Membangun Sistem Template").
+
+9. Tulis komponen section di `templates/base/src/sections/`. Semuanya netral dan memakai komponen yang sudah ada (`ArticleCard`, `ArticleList`). Setiap section punya kelas `section section--<type>` sebagai kait CSS template, judul `<h2>` dengan `id` dari nomor urut section (stabil antara server dan browser, jadi aman untuk hidrasi), dan tidak merender apa pun bila artikelnya kosong (kecuali `latest-grid`, yang menampilkan teks "Belum ada artikel."):
+
+`templates/base/src/sections/props.ts`
+
+```ts
+import type { SectionView } from '@framework/template-kit'
+
+/** Props teks section (sudah divalidasi skema di definitions.ts); null bila kosong. */
+export function textProp(section: SectionView, key: string): string | null {
+  const value = section.props[key]
+  return typeof value === 'string' && value !== '' ? value : null
+}
+```
+
+`templates/base/src/sections/SectionHeading.vue`
+
+```vue
+<script setup lang="ts">
+import type { LinkView } from '@framework/template-kit'
+
+// Judul section: teks biasa, atau tautan bila section punya kategori/tag.
+defineProps<{
+  id: string
+  text: string
+  link: LinkView | null
+}>()
+</script>
+
+<template>
+  <div class="section__head">
+    <h2
+      :id="id"
+      class="section-title section__title"
+    >
+      <a
+        v-if="link"
+        :href="link.href"
+      >{{ text }}</a>
+      <template v-else>
+        {{ text }}
+      </template>
+    </h2>
+    <a
+      v-if="link"
+      class="section__more"
+      :href="link.href"
+    >Lihat semua</a>
+  </div>
+</template>
+```
+
+`templates/base/src/sections/HeroSection.vue`
+
+```vue
+<script setup lang="ts">
+import type { SectionView } from '@framework/template-kit'
+import { computed } from 'vue'
+import ArticleCard from '../components/ArticleCard.vue'
+import { textProp } from './props'
+
+// Artikel utama: kartu pertama besar, sisanya (bila limit > 1) biasa.
+const props = defineProps<{ section: SectionView; index: number }>()
+const label = computed(() => (textProp(props.section, 'source') === 'latest' ? 'Artikel terbaru' : 'Pilihan redaksi'))
+</script>
+
+<template>
+  <section
+    v-if="section.articles.length > 0"
+    class="section section--hero"
+    :aria-label="label"
+  >
+    <ArticleCard
+      v-for="(article, i) in section.articles"
+      :key="article.href"
+      :article="article"
+      :lead="i === 0"
+    />
+  </section>
+</template>
+```
+
+`templates/base/src/sections/LatestGridSection.vue`
+
+```vue
+<script setup lang="ts">
+import type { SectionView } from '@framework/template-kit'
+import ArticleList from '../components/ArticleList.vue'
+import { computed } from 'vue'
+import SectionHeading from './SectionHeading.vue'
+import { textProp } from './props'
+
+const props = defineProps<{ section: SectionView; index: number }>()
+const title = computed(() => textProp(props.section, 'title') ?? 'Terbaru')
+</script>
+
+<template>
+  <section
+    class="section section--latest-grid"
+    :aria-labelledby="`section-${index}-title`"
+  >
+    <SectionHeading
+      :id="`section-${index}-title`"
+      :text="title"
+      :link="section.link"
+    />
+    <ArticleList :articles="section.articles" />
+  </section>
+</template>
+```
+
+`templates/base/src/sections/HeadlineListSection.vue`
+
+```vue
+<script setup lang="ts">
+import type { SectionView } from '@framework/template-kit'
+import { computed } from 'vue'
+import SectionHeading from './SectionHeading.vue'
+import { textProp } from './props'
+
+// Daftar judul tanpa gambar: kategori, judul, tanggal.
+const props = defineProps<{ section: SectionView; index: number }>()
+const title = computed(() => textProp(props.section, 'title') ?? (textProp(props.section, 'source') === 'featured' ? 'Pilihan redaksi' : 'Terbaru'))
+</script>
+
+<template>
+  <section
+    v-if="section.articles.length > 0"
+    class="section section--headline-list"
+    :aria-labelledby="`section-${index}-title`"
+  >
+    <SectionHeading
+      :id="`section-${index}-title`"
+      :text="title"
+      :link="section.link"
+    />
+    <ul class="headline-list">
+      <li
+        v-for="article in section.articles"
+        :key="article.href"
+        class="headline-list__item"
+      >
+        <a
+          class="headline-list__category"
+          :href="article.category.href"
+        >{{ article.category.label }}</a>
+        <a
+          class="headline-list__title"
+          :href="article.href"
+        >{{ article.title }}</a>
+        <time
+          class="headline-list__date"
+          :datetime="article.publishedAt.iso"
+        >{{ article.publishedAt.label }}</time>
+      </li>
+    </ul>
+  </section>
+</template>
+```
+
+`templates/base/src/sections/CategoryStripSection.vue`
+
+```vue
+<script setup lang="ts">
+import type { SectionView } from '@framework/template-kit'
+import ArticleCard from '../components/ArticleCard.vue'
+import { computed } from 'vue'
+import SectionHeading from './SectionHeading.vue'
+import { textProp } from './props'
+
+// Deret kartu satu kategori; judul dan "Lihat semua" menuju halaman kategori.
+const props = defineProps<{ section: SectionView; index: number }>()
+const title = computed(() => textProp(props.section, 'title') ?? props.section.link?.label ?? 'Kategori')
+</script>
+
+<template>
+  <section
+    v-if="section.articles.length > 0"
+    class="section section--category-strip"
+    :aria-labelledby="`section-${index}-title`"
+  >
+    <SectionHeading
+      :id="`section-${index}-title`"
+      :text="title"
+      :link="section.link"
+    />
+    <div class="article-list category-strip__list">
+      <ArticleCard
+        v-for="article in section.articles"
+        :key="article.href"
+        :article="article"
+      />
+    </div>
+  </section>
+</template>
+```
+
+10. Petakan tipe ke komponen dengan key yang sama seperti `definitions.ts`. Tipe `Record<BaseSectionType, Component>` membuat typecheck gagal bila satu section tidak punya komponen:
+
+`templates/base/src/sections/components.ts`
+
+```ts
+// Komponen section base, dengan key yang sama seperti definitions.ts.
+// HomeView memilih komponen dari sini berdasarkan SectionView.type.
+import type { Component } from 'vue'
+import type { BaseSectionType } from './definitions'
+import CategoryStripSection from './CategoryStripSection.vue'
+import HeadlineListSection from './HeadlineListSection.vue'
+import HeroSection from './HeroSection.vue'
+import LatestGridSection from './LatestGridSection.vue'
+
+export const sectionComponents: Readonly<Record<BaseSectionType, Component>> = Object.freeze({
+  hero: HeroSection,
+  'latest-grid': LatestGridSection,
+  'headline-list': HeadlineListSection,
+  'category-strip': CategoryStripSection,
+})
+```
+
+11. Di `HomeView.vue`, bila `vm.sections` tidak kosong, render setiap section lewat `sectionComponents`, lalu pagination daftar terbaru. Tipe tanpa komponen dilewati. Bila kosong, tampilkan home lama (`featured` + `latest`). Gaya netral section (`.section`, `.section__head`, `.headline-list`) ada di `base.css`. Keduanya ditampilkan di bab "Membangun Sistem Template".
+
+12. Pindahkan manifest magazine ke `src/manifest.ts` dan tambahkan `defaultLayouts`. `index.ts` magazine tinggal menggabungkan manifest, induk, dan CSS:
+
+`templates/magazine/src/manifest.ts`
+
+```ts
+// Entry ./manifest template magazine: data dan skema saja, tanpa .vue/.css
+// (ADR-008). Komponen dan CSS ditambahkan di ./index.ts.
+import baseManifest from '@framework/template-base/manifest'
+import { defineManifest } from '@framework/template-kit'
+
+export default defineManifest({
+  key: 'magazine',
+  version: '1.0.0',
+  name: 'Magazine',
+  extends: baseManifest,
+  tokens: {
+    defaults: {
+      color: { primary: '#0f62fe', surface: '#ffffff', text: '#161616' },
+      font: { heading: 'Inter', body: 'Inter' },
+      radius: { card: '8px' },
+    },
+  },
+  options: {
+    defaults: { header: { style: 'centered', showDate: true } },
+  },
+  defaultLayouts: {
+    home: [
+      { type: 'hero', props: { source: 'featured', limit: 1 } },
+      { type: 'latest-grid', props: { limit: 6 } },
+    ],
+  },
+})
+```
+
+13. Di core, `PageRequest` mendapat field `layouts` (hasil `resolveTheme`). Fungsi `sectionViews` di `build-page.ts` menjalankan permintaan setiap section:
+    - Section dijalankan berurutan. Artikel yang sudah tampil dikecualikan langsung di query lewat opsi baru `excludeIds` pada `listPublishedArticles` (`NOT IN`, paling banyak 200 id), jadi setiap section tetap terisi penuh bila artikelnya cukup. Versi pertama mengambil lebih banyak artikel lalu membuang yang ganda; code review menemukan cara itu gagal bila total limit section melewati batas 50 per query.
+    - Sumber `category` dan `tag` juga mengambil nama dan URL-nya untuk judul dan tautan "Lihat semua". Kategori atau tag yang tidak ada di site itu membuat section dilewati dan dicatat, sehingga slug milik site lain tidak pernah terbaca.
+    - Batas jumlah section dan `limit` dijaga ulang di sini.
+    - Halaman 1 mengisi `sections` dan mengosongkan `featured` dan `latest`. Bila semua section dilewati, `latest` diisi daftar terbaru agar halaman tidak kosong.
+    - `?page=N` (N ≥ 2) menjadi arsip terbaru yang dimulai dari artikel paling baru. Code review menemukan bahwa bila `?page=2` tetap dimulai dari artikel ke-11, artikel ke-7 sampai ke-10 (grid magazine menampilkan 6) tidak terjangkau dari mana pun.
+
+14. Uji di `build-page.test.ts` (bab "Membangun Halaman Publik dari View Model"): artikel ganda tidak diulang, section berikutnya tetap terisi, `?page=N` menjadi arsip tanpa artikel yang terlewat, kategori milik site lain dilewati, dan batas dijaga core. Tambahkan dua snapshot home dengan section memakai layout seed, lalu perbarui snapshot dan periksa diff-nya:
+
+```bash
+pnpm vitest run packages/core/src/views -u
+git diff packages/core/src/views/__snapshots__/
+# home lama hanya bertambah "sections": []; dua snapshot baru "home dengan section"
+```
+
+15. Di aplikasi web, buat registry manifest untuk server. Issue theme dicatat sekali per proses di sini, tidak lagi di plugin Vue:
+
+`apps/web/server/utils/templates.ts`
+
+```ts
+// Registry manifest template untuk server (ADR-008): theme dan layout
+// section diselesaikan di sini, sebelum view model dibangun, supaya core
+// tahu data section yang harus diambil. Hanya entry ./manifest yang
+// di-import (tanpa .vue/.css); komponen didaftarkan terpisah di
+// app/templates.ts dengan daftar template yang sama.
+import baseManifest from '@framework/template-base/manifest'
+import { createTemplateRegistry, type ResolvedTheme, type StoredTheme } from '@framework/template-kit'
+import magazineManifest from '@framework/template-magazine/manifest'
+
+export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest], { fallback: 'base' })
+
+// Issue theme yang sama cukup dicatat sekali per proses, bukan setiap request.
+const loggedIssues = new Set<string>()
+const MAX_LOGGED = 1000
+
+/** Theme aktif site -> template + config + layout tervalidasi; issue dicatat ke log. */
+export function resolveSiteTheme(site: { id: string; code: string }, stored: StoredTheme | null): ResolvedTheme {
+  const theme = templateManifests.resolveTheme(stored)
+  for (const issue of theme.issues) {
+    const key = `${site.id}:${issue}`
+    if (loggedIssues.has(key) || loggedIssues.size >= MAX_LOGGED) continue
+    loggedIssues.add(key)
+    console.warn(`[theme] site ${site.code}: ${issue}`)
+  }
+  return theme
+}
+```
+
+16. Ubah middleware: `resolveSiteTheme` dipanggil dulu, lalu `theme.layouts` diteruskan ke `usePageBuilder().build(...)`, dan `event.context.theme` berisi `ResolvedTheme`. Plugin `site.server.ts` hanya menyalin field yang dibutuhkan renderer (tipe `PublicTheme` di `useSiteTheme.ts`); `issues` dan `layouts` tidak ikut payload Nuxt yang bisa dibaca siapa pun dari source halaman. Tambahkan paket template ke `nitro.externals.inline` di `nuxt.config.ts`. File-file itu ditampilkan di bab-bab sebelumnya.
+
+    Daftar template kini ada di dua tempat, jadi uji keduanya sama:
+
+`apps/web/server/utils/templates.test.ts`
+
+```ts
+// Registry server (entry ./manifest) dan registry Vue (app/templates.ts)
+// harus berisi template yang sama (ADR-008). Bila satu template hanya
+// didaftarkan di Vue, server menyelesaikan theme site itu ke base dan
+// template barunya tidak pernah tampil.
+import { describe, expect, it } from 'vitest'
+import { templateRegistry } from '../../app/templates'
+import { templateManifests } from './templates'
+
+describe('registry template server dan Vue', () => {
+  it('key, versi, dan fallback sama', () => {
+    const list = (r: typeof templateManifests) => r.templates.map((t) => `${t.key}@${t.version}`)
+    expect(list(templateRegistry)).toEqual(list(templateManifests))
+    expect(templateRegistry.fallback.key).toBe(templateManifests.fallback.key)
+  })
+
+  it('setiap definisi Vue memakai manifest yang sama dengan server', () => {
+    for (const manifest of templateManifests.templates) {
+      const definition = templateRegistry.get(manifest.key)
+      expect(definition.tokens).toBe(manifest.tokens)
+      expect(definition.sections).toBe(manifest.sections)
+      expect(definition.defaultLayouts).toBe(manifest.defaultLayouts)
+    }
+  })
+})
+```
+
+17. Tambahkan test arsitektur yang menelusuri import entry `./manifest` setiap template, termasuk import tidak langsung lewat paket workspace lain, dan gagal bila sampai ke `.vue` atau `.css`. Test kontrol memastikan penelusurnya memang menemukan `.vue`/`.css` dari entry utama:
+
+`tests/template-manifest.test.ts`
+
+```ts
+// Entry ./manifest setiap template dipakai server (Nitro) untuk
+// menyelesaikan theme dan layout sebelum view model dibangun (ADR-008).
+// Nitro tidak bisa memuat .vue atau .css, jadi entry itu, beserta semua
+// yang di-import-nya (relatif maupun paket @framework/* lain), tidak boleh
+// sampai ke file .vue/.css. Test ini menelusuri import secara statis.
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const repo = new URL('..', import.meta.url).pathname
+
+/** Paket workspace: nama -> { dir, exports }. */
+const packages = new Map<string, { dir: string; exports: Record<string, string> }>()
+for (const group of ['packages', 'templates']) {
+  for (const entry of readdirSync(join(repo, group), { withFileTypes: true })) {
+    const file = join(repo, group, entry.name, 'package.json')
+    if (!entry.isDirectory() || !existsSync(file)) continue
+    const pkg = JSON.parse(readFileSync(file, 'utf8')) as { name: string; exports?: Record<string, string> }
+    packages.set(pkg.name, { dir: join(repo, group, entry.name), exports: pkg.exports ?? {} })
+  }
+}
+
+/** Specifier import di file .ts (statis, re-export, import() dinamis, side-effect). Import tipe diabaikan. */
+function importsOf(code: string): string[] {
+  const clean = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const out: string[] = []
+  for (const m of clean.matchAll(/^\s*(import|export)\s+(type\s+)?([^'"]*?\s+from\s+)?['"]([^'"]+)['"]/gm)) {
+    if (!m[2]) out.push(m[4] as string)
+  }
+  for (const m of clean.matchAll(/import\(\s*['"]([^'"]+)['"]\s*\)/g)) out.push(m[1] as string)
+  return out
+}
+
+function resolveImport(from: string, spec: string): string | null {
+  if (spec.startsWith('.')) {
+    const base = resolve(dirname(from), spec)
+    if (/\.(ts|vue|css)$/.test(base)) return base
+    if (existsSync(`${base}.ts`)) return `${base}.ts`
+    if (existsSync(join(base, 'index.ts'))) return join(base, 'index.ts')
+    throw new Error(`${relative(repo, from)}: import ${spec} tidak ditemukan`)
+  }
+  const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0] ?? spec
+  const pkg = packages.get(name)
+  if (!pkg) return null // paket luar (zod, vue untuk tipe): bukan bagian yang ditelusuri
+  // '@framework/template-base' -> '.', '@framework/template-base/manifest' -> './manifest'
+  const target = pkg.exports[`.${spec.slice(name.length)}`]
+  if (!target) throw new Error(`${spec}: subpath tidak diekspor ${name}`)
+  return join(pkg.dir, target)
+}
+
+/** Semua file yang terjangkau dari entry; berhenti di file .vue/.css (dilaporkan). */
+function reachable(entry: string): { files: string[]; forbidden: string[] } {
+  const seen = new Set<string>()
+  const forbidden: string[] = []
+  const queue = [entry]
+  while (queue.length > 0) {
+    const file = queue.pop() as string
+    if (seen.has(file)) continue
+    seen.add(file)
+    if (/\.(vue|css)$/.test(file)) {
+      forbidden.push(relative(repo, file))
+      continue
+    }
+    for (const spec of importsOf(readFileSync(file, 'utf8'))) {
+      const target = resolveImport(file, spec)
+      if (target) queue.push(target)
+    }
+  }
+  return { files: [...seen].map((f) => relative(repo, f)), forbidden }
+}
+
+const templates = [...packages.entries()].filter(([, pkg]) => relative(repo, pkg.dir).startsWith('templates/'))
+
+describe('entry ./manifest template (ADR-008)', () => {
+  it.each(templates.filter(([, pkg]) => pkg.exports['.']))('%s punya entry ./manifest', (_name, pkg) => {
+    expect(pkg.exports['./manifest']).toBeDefined()
+  })
+
+  it.each(templates.filter(([, pkg]) => pkg.exports['./manifest']))('%s/manifest tidak menjangkau .vue atau .css', (_name, pkg) => {
+    const { files, forbidden } = reachable(join(pkg.dir, pkg.exports['./manifest'] as string))
+    expect(files.length).toBeGreaterThan(0)
+    expect(forbidden).toEqual([])
+  })
+
+  it('penelusur menangkap .vue/.css lewat import tidak langsung (kontrol)', () => {
+    const base = packages.get('@framework/template-base')
+    if (!base) throw new Error('template-base tidak ditemukan')
+    const { forbidden } = reachable(join(base.dir, base.exports['.'] as string))
+    expect(forbidden).toEqual(expect.arrayContaining(['templates/base/src/styles/base.css', 'templates/base/src/sections/HeroSection.vue']))
+  })
+})
+```
+
+18. Jalankan semua pemeriksaan, lalu buka kedua site di browser:
+
+```bash
+pnpm check
+pnpm build && pnpm --filter @framework/web smoke && pnpm --filter @framework/web gate
+pnpm dev
+# http://tekno.localhost:3000   -> section--hero, section--latest-grid
+# http://kuliner.localhost:3000 -> section--headline-list (masih template base sampai template news ada)
+# Strip kategori tidak tampil di data seed: semua artikelnya sudah muncul di section sebelumnya.
+```

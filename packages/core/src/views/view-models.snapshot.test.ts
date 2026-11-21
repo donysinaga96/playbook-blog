@@ -11,6 +11,7 @@ import { createDatabase } from '@framework/db'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createMediaUrlResolver } from '../media/storage'
 import { createRepositories, type SiteInfo } from '../repositories'
+import type { ResolvedSection } from '@framework/template-kit'
 import { createPageBuilder, type PageResult } from './build-page'
 
 const NOW = new Date('2026-11-19T05:00:00Z')
@@ -37,7 +38,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis hal
   }
   const sites = new Map<string, SiteInfo>()
 
-  async function build(code: string, url: string): Promise<PageResult> {
+  async function build(code: string, url: string, home?: ResolvedSection[]): Promise<PageResult> {
     let site = sites.get(code)
     if (!site) {
       site = (await repos.sites.findByCode(code)) ?? undefined
@@ -45,7 +46,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis hal
       sites.set(code, site)
     }
     const parsed = new URL(url, 'http://x')
-    return builder.build({ site, pathname: parsed.pathname, searchParams: parsed.searchParams, origin: origins[code] ?? '' })
+    return builder.build({ site, pathname: parsed.pathname, searchParams: parsed.searchParams, origin: origins[code] ?? '', layouts: home ? { home } : undefined })
   }
 
   // Chrome (header, menu, footer) sama untuk semua halaman satu site: cukup sekali.
@@ -69,6 +70,28 @@ describe.skipIf(!process.env['DATABASE_URL'])('snapshot view model per jenis hal
   ])('%s: %s %s', async (_label, code, url) => {
     const result = await build(code, url)
     // Chrome sudah disnapshot terpisah; di sini hanya status, vm, seo, issues.
+    const snapshot = result.kind === 'render'
+      ? { kind: result.kind, status: result.status, vm: result.page.vm, seo: result.page.seo, issues: result.issues }
+      : result
+    expect(stable(snapshot as PageResult)).toMatchSnapshot()
+  })
+
+  // Home dengan section (ADR-008). Layout sama dengan layouts di seed, sudah
+  // dalam bentuk hasil registry template; core tidak mengenal manifest.
+  const seedLayouts: Record<string, ResolvedSection[]> = {
+    'kabar-tekno': [
+      { type: 'hero', props: { source: 'featured', limit: 1 }, articles: { source: 'featured', limit: 1 } },
+      { type: 'latest-grid', props: { limit: 6 }, articles: { source: 'latest', limit: 6 } },
+      { type: 'category-strip', props: { categorySlug: 'gadget', limit: 4 }, articles: { source: 'category', slug: 'gadget', limit: 4 } },
+    ],
+    'dapur-nusantara': [
+      { type: 'headline-list', props: { source: 'latest', limit: 5 }, articles: { source: 'latest', limit: 5 } },
+      { type: 'category-strip', props: { categorySlug: 'resep', limit: 8 }, articles: { source: 'category', slug: 'resep', limit: 8 } },
+    ],
+  }
+
+  it.each(Object.keys(seedLayouts))('home dengan section: %s', async (code) => {
+    const result = await build(code, '/', seedLayouts[code])
     const snapshot = result.kind === 'render'
       ? { kind: result.kind, status: result.status, vm: result.page.vm, seo: result.page.seo, issues: result.issues }
       : result

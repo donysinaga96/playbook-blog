@@ -483,7 +483,7 @@ pnpm install
 
 @@include apps/web/package.json json@@
 
-5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime.:
+5. Tulis `nuxt.config.ts`. Paket workspace diekspor sebagai source TypeScript (`./src/index.ts`), jadi harus ikut di-bundle oleh Nitro lewat `externals.inline`. Tanpa ini, server produksi mencoba meng-import file `.ts` dari `node_modules` saat runtime. Paket template-kit dan template ditambahkan ke daftar itu di bab "Menyusun Halaman Depan dari Section":
 
 @@include apps/web/nuxt.config.ts ts@@
 
@@ -718,7 +718,7 @@ export * from './site/resolve'
 
 @@include apps/web/server/plugins/site-mode.ts ts@@
 
-10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
+10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template" dan berubah menjadi `ResolvedTheme` di bab "Menyusun Halaman Depan dari Section") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
 
 @@include apps/web/shared/types/site-context.d.ts ts@@
 
@@ -727,7 +727,7 @@ export * from './site/resolve'
     - `Host` dibaca dari header `Host`, bukan `X-Forwarded-Host`, karena header itu bisa dipalsukan klien. Reverse proxy di produksi wajib meneruskan `Host` asli.
     - `X-Forwarded-Proto` boleh dipercaya karena hanya menentukan `http` atau `https` pada URL redirect ke domain primary site yang sama.
     - Redirect mempertahankan path, query, dan port.
-    - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template".
+    - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template", lalu dipindah ke sebelum view model di bab "Menyusun Halaman Depan dari Section".
 
 @@include apps/web/server/middleware/site.ts ts@@
 
@@ -798,7 +798,7 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
 @@include packages/template-kit/src/tokens.ts ts@@
 
-4. Tulis `defineTemplate` di `manifest.ts`. Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri: skema token/opsi, default (digabung per key dengan `mergeDeep`), lokasi menu, layout, dan view. Semuanya diperiksa saat modul di-import: format key, semver, default lolos skema dan bisa dijadikan CSS, serta view lengkap. Manifest yang salah langsung gagal di test dan build:
+4. Tulis `defineTemplate` di `manifest.ts`. Catatan: file `manifest.ts`, `theme.ts`, `index.ts`, `view-models.ts`, dan test template-kit di bab ini sudah versi akhir dari bab "Menyusun Halaman Depan dari Section", yang memecah manifest menjadi `defineManifest` (tanpa Vue) dan `defineTemplate` (manifest + komponen) serta menambah section. Bila mengikuti urutan bab, buat juga `sections.ts` dari bab itu sekarang. Template dengan `extends` mewarisi semua yang tidak ia definisikan sendiri: skema token/opsi, default (digabung per key dengan `mergeDeep`), lokasi menu, layout, dan view. Semuanya diperiksa saat modul di-import: format key, semver, default lolos skema dan bisa dijadikan CSS, serta view lengkap. Manifest yang salah langsung gagal di test dan build:
 
 @@include packages/template-kit/src/manifest.ts ts@@
 
@@ -841,7 +841,7 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
 @@include templates/base/src/config.ts ts@@
 
-12. Tulis manifest base. Setiap view dimuat saat dibutuhkan (`() => import(...)`), dan CSS serta font di-import sebagai efek samping modul:
+12. Tulis manifest base. File `index.ts`, `HomeView.vue`, `base.css`, `package.json`, `test-fixtures.ts`, dan `render.test.ts` base di bab ini juga sudah versi akhir: entry `./manifest`, folder `sections/`, dan home berbasis section dijelaskan di bab "Menyusun Halaman Depan dari Section". Setiap view dimuat saat dibutuhkan (`() => import(...)`), dan CSS serta font di-import sebagai efek samping modul:
 
 @@include templates/base/src/index.ts ts@@
 
@@ -902,7 +902,7 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
 @@include templates/base/package.json json@@
 
-18. Buat template magazine. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
+18. Buat template magazine. Di versi akhir (bab "Menyusun Halaman Depan dari Section") manifest magazine pindah ke `src/manifest.ts`, dan `index.ts` hanya menambahkan CSS. Isinya hanya manifest dengan `extends: base`, default token dan opsi, serta CSS di bawah `.tpl-magazine`. Tidak ada komponen sendiri:
 
 @@include templates/magazine/src/index.ts ts@@
 
@@ -1063,7 +1063,7 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 
 @@include packages/core/src/views/urls-routes.test.ts ts@@
 
-8. Tulis pembangun halaman di `build-page.ts`. Fungsi `build({ site, pathname, searchParams })` mengembalikan salah satu dari (file di bawah sudah memuat tambahan SEO dan `origin` dari bab "Menambahkan Embed, SEO, dan Feed"):
+8. Tulis pembangun halaman di `build-page.ts`. Fungsi `build({ site, pathname, searchParams })` mengembalikan salah satu dari (file di bawah sudah memuat tambahan SEO dan `origin` dari bab "Menambahkan Embed, SEO, dan Feed", serta section home dari bab "Menyusun Halaman Depan dari Section"):
    - `render` dengan status 200 atau 404, berisi `chrome` (identitas site, menu dengan URL jadi, tanggal hari ini) dan `vm` (view model halaman);
    - `redirect`: slash di ujung, artikel di path non-kanonik, atau aturan di tabel `redirects` (dicek sebelum 404).
 
@@ -1084,13 +1084,13 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 
 @@include apps/web/server/utils/pages.ts ts@@
 
-12. Bangun halaman di middleware, setelah site ditemukan. Theme dan view model dimuat paralel. Redirect langsung dikirim dari middleware, `issues` dicatat ke log, dan hasilnya disimpan di `event.context.page`. Perhitungan `siteOrigin` dan prefix feed ditambahkan di bab "Menambahkan Embed, SEO, dan Feed":
+12. Bangun halaman di middleware, setelah site ditemukan. Di bab ini theme dan view model dimuat paralel; sejak bab "Menyusun Halaman Depan dari Section" theme diselesaikan lebih dulu (file di bawah sudah versi itu). Redirect langsung dikirim dari middleware, `issues` dicatat ke log, dan hasilnya disimpan di `event.context.page`. Perhitungan `siteOrigin` dan prefix feed ditambahkan di bab "Menambahkan Embed, SEO, dan Feed":
 
 @@include apps/web/server/middleware/site.ts ts@@
 
 @@include apps/web/shared/types/site-context.d.ts ts@@
 
-13. Ganti plugin `site.server.ts`: tidak lagi membangun chrome sementara, cukup menyalin `event.context.page` ke state dan memasang status 404 lewat `setResponseStatus`. Request yang sampai ke renderer tanpa halaman (mis. `/api/tidak-ada`) juga dijawab 404:
+13. Ganti plugin `site.server.ts` (versi di bawah dari bab "Menyusun Halaman Depan dari Section": theme sudah diselesaikan di middleware): tidak lagi membangun chrome sementara, cukup menyalin `event.context.page` ke state dan memasang status 404 lewat `setResponseStatus`. Request yang sampai ke renderer tanpa halaman (mis. `/api/tidak-ada`) juga dijawab 404:
 
 @@include apps/web/app/plugins/site.server.ts ts@@
 
@@ -1255,3 +1255,100 @@ git diff packages/core/src/views/__snapshots__/
 ```
 
 9. Jalankan `pnpm check`, build, smoke, dan gate. Bila semuanya hijau dan pipeline CI hijau, tahap tampilan pertama selesai.
+
+# Menyusun Halaman Depan dari Section
+
+1. Pahami masalahnya. Setiap site menyimpan susunan halaman depan di kolom `site_themes.layouts`, misalnya `[{ "type": "hero", "props": { "source": "featured", "limit": 1 } }, { "type": "latest-grid", "props": { "limit": 6 } }]`. Data setiap section diambil core, tetapi sampai bab sebelumnya theme baru diselesaikan di plugin Vue, setelah view model jadi. Ada dua hambatan lain: Nitro tidak bisa meng-import manifest template karena manifest ikut meng-import `.vue` dan `.css`, dan contoh di guide menaruh komponen section di setiap template, padahal semua template memakai komponen base. Keputusannya dicatat sebagai ADR:
+
+@@include docs/adr/008-kontrak-section.md markdown@@
+
+2. Tulis kontrak section di `packages/template-kit/src/sections.ts`:
+   - `defineSection({ props, data })`: skema props Zod (field opsional memakai `.default()`) dan fungsi yang mengubah props menjadi permintaan data `{ source, slug?, limit }`.
+   - `resolveLayout`: memvalidasi layout satu halaman. Item yang rusak dilewati dan dicatat; layout yang tidak ada, kosong, bukan array, atau tidak menyisakan section valid diganti `defaultLayouts`. Nama seperti `toString` tidak boleh dianggap section, jadi pencarian memakai `Object.hasOwn`.
+   - `SECTION_LIMITS`: 8 section per halaman dan 12 artikel per section. `limit` di luar batas dijepit, dan permintaan data dicek ulang apa pun skema props-nya.
+
+@@include packages/template-kit/src/sections.ts ts@@
+
+3. Pecah `manifest.ts` menjadi dua fungsi (file lengkap di bab "Membangun Sistem Template"):
+   - `defineManifest`: key, versi, tokens, options, menu, slot iklan, `sections`, dan `defaultLayouts`. Tidak ada komponen, jadi aman di-import server. Template turunan mewarisi section induknya dan tidak boleh mendefinisikan section sendiri. `defaultLayouts` harus bersih; manifest dengan layout bawaan yang salah gagal saat di-import.
+   - `defineTemplate({ manifest, extends, layout, views })`: manifest + komponen. `extends` harus menunjuk definisi dengan key yang sama dengan induk manifest.
+
+4. Di `theme.ts`, buat registry generik (`createTemplateRegistry<T extends TemplateManifest>`), sehingga server cukup mendaftarkan manifest dan renderer Vue mendaftarkan definisi lengkap. `resolveTheme` kini juga menerima `layouts` dan mengembalikan `layouts.home` yang sudah divalidasi. Di `view-models.ts`, tambahkan `SectionView` dan field `sections` pada `HomeView`. Ekspor `sections.ts` dari `index.ts`.
+
+5. Uji aturan layout:
+
+@@include packages/template-kit/src/sections.test.ts ts@@
+
+6. Di template base, tulis definisi section terpisah dari komponennya. Nama section mengikuti data yang sudah ada di seed (`hero`, `latest-grid`, `headline-list`, `category-strip`; props `categorySlug`):
+
+@@include templates/base/src/sections/definitions.ts ts@@
+
+7. Buat entry `./manifest` base. File ini hanya meng-import template-kit, `config.ts`, dan `definitions.ts`:
+
+@@include templates/base/src/manifest.ts ts@@
+
+8. Daftarkan entry itu di `exports` `package.json` base (`"./manifest": "./src/manifest.ts"`), lalu ubah `index.ts` base menjadi `defineTemplate({ manifest, layout, views })` dengan import CSS (file lengkap di bab "Membangun Sistem Template").
+
+9. Tulis komponen section di `templates/base/src/sections/`. Semuanya netral dan memakai komponen yang sudah ada (`ArticleCard`, `ArticleList`). Setiap section punya kelas `section section--<type>` sebagai kait CSS template, judul `<h2>` dengan `id` dari nomor urut section (stabil antara server dan browser, jadi aman untuk hidrasi), dan tidak merender apa pun bila artikelnya kosong (kecuali `latest-grid`, yang menampilkan teks "Belum ada artikel."):
+
+@@include templates/base/src/sections/props.ts ts@@
+
+@@include templates/base/src/sections/SectionHeading.vue vue@@
+
+@@include templates/base/src/sections/HeroSection.vue vue@@
+
+@@include templates/base/src/sections/LatestGridSection.vue vue@@
+
+@@include templates/base/src/sections/HeadlineListSection.vue vue@@
+
+@@include templates/base/src/sections/CategoryStripSection.vue vue@@
+
+10. Petakan tipe ke komponen dengan key yang sama seperti `definitions.ts`. Tipe `Record<BaseSectionType, Component>` membuat typecheck gagal bila satu section tidak punya komponen:
+
+@@include templates/base/src/sections/components.ts ts@@
+
+11. Di `HomeView.vue`, bila `vm.sections` tidak kosong, render setiap section lewat `sectionComponents`, lalu pagination daftar terbaru. Tipe tanpa komponen dilewati. Bila kosong, tampilkan home lama (`featured` + `latest`). Gaya netral section (`.section`, `.section__head`, `.headline-list`) ada di `base.css`. Keduanya ditampilkan di bab "Membangun Sistem Template".
+
+12. Pindahkan manifest magazine ke `src/manifest.ts` dan tambahkan `defaultLayouts`. `index.ts` magazine tinggal menggabungkan manifest, induk, dan CSS:
+
+@@include templates/magazine/src/manifest.ts ts@@
+
+13. Di core, `PageRequest` mendapat field `layouts` (hasil `resolveTheme`). Fungsi `sectionViews` di `build-page.ts` menjalankan permintaan setiap section:
+    - Section dijalankan berurutan. Artikel yang sudah tampil dikecualikan langsung di query lewat opsi baru `excludeIds` pada `listPublishedArticles` (`NOT IN`, paling banyak 200 id), jadi setiap section tetap terisi penuh bila artikelnya cukup. Versi pertama mengambil lebih banyak artikel lalu membuang yang ganda; code review menemukan cara itu gagal bila total limit section melewati batas 50 per query.
+    - Sumber `category` dan `tag` juga mengambil nama dan URL-nya untuk judul dan tautan "Lihat semua". Kategori atau tag yang tidak ada di site itu membuat section dilewati dan dicatat, sehingga slug milik site lain tidak pernah terbaca.
+    - Batas jumlah section dan `limit` dijaga ulang di sini.
+    - Halaman 1 mengisi `sections` dan mengosongkan `featured` dan `latest`. Bila semua section dilewati, `latest` diisi daftar terbaru agar halaman tidak kosong.
+    - `?page=N` (N ≥ 2) menjadi arsip terbaru yang dimulai dari artikel paling baru. Code review menemukan bahwa bila `?page=2` tetap dimulai dari artikel ke-11, artikel ke-7 sampai ke-10 (grid magazine menampilkan 6) tidak terjangkau dari mana pun.
+
+14. Uji di `build-page.test.ts` (bab "Membangun Halaman Publik dari View Model"): artikel ganda tidak diulang, section berikutnya tetap terisi, `?page=N` menjadi arsip tanpa artikel yang terlewat, kategori milik site lain dilewati, dan batas dijaga core. Tambahkan dua snapshot home dengan section memakai layout seed, lalu perbarui snapshot dan periksa diff-nya:
+
+```bash
+pnpm vitest run packages/core/src/views -u
+git diff packages/core/src/views/__snapshots__/
+# home lama hanya bertambah "sections": []; dua snapshot baru "home dengan section"
+```
+
+15. Di aplikasi web, buat registry manifest untuk server. Issue theme dicatat sekali per proses di sini, tidak lagi di plugin Vue:
+
+@@include apps/web/server/utils/templates.ts ts@@
+
+16. Ubah middleware: `resolveSiteTheme` dipanggil dulu, lalu `theme.layouts` diteruskan ke `usePageBuilder().build(...)`, dan `event.context.theme` berisi `ResolvedTheme`. Plugin `site.server.ts` hanya menyalin field yang dibutuhkan renderer (tipe `PublicTheme` di `useSiteTheme.ts`); `issues` dan `layouts` tidak ikut payload Nuxt yang bisa dibaca siapa pun dari source halaman. Tambahkan paket template ke `nitro.externals.inline` di `nuxt.config.ts`. File-file itu ditampilkan di bab-bab sebelumnya.
+
+    Daftar template kini ada di dua tempat, jadi uji keduanya sama:
+
+@@include apps/web/server/utils/templates.test.ts ts@@
+
+17. Tambahkan test arsitektur yang menelusuri import entry `./manifest` setiap template, termasuk import tidak langsung lewat paket workspace lain, dan gagal bila sampai ke `.vue` atau `.css`. Test kontrol memastikan penelusurnya memang menemukan `.vue`/`.css` dari entry utama:
+
+@@include tests/template-manifest.test.ts ts@@
+
+18. Jalankan semua pemeriksaan, lalu buka kedua site di browser:
+
+```bash
+pnpm check
+pnpm build && pnpm --filter @framework/web smoke && pnpm --filter @framework/web gate
+pnpm dev
+# http://tekno.localhost:3000   -> section--hero, section--latest-grid
+# http://kuliner.localhost:3000 -> section--headline-list (masih template base sampai template news ada)
+# Strip kategori tidak tampil di data seed: semua artikelnya sudah muncul di section sebelumnya.
+```

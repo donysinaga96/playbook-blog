@@ -272,6 +272,86 @@
   margin-bottom: 1rem;
 }
 
+/* ---------- Section home (ADR-008) ------------------------------------ */
+
+.tpl .section + .section {
+  margin-top: 2.5rem;
+}
+
+.tpl .section--hero {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.tpl .section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.tpl .section__head .section__title {
+  margin: 0;
+}
+
+.tpl .section__title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tpl .section__more {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.tpl .headline-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tpl .headline-list__item {
+  display: grid;
+  gap: 0.125rem;
+  padding-block: 0.875rem;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.tpl .headline-list__item:first-child {
+  padding-top: 0;
+}
+
+.tpl .headline-list__category {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tpl .headline-list__title {
+  color: inherit;
+  font-family: var(--f-heading);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.3;
+  text-decoration: none;
+}
+
+.tpl .headline-list__title:hover {
+  text-decoration: underline;
+}
+
+.tpl .headline-list__date {
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .view--home > .pagination {
+  margin-top: 2.5rem;
+}
+
 /* ---------- Artikel dan halaman --------------------------------------- */
 
 .tpl .article,

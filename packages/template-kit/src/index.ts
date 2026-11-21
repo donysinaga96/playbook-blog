@@ -6,6 +6,7 @@
 export { z } from 'zod'
 export * from './manifest'
 export { isPlainObject, mergeDeep } from './objects'
+export * from './sections'
 export * from './theme'
 export * from './tokens'
 export * from './view-models'

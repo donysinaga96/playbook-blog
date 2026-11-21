@@ -1,19 +1,16 @@
 // Template base: semua komponen UI default, dipakai bersama oleh semua
 // template (ADR-005). Gaya netral; template lain membedakan diri lewat
-// token, opsi, dan CSS di bawah kelas root-nya.
+// token, opsi, layout section, dan CSS di bawah kelas root-nya.
+//
+// Manifest (skema, section, defaultLayouts) ada di ./manifest.ts agar bisa
+// dipakai server tanpa Vue/CSS (ADR-008); di sini ditambah komponen.
 import { defineTemplate } from '@framework/template-kit'
-import { baseOptionDefaults, baseOptionsSchema, baseTokenDefaults, baseTokenSchema } from './config'
+import manifest from './manifest'
 import './styles/fonts.css'
 import './styles/base.css'
 
 export default defineTemplate({
-  key: 'base',
-  version: '1.0.0',
-  name: 'Base',
-  tokens: { schema: baseTokenSchema, defaults: baseTokenDefaults },
-  options: { schema: baseOptionsSchema, defaults: baseOptionDefaults },
-  menuLocations: ['header', 'footer'],
-  adSlots: [],
+  manifest,
   layout: () => import('./TemplateLayout.vue'),
   views: {
     home: () => import('./views/HomeView.vue'),
@@ -28,3 +25,4 @@ export default defineTemplate({
 })
 
 export * from './config'
+export { sectionComponents } from './sections/components'

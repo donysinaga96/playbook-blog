@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { defineTemplate, type ComponentLoader, type ConfigSpec } from './manifest'
+import { defineManifest, type ConfigSpec } from './manifest'
+import { defineSection } from './sections'
 import { createTemplateRegistry, resolveConfig } from './theme'
-import { VIEW_NAMES, type ViewName } from './view-models'
 
 const hex = z.string().regex(/^#[0-9a-f]{6}$/i)
 const spec: ConfigSpec = {
@@ -58,10 +58,27 @@ describe('resolveConfig', () => {
 })
 
 describe('createTemplateRegistry', () => {
-  const loader: ComponentLoader = async () => ({ default: {} })
-  const views = Object.fromEntries(VIEW_NAMES.map((v) => [v, loader])) as Record<ViewName, ComponentLoader>
-  const base = defineTemplate({ key: 'base', version: '1.0.0', name: 'Base', tokens: spec, options: { schema: z.object({ showDate: z.boolean() }), defaults: { showDate: false } }, layout: loader, views })
-  const magazine = defineTemplate({ key: 'magazine', version: '1.2.0', name: 'Magazine', extends: base, tokens: { defaults: { color: { primary: '#0f62fe' } } } })
+  const sections = {
+    grid: defineSection({ props: z.object({ limit: z.number().int().min(1).max(12).default(6) }), data: ({ limit }) => ({ source: 'latest', limit }) }),
+  }
+  const base = defineManifest({
+    key: 'base',
+    version: '1.0.0',
+    name: 'Base',
+    tokens: spec,
+    options: { schema: z.object({ showDate: z.boolean() }), defaults: { showDate: false } },
+    sections,
+    defaultLayouts: { home: [{ type: 'grid' }] },
+  })
+  const magazine = defineManifest({
+    key: 'magazine',
+    version: '1.2.0',
+    name: 'Magazine',
+    extends: base,
+    tokens: { defaults: { color: { primary: '#0f62fe' } } },
+    defaultLayouts: { home: [{ type: 'grid', props: { limit: 3 } }] },
+  })
+  const grid = (limit: number) => ({ type: 'grid', props: { limit }, articles: { source: 'latest', limit } })
   const registry = createTemplateRegistry([base, magazine], { fallback: 'base' })
 
   it('theme tersimpan -> template, config tervalidasi, dan CSS', () => {
@@ -72,6 +89,7 @@ describe('createTemplateRegistry', () => {
       rootClass: 'tpl-magazine',
       tokens: { color: { primary: '#0f62fe', surface: '#ffffff' }, radius: { card: '8px' }, scale: 1 },
       options: { showDate: true },
+      layouts: { home: [grid(3)] },
       css: '.tpl-magazine{--color-primary:#0f62fe;--color-surface:#ffffff;--radius-card:8px;--scale:1}',
       issues: [],
     })
@@ -96,6 +114,20 @@ describe('createTemplateRegistry', () => {
   it('hasil bisa dikirim sebagai JSON tanpa kehilangan data', () => {
     const theme = registry.resolveTheme({ templateKey: 'magazine', templateVersion: '1.0.0', tokens: {}, options: {} })
     expect(JSON.parse(JSON.stringify(theme))).toEqual(theme)
+  })
+
+  it('layout tersimpan divalidasi; rusak -> defaultLayouts template, dicatat', () => {
+    const stored = { templateKey: 'magazine', templateVersion: '1.2.0', tokens: {}, options: {} }
+    expect(registry.resolveTheme({ ...stored, layouts: { home: [{ type: 'grid', props: { limit: 5 } }] } })).toMatchObject({ layouts: { home: [grid(5)] }, issues: [] })
+    expect(registry.resolveTheme({ ...stored, layouts: { home: [{ type: 'hero' }] } })).toMatchObject({
+      layouts: { home: [grid(3)] },
+      issues: ['layouts.home[0]: section "hero" tidak dikenal, dilewati', 'layouts.home: tidak ada section yang valid, memakai default'],
+    })
+    expect(registry.resolveTheme({ ...stored, layouts: 'home' })).toMatchObject({ layouts: { home: [grid(3)] }, issues: ['layouts: bukan object, memakai default'] })
+  })
+
+  it('fallback memakai defaultLayouts base, bukan milik template yang tidak terdaftar', () => {
+    expect(registry.resolveTheme(null).layouts).toEqual({ home: [grid(6)] })
   })
 
   it('get: key tidak dikenal -> fallback', () => {

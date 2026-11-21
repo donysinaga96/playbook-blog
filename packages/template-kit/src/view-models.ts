@@ -106,10 +106,30 @@ export type BlockViewType = BlockView['type']
 
 // ---------- View per jenis halaman --------------------------------------
 
+/**
+ * Satu section halaman (ADR-008), dirender komponen section di base
+ * berdasarkan `type`.
+ */
+export interface SectionView {
+  /** Tipe section dari manifest base, mis. 'hero', 'latest-grid'. */
+  type: string
+  /** Props tervalidasi skema section (mis. judul pengganti). */
+  props: Record<string, unknown>
+  articles: ArticleCardView[]
+  /** Kategori atau tag yang ditampilkan section, untuk judul dan tautan "lihat semua"; null untuk sumber latest/featured. */
+  link: LinkView | null
+}
+
 export interface HomeView {
   view: 'home'
+  /**
+   * Halaman 1 dengan layout section: diisi, dan featured + latest kosong.
+   * Halaman 2 dst. (dan site tanpa section): kosong, featured + latest diisi.
+   */
+  sections: SectionView[]
   featured: ArticleCardView[]
   latest: ArticleCardView[]
+  /** Selalu pagination daftar terbaru, juga di halaman 1 dengan section. */
   pagination: PaginationView
 }
 

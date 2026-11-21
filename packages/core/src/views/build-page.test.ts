@@ -3,6 +3,7 @@
 //  2. Terhadap database dev yang di-seed (dilewati tanpa DATABASE_URL), jam
 //     dipatok 19 Nov 2026: setiap jenis halaman, redirect, 404, dua site.
 import { createDatabase } from '@framework/db'
+import { SECTION_LIMITS, type ResolvedSection } from '@framework/template-kit'
 import { afterAll, describe, expect, it } from 'vitest'
 import { parseBodyLenient } from '../content/blocks'
 import { parseSiteSettings } from '../site/settings'
@@ -41,15 +42,15 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
     return sites.get(code) as SiteInfo
   }
 
-  async function build(code: string, url: string): Promise<PageResult> {
+  async function build(code: string, url: string, home?: ResolvedSection[]): Promise<PageResult> {
     const parsed = new URL(url, 'http://x')
     const origin = code === 'kabar-tekno' ? 'https://tekno.localhost' : 'https://kuliner.localhost'
-    const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin }
+    const request: PageRequest = { site: await site(code), pathname: parsed.pathname, searchParams: parsed.searchParams, origin, layouts: home ? { home } : undefined }
     return builder.build(request)
   }
 
-  async function render(code: string, url: string) {
-    const result = await build(code, url)
+  async function render(code: string, url: string, home?: ResolvedSection[]) {
+    const result = await build(code, url, home)
     if (result.kind !== 'render') throw new Error(`${url}: diharapkan render, dapat ${JSON.stringify(result)}`)
     return result
   }
@@ -99,6 +100,96 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
     expect(second.page.vm.pagination).toMatchObject({ prevHref: '/', nextHref: null })
     expect((await render('kabar-tekno', '/?page=3')).status).toBe(404)
     expect((await render('kabar-tekno', '/?page=abc')).status).toBe(404)
+  })
+
+  // ---------- Section home (ADR-008) ----------
+  const plan = (type: string, articles: ResolvedSection['articles'], props: Record<string, unknown> = {}): ResolvedSection => ({ type, props, articles })
+
+  it('home dengan section: data per section, tanpa artikel ganda, tautan kategori/tag; pagination tetap', async () => {
+    const { page, issues } = await render('kabar-tekno', '/', [
+      plan('hero', { source: 'featured', limit: 1 }, { source: 'featured', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 6 }),
+      plan('category-strip', { source: 'category', slug: 'gadget', limit: 4 }),
+      plan('tag-strip', { source: 'tag', slug: 'android', limit: 4 }),
+      plan('note', null, { text: 'Halo' }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections.map((s) => [s.type, s.articles.map((a) => a.href), s.link])).toEqual([
+      ['hero', ['/review/ponsel-lipat-makin-murah'], null],
+      ['latest-grid', ['/kecerdasan-buatan/cara-kerja-model-bahasa'], null],
+      // Ponsel ada di sub-kategori gadget dan bertag android, tetapi sudah tampil di hero.
+      ['category-strip', [], { label: 'Gadget', href: '/category/gadget' }],
+      ['tag-strip', [], { label: 'Android', href: '/tag/android' }],
+      ['note', [], null],
+    ])
+    expect(page.vm.sections[0]?.props).toEqual({ source: 'featured', limit: 1 })
+    expect(page.vm.featured).toEqual([])
+    expect(page.vm.latest).toEqual([])
+    // 2 artikel, pageSize 1: halaman 1 = section, halaman 2-3 = arsip.
+    expect(page.vm.pagination).toMatchObject({ page: 1, totalPages: 3, nextHref: '/?page=2' })
+    expect(issues).toEqual([])
+  })
+
+  it('section yang meminta lebih banyak tetap terisi setelah artikel ganda dibuang', async () => {
+    const { page } = await render('kabar-tekno', '/', [
+      plan('hero', { source: 'latest', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections.map((s) => s.articles.map((a) => a.href))).toEqual([
+      ['/kecerdasan-buatan/cara-kerja-model-bahasa'],
+      ['/review/ponsel-lipat-makin-murah'],
+    ])
+  })
+
+  it('mode section: ?page=N adalah arsip dari artikel terbaru, jadi tidak ada artikel yang terlewat', async () => {
+    const layout = [plan('hero', { source: 'featured', limit: 1 })]
+    const pages = await Promise.all(['/?page=2', '/?page=3'].map((url) => render('kabar-tekno', url, layout)))
+    const vms = pages.map(({ page }) => {
+      if (page.vm.view !== 'home') throw new Error('bukan home')
+      return page.vm
+    })
+    expect(vms.map((vm) => vm.sections)).toEqual([[], []])
+    expect(vms.map((vm) => vm.latest.map((a) => a.href))).toEqual([['/kecerdasan-buatan/cara-kerja-model-bahasa'], ['/review/ponsel-lipat-makin-murah']])
+    expect(vms[0]?.pagination).toMatchObject({ page: 2, totalPages: 3, prevHref: '/', nextHref: '/?page=3' })
+    expect((await render('kabar-tekno', '/?page=4', layout)).status).toBe(404)
+  })
+
+  it('section berikutnya tetap terisi walau artikelnya sudah banyak dipakai section sebelumnya', async () => {
+    const { page } = await render('kabar-tekno', '/', [
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+      plan('latest-grid', { source: 'latest', limit: 1 }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections.map((s) => s.articles.map((a) => a.href))).toEqual([
+      ['/kecerdasan-buatan/cara-kerja-model-bahasa'],
+      ['/review/ponsel-lipat-makin-murah'],
+      [],
+    ])
+  })
+
+  it('kategori atau tag tidak dikenal: section dilewati dan dicatat; tanpa section tersisa = daftar terbaru', async () => {
+    const { page, issues } = await render('kabar-tekno', '/', [
+      plan('category-strip', { source: 'category', slug: 'resep', limit: 4 }),
+      plan('tag-strip', { source: 'tag', slug: 'tidak-ada', limit: 4 }),
+    ])
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections).toEqual([])
+    expect(page.vm.latest.map((a) => a.href)).toEqual(['/kecerdasan-buatan/cara-kerja-model-bahasa'])
+    // Kategori "resep" milik site lain: tidak boleh terbaca dari site ini.
+    expect(issues).toEqual([
+      'section: kategori "resep" tidak ada di site ini, section dilewati',
+      'section: tag "tidak-ada" tidak ada di site ini, section dilewati',
+    ])
+  })
+
+  it('jumlah section dan limit dijaga ulang di core', async () => {
+    const many = Array.from({ length: SECTION_LIMITS.maxSectionsPerPage + 4 }, () => plan('latest-grid', { source: 'latest', limit: 999 }))
+    const { page } = await render('kabar-tekno', '/', many)
+    if (page.vm.view !== 'home') throw new Error('bukan home')
+    expect(page.vm.sections).toHaveLength(SECTION_LIMITS.maxSectionsPerPage)
+    expect(page.vm.sections[0]?.articles).toHaveLength(2)
   })
 
   it('artikel: breadcrumb dengan induk kategori, tag, block body termasuk gambar', async () => {

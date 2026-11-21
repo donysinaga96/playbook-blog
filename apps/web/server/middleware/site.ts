@@ -1,7 +1,8 @@
 // Host request -> site, untuk setiap request (ADR-001).
 //
 //   site ditemukan  -> event.context.site / siteDomain; untuk request
-//                      halaman juga theme + view model (event.context.page),
+//                      halaman juga theme yang sudah diselesaikan
+//                      (event.context.theme) + view model (event.context.page),
 //                      atau redirect (permalink kanonik, tabel redirects)
 //   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
 //   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
@@ -12,6 +13,7 @@ import { resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus } from 'nuxt/server'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
+import { resolveSiteTheme } from '../utils/templates'
 import { useSiteMode } from '../utils/site-mode'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
@@ -35,11 +37,16 @@ export default defineEventHandler(async (event) => {
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
-    // Halaman publik: view model dibangun di sini, bukan di Vue (ADR-007).
-    const [theme, built] = await Promise.all([
-      useRepositories().sites.getActiveTheme(site.id),
-      usePageBuilder().build({ site, pathname: url.pathname, searchParams: url.searchParams, origin: event.context.siteOrigin }),
-    ])
+    // Halaman publik: theme diselesaikan dulu (layout section menentukan data
+    // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
+    const theme = resolveSiteTheme(site, await useRepositories().sites.getActiveTheme(site.id))
+    const built = await usePageBuilder().build({
+      site,
+      pathname: url.pathname,
+      searchParams: url.searchParams,
+      origin: event.context.siteOrigin,
+      layouts: theme.layouts,
+    })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme

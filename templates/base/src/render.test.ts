@@ -10,7 +10,7 @@ import { renderToString } from 'vue/server-renderer'
 import base from './index'
 import { baseOptionDefaults } from './config'
 import SmartImage from './components/SmartImage.vue'
-import { chrome, image, views } from './test-fixtures'
+import { chrome, homeWithSections, image, views } from './test-fixtures'
 
 async function load(loader: ComponentLoader): Promise<Component> {
   const mod = await loader()
@@ -34,6 +34,25 @@ describe('template base: view', () => {
     expect(html).toContain('aria-current="page"')
     expect(html).toContain('pagination__gap')
     expect(html).toContain('rel="next"')
+  })
+
+  it('home dengan section: setiap tipe dirender dari base, urutan sesuai layout, pagination tetap', async () => {
+    const html = await render(await load(base.views.home), { vm: homeWithSections })
+    const order = ['section--hero', 'section--latest-grid', 'section--headline-list', 'section--category-strip'].map((c) => html.indexOf(c))
+    expect(order.every((i) => i >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(html).toContain('article-card--lead')
+    expect(html).toContain('Kabar &lt;b&gt;cepat&lt;/b&gt;')
+    expect(html).toContain('<a href="/category/gadget">Gadget</a>')
+    expect(html).toContain('Lihat semua')
+    expect(html).toContain('aria-labelledby="section-3-title"')
+    expect(html).toContain('id="section-3-title"')
+    expect(html).toContain('rel="next"')
+    // Tipe tanpa komponen dan section kosong tidak merender apa-apa.
+    expect(html).not.toContain('Artikel 6')
+    expect(html).not.toContain('Kosong')
+    // Mode section tidak merender daftar lama.
+    expect(html).not.toContain('judul-terbaru')
   })
 
   it('artikel: semua tipe block, teks di-escape', async () => {
