@@ -73,7 +73,7 @@ Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah a
 |---|---|---|
 | `version` | ya | `1` |
 | `title` | ya | 1–300 karakter |
-| `slug` | tidak | Huruf kecil, angka, tanda hubung. Tidak diisi = dibuat dari judul saat approve. Slug yang sudah dipakai artikel atau redirect site itu = galat |
+| `slug` | tidak | Huruf kecil, angka, tanda hubung. Tidak diisi = dibuat dari judul saat approve. Slug yang sudah dipakai artikel site itu = galat |
 | `excerpt` | tidak | Ringkasan, maks 1.000 karakter |
 | `category` | ya | Slug kategori yang **sudah ada** di site. Kategori tidak dibuat otomatis |
 | `author` | tidak | Slug penulis di site; tidak diisi = tanpa byline |
@@ -171,12 +171,12 @@ Galat memblokir approve. Peringatan hanya ditampilkan, dan pemilik proyek yang m
 
 | Pemeriksaan | Jenis |
 |---|---|
-| Payload lolos skema versi yang dikenal (bentuk, panjang, field tak dikenal, key gambar) | Galat |
+| Payload lolos skema versi yang dikenal (bentuk, panjang, field tak dikenal, key gambar). Bila tidak lolos, hanya masalah skema yang ditampilkan; pemeriksaan di bawah berjalan setelah payload diperbaiki | Galat |
 | Kategori dan penulis ada di site itu dan `ACTIVE` | Galat |
 | Tag belum ada di site | Peringatan (dibuat saat approve) |
 | `storageKey` diawali kode site, file ada di storage, dan tipenya gambar yang dikenali | Galat |
 | URL embed dikenali provider | Galat |
-| Slug valid dan belum dipakai artikel atau redirect site itu | Galat |
+| Slug valid dan belum dipakai artikel site itu (redirect lama dengan path yang sama tidak masalah: konten menang atas redirect) | Galat |
 | Tidak ada referensi sama sekali | Peringatan |
 | Gambar tanpa `credit` dan `sourceUrl` | Peringatan |
 | URL embed tidak ada di `references` | Peringatan (video tetap diberi tautan ke sumbernya) |

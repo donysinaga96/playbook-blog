@@ -237,8 +237,9 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       await rejects(editor.createMedia(SITE, file('b'), { altText: '' }, USER), 'invalid', 'altText')
       await expect(editor.createMedia(SITE, { ...file('c'), storageKey: 'dapur-nusantara/2026/11/c.png' }, { altText: 'x' }, USER)).rejects.toThrow(/bukan milik site/)
 
-      const u = await editor.updateMedia(SITE, m.id, { altText: 'Rendang', credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 }, m.updatedAt.toISOString())
-      expect(u).toMatchObject({ credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 })
+      const u = await editor.updateMedia(SITE, m.id, { altText: 'Rendang', credit: 'Foto: Uji', sourceUrl: 'http://contoh.test/foto', focalX: 0.3, focalY: 0.7 }, m.updatedAt.toISOString())
+      expect(u).toMatchObject({ credit: 'Foto: Uji', sourceUrl: 'http://contoh.test/foto', focalX: 0.3, focalY: 0.7 })
+      await rejects(editor.updateMedia(SITE, m.id, { altText: 'x', sourceUrl: 'javascript:alert(1)' }, u.updatedAt.toISOString()), 'invalid', 'sourceUrl')
       await rejects(editor.updateMedia(SITE, m.id, { altText: 'x' }, m.updatedAt.toISOString()), 'conflict')
       await rejects(editor.updateMedia(OTHER, m.id, { altText: 'x' }, u.updatedAt.toISOString()), 'not-found')
 
@@ -333,6 +334,36 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       await editor.deleteMenuItem(SITE, 'footer', item.id, renamed.updatedAt.toISOString())
       // Sub-item ikut terhapus (CASCADE).
       expect((await editor.getMenu(SITE, 'footer')).items.some((i) => i.id === sub.id)).toBe(false)
+    })
+  })
+
+  describe('referensi artikel (ADR-010)', () => {
+    const refs = [
+      { title: 'Sumber utama', url: 'https://contoh.test/a', publisher: 'Contoh' },
+      { title: 'Video', url: 'http://contoh.test/v', kind: 'VIDEO' },
+    ]
+
+    it('tersimpan berurutan, diganti saat simpan, ikut di revisi dan arsip', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `ref-${run}`, references: refs }), USER)
+      expect(a.references).toEqual([
+        { title: 'Sumber utama', url: 'https://contoh.test/a', publisher: 'Contoh', kind: 'ARTICLE' },
+        { title: 'Video', url: 'http://contoh.test/v', kind: 'VIDEO' },
+      ])
+      const b = await editor.updateArticle(SITE, a.id, article({ slug: `ref-${run}`, references: [refs[1]] }), a.version, USER)
+      expect(b.references.map((r) => r.url)).toEqual(['http://contoh.test/v'])
+      const c = await editor.updateArticle(SITE, a.id, article({ slug: `ref-${run}` }), b.version, USER)
+      expect(c.references).toEqual([])
+      const archived = await editor.archiveArticle(SITE, a.id, c.version, USER)
+      expect(archived.references).toEqual([])
+    })
+
+    it.each([
+      ['URL dobel', [refs[0], { ...refs[0], title: 'Lagi' }], 'references.1.url'],
+      ['URL javascript:', [{ title: 'x', url: 'javascript:alert(1)' }], 'references.0.url'],
+      ['judul kosong', [{ title: ' ', url: 'https://contoh.test/x' }], 'references.0.title'],
+      ['jenis tidak dikenal', [{ title: 'x', url: 'https://contoh.test/x', kind: 'PODCAST' }], 'references.0.kind'],
+    ])('ditolak: %s', async (_name, references, field) => {
+      await rejects(editor.createArticle(SITE, article({ references }), USER), 'invalid', field)
     })
   })
 })

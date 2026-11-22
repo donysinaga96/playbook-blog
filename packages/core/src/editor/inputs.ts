@@ -4,6 +4,7 @@
 import { z } from 'zod'
 import { bodySchema } from '../content/blocks'
 import { contentSeoSchema } from '../content/seo'
+import { referenceSchema } from '../generated/payload'
 import { SLUG_MAX, SLUG_PATTERN } from './slug'
 
 const id = z.uuid()
@@ -47,6 +48,18 @@ export const articleInputSchema = z.strictObject({
   tagIds: z.array(id).max(50).default([]),
   seo: contentSeoSchema.default({}),
   attributes: z.record(z.string(), z.unknown()).default({}),
+  /** Sumber yang dipakai artikel, tampil di halaman sesuai urutan (ADR-010). */
+  references: z
+    .array(referenceSchema)
+    .max(100)
+    .default([])
+    .superRefine((refs, ctx) => {
+      const seen = new Set<string>()
+      refs.forEach((r, i) => {
+        if (seen.has(r.url)) ctx.addIssue({ code: 'custom', path: [i, 'url'], message: 'URL referensi dobel' })
+        seen.add(r.url)
+      })
+    }),
 })
 export type ArticleInput = z.output<typeof articleInputSchema>
 
@@ -113,6 +126,14 @@ export const mediaMetaSchema = z.strictObject({
   altText: z.string().trim().min(1).max(500),
   caption: optionalText(1_000),
   credit: optionalText(300),
+  /** Halaman asal gambar bila diambil dari sumber lain (ADR-010). */
+  sourceUrl: z
+    .string()
+    .trim()
+    .max(2_048)
+    .refine((v) => v === '' || /^https?:\/\/\S+$/.test(v), 'URL harus diawali http:// atau https://')
+    .nullish()
+    .transform((v) => v || null),
   /** Titik fokus 0..1 dari kiri dan atas, dipakai saat gambar dipotong. */
   focalX: z.number().min(0).max(1).default(0.5),
   focalY: z.number().min(0).max(1).default(0.5),

@@ -15,6 +15,7 @@
 import { z } from 'zod'
 import { BODY_VERSION, embedBlock, headingBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
 import { splitStorageKey } from '../media/storage'
+import { editorErrorMap } from '../editor/errors'
 import { SLUG_MAX, SLUG_PATTERN, slugify } from '../editor/slug'
 
 export const GENERATED_PAYLOAD_VERSION = 1
@@ -144,7 +145,7 @@ export type PayloadParseResult = { ok: true; payload: GeneratedPayload } | { ok:
 
 /** Validasi payload dari database; tidak melempar, mengembalikan daftar masalah untuk layar approval. */
 export function parseGeneratedPayload(raw: unknown): PayloadParseResult {
-  const result = generatedPayloadSchema.safeParse(raw)
+  const result = generatedPayloadSchema.safeParse(raw, { error: editorErrorMap })
   if (result.success) return { ok: true, payload: result.data }
   return {
     ok: false,

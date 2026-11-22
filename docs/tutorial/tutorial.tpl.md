@@ -370,6 +370,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
    - Gambar merujuk `mediaId`, bukan URL.
    - Embed dibatasi ke penyedia yang dikenal dengan URL https; template membangun iframe sendiri dan tidak pernah menerima HTML mentah.
    - Ada dua cara membaca body. `parseBody` ketat dan dipakai saat menyimpan. `parseBodyLenient` dipakai saat render: block yang rusak atau tidak dikenal dilewati dan dilaporkan, sehingga halaman tidak crash.
+   - Pesan khusus untuk level heading ("level heading harus 2, 3, atau 4") ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
 @@include packages/core/src/content/blocks.ts ts@@
 
@@ -419,7 +420,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 @@include packages/core/src/repositories/menu-repository.ts ts@@
 
-7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin"):
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin", dan `generated` di bab "Memeriksa dan Menyetujui Hasil AI"):
 
 @@include packages/core/src/repositories/index.ts ts@@
 
@@ -1630,7 +1631,7 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 4. Tambahkan skema SEO yang ketat untuk menulis di `packages/core/src/content/seo.ts` (`contentSeoSchema`: semua key opsional, key tidak dikenal dan nilai salah ditolak). Skema baca tetap longgar, agar halaman publik tidak gagal karena data lama.
 
-5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review):
+5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review). Field `references` artikel dan `sourceUrl` media ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI":
 
 @@include packages/core/src/editor/inputs.ts ts@@
 
@@ -1640,6 +1641,7 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
    - Path lama untuk redirect dihitung dengan URL builder yang sama dengan halaman publik, jadi pola permalink setiap site ikut dihormati. Rantai diratakan (A→B lalu B→C menjadi A→C dan B→C), dan redirect yang berangkat dari path yang kini berisi konten dihapus.
    - Pengecekan slug terjadi sebelum INSERT, jadi dua simpan bersamaan bisa memilih slug yang sama. Pelanggaran unique constraint (kode 23505) diubah menjadi galat field `slug`.
    - Arsip hanya mengubah status, versi, dan revisi, tanpa memvalidasi ulang isi, agar artikel lama dengan data yang tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
+   - Referensi artikel, `createArticleIn` (buat artikel di dalam transaksi pemanggil), dan bagian `tx` di nilai kembalian ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
 @@include packages/core/src/editor/editor-repository.ts ts@@
 
@@ -1707,6 +1709,8 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 @@include apps/web/app/pages/admin/[site]/articles/index.vue vue@@
 
+   Form artikel di bawah juga meneruskan `references` artikel yang dimuat; baris itu ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
+
 @@include apps/web/app/pages/admin/[site]/articles/[id].vue vue@@
 
    Halaman lain mengikuti pola yang sama: `pages/` (daftar dan editor halaman statis), `categories.vue` (pohon + form; kategori disembunyikan, tidak dihapus), `tags.vue`, dan `menus.vue` (tab lokasi, pohon item, pilihan target sesuai jenis; artikel yang sedang dipakai menu selalu dimuat ke pilihan).
@@ -1770,7 +1774,7 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 @@include apps/web/app/components/admin/MediaPicker.vue vue@@
 
-9. Tulis layar Media. Titik fokus dipilih dengan mengklik bagian terpenting gambar (atau tombol panah); template memakainya sebagai `object-position` saat gambar dipotong:
+9. Tulis layar Media (field "URL sumber" ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI"). Titik fokus dipilih dengan mengklik bagian terpenting gambar (atau tombol panah); template memakainya sebagai `object-position` saat gambar dipotong:
 
 @@include apps/web/app/pages/admin/[site]/media.vue vue@@
 
@@ -1962,3 +1966,35 @@ pnpm check
 ```
 
 7. Lengkapi kontrak agent (`docs/kontrak-agent.md`, bab sebelumnya) dengan hak yang benar-benar terpasang: kolom yang boleh di-`INSERT` dan di-`UPDATE`, `SELECT` per kolom (sehingga `SELECT *` pada `sites` ditolak), dan galat "sudah diputuskan" dari trigger bila `ON CONFLICT ... DO UPDATE` ditulis tanpa `WHERE status = 'READY_TO_PUBLISH'`.
+
+# Memeriksa dan Menyetujui Hasil AI
+
+Hasil AI sudah bisa masuk ke `generated_articles`. Bab ini menulis aturan keputusannya di `packages/core`: apa yang diperiksa, bagaimana hasil AI dipindah ke tabel konten, dan bagaimana menolaknya. Layar admin untuk aturan ini dibangun di bab berikutnya.
+
+1. Jadikan referensi bagian dari artikel biasa, bukan hanya hasil AI. Tambahkan `references` ke `articleInputSchema` (memakai `referenceSchema` dari payload, ditambah larangan URL dobel) dan `sourceUrl` ke `mediaMetaSchema`. Repository editor menulis ulang `article_references` setiap simpan, membacanya di `loadArticle`, dan menyertakannya di snapshot revisi dan arsip. Karena `references` bawaannya `[]`, form artikel admin harus meneruskan referensi yang dimuat; kalau tidak, menyimpan dari admin diam-diam menghapus referensi. Form artikel kini mengirim `references: article.value?.references ?? []`, dan layar Media punya field "URL sumber" dengan alasan yang sama.
+
+2. Pisahkan pembuatan artikel dari transaksinya. `createArticle` membuka transaksi sendiri, padahal approve harus membuat media, tag, artikel, dan referensi dalam satu transaksi bersama penguncian hasil AI. Isi `createArticle` dipindah ke `createArticleIn(tx, siteId, raw, userId, changeNote)`, dan `createArticle` tinggal membungkusnya. Fungsi itu tidak dimasukkan ke objek `api` editor, karena `api` dijaga `satisfies Record<string, SiteScoped>` (argumen pertama selalu `siteId`); repository mengembalikannya terpisah sebagai `tx.createArticle`.
+
+3. Tulis repository hasil AI:
+   - `review` menjalankan skema payload dulu. Bila gagal, hanya masalah skema yang dilaporkan. Bila lolos, pemeriksaan database dan storage berjalan: kategori dan penulis ada dan aktif, tag baru (peringatan), slug yang diminta belum dipakai, gambar diawali kode site, file ada, isinya JPEG/PNG/WebP sah dan ekstensinya cocok, URL embed dikenali, serta peringatan untuk referensi kosong, gambar tanpa kredit, dan video yang tidak tercantum di referensi. Redirect lama dengan path yang sama tidak diperiksa, karena halaman publik mencari konten dulu dan baru redirect bila kontennya tidak ada.
+   - Gambar yang `storage_key`-nya sudah tercatat di site yang sama dipakai ulang, karena `uq_media_storage_key` unik di seluruh database.
+   - `approve` berjalan dalam satu transaksi: kunci baris (`FOR UPDATE`), periksa token versi, periksa ulang, catat media baru, buat tag baru, panggil `editor.tx.createArticle` (sehingga slug, `body_text`, tag, referensi, dan revisi mengikuti aturan editor), lalu tandai `APPROVED` dengan `article_id`. Pilihan `publish` = terbit sekarang, `schedule` = tanggal di masa depan dengan zona waktu, `draft` = artikel `DRAFT`.
+   - `reject` mewajibkan alasan dan menandai `ARCHIVED`.
+   - Approve dan reject membawa `updatedAt` hasil AI yang dilihat admin. Agent bisa memperbarui hasil yang sama lewat `external_id` kapan saja; tanpa token ini, admin bisa menyetujui versi yang belum pernah dibacanya.
+
+@@include packages/core/src/generated/generated-repository.ts ts@@
+
+4. Daftarkan di factory repository (`generated: createGeneratedRepository(ctx, editor)`, memakai instance editor yang sama) dan ekspor dari `packages/core/src/index.ts`. Pesan skema payload memakai `editorErrorMap` seperti form admin, dan level heading diberi pesan sendiri di `blocks.ts`:
+
+```ts
+level: z.union([z.literal(2), z.literal(3), z.literal(4)], { error: 'level heading harus 2, 3, atau 4' }),
+```
+
+5. Uji terhadap site uji sendiri, dengan storage tiruan di memori dan PNG minimal (signature + header IHDR) supaya pemeriksaan gambar berjalan tanpa file sungguhan. Test mencakup setiap jenis galat, approve lengkap (media, tag baru, referensi, `body_text`, revisi), jadwal dan draft, approve yang gagal tidak meninggalkan tag, dua approve bersamaan menghasilkan satu artikel, token versi, dan tolak:
+
+@@include packages/core/src/generated/generated-repository.test.ts ts@@
+
+```bash
+pnpm check
+#  Tests  571 passed | 1 skipped
+```

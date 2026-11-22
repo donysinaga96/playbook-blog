@@ -2952,6 +2952,7 @@ describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
    - Gambar merujuk `mediaId`, bukan URL.
    - Embed dibatasi ke penyedia yang dikenal dengan URL https; template membangun iframe sendiri dan tidak pernah menerima HTML mentah.
    - Ada dua cara membaca body. `parseBody` ketat dan dipakai saat menyimpan. `parseBodyLenient` dipakai saat render: block yang rusak atau tidak dikenal dilewati dan dilaporkan, sehingga halaman tidak crash.
+   - Pesan khusus untuk level heading ("level heading harus 2, 3, atau 4") ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
 `packages/core/src/content/blocks.ts`
 
@@ -2984,7 +2985,7 @@ export const paragraphBlock = z.strictObject({
 export const headingBlock = z.strictObject({
   type: z.literal('heading'),
   // Level 1 dipakai judul artikel oleh template, jadi isi mulai dari 2.
-  level: z.union([z.literal(2), z.literal(3), z.literal(4)]),
+  level: z.union([z.literal(2), z.literal(3), z.literal(4)], { error: 'level heading harus 2, 3, atau 4' }),
   text: shortText,
 })
 
@@ -4459,7 +4460,7 @@ export function createMenuRepository(ctx: RepositoryContext) {
 export type MenuRepository = ReturnType<typeof createMenuRepository>
 ```
 
-7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin"):
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin", dan `generated` di bab "Memeriksa dan Menyetujui Hasil AI"):
 
 `packages/core/src/repositories/index.ts`
 
@@ -4467,6 +4468,7 @@ export type MenuRepository = ReturnType<typeof createMenuRepository>
 import type { Database } from '@framework/db'
 import { createContentRepository } from './content-repository'
 import { createEditorRepository } from '../editor/editor-repository'
+import { createGeneratedRepository } from '../generated/generated-repository'
 import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
@@ -4495,12 +4497,15 @@ export interface RepositoryOptions {
  */
 export function createRepositories(db: Database, options: RepositoryOptions = {}) {
   const ctx: RepositoryContext = { db, now: options.now ?? (() => new Date()) }
+  const editor = createEditorRepository(ctx)
   return {
     sites: createSiteRepository(ctx),
     content: createContentRepository(ctx),
     menus: createMenuRepository(ctx),
     users: createUserRepository(ctx),
-    editor: createEditorRepository(ctx),
+    editor,
+    /** Hasil AI agent: antrian, pemeriksaan, approve, tolak (ADR-010). */
+    generated: createGeneratedRepository(ctx, editor),
   }
 }
 
@@ -4537,6 +4542,7 @@ export * from './editor/slug'
 export * from './media/image-info'
 export * from './media/local-storage'
 export * from './generated/payload'
+export * from './generated/generated-repository'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -17059,7 +17065,7 @@ describe('pesan validasi form admin', async () => {
 
 4. Tambahkan skema SEO yang ketat untuk menulis di `packages/core/src/content/seo.ts` (`contentSeoSchema`: semua key opsional, key tidak dikenal dan nilai salah ditolak). Skema baca tetap longgar, agar halaman publik tidak gagal karena data lama.
 
-5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review):
+5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review). Field `references` artikel dan `sourceUrl` media ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI":
 
 `packages/core/src/editor/inputs.ts`
 
@@ -17070,6 +17076,7 @@ describe('pesan validasi form admin', async () => {
 import { z } from 'zod'
 import { bodySchema } from '../content/blocks'
 import { contentSeoSchema } from '../content/seo'
+import { referenceSchema } from '../generated/payload'
 import { SLUG_MAX, SLUG_PATTERN } from './slug'
 
 const id = z.uuid()
@@ -17113,6 +17120,18 @@ export const articleInputSchema = z.strictObject({
   tagIds: z.array(id).max(50).default([]),
   seo: contentSeoSchema.default({}),
   attributes: z.record(z.string(), z.unknown()).default({}),
+  /** Sumber yang dipakai artikel, tampil di halaman sesuai urutan (ADR-010). */
+  references: z
+    .array(referenceSchema)
+    .max(100)
+    .default([])
+    .superRefine((refs, ctx) => {
+      const seen = new Set<string>()
+      refs.forEach((r, i) => {
+        if (seen.has(r.url)) ctx.addIssue({ code: 'custom', path: [i, 'url'], message: 'URL referensi dobel' })
+        seen.add(r.url)
+      })
+    }),
 })
 export type ArticleInput = z.output<typeof articleInputSchema>
 
@@ -17179,6 +17198,14 @@ export const mediaMetaSchema = z.strictObject({
   altText: z.string().trim().min(1).max(500),
   caption: optionalText(1_000),
   credit: optionalText(300),
+  /** Halaman asal gambar bila diambil dari sumber lain (ADR-010). */
+  sourceUrl: z
+    .string()
+    .trim()
+    .max(2_048)
+    .refine((v) => v === '' || /^https?:\/\/\S+$/.test(v), 'URL harus diawali http:// atau https://')
+    .nullish()
+    .transform((v) => v || null),
   /** Titik fokus 0..1 dari kiri dan atas, dipakai saat gambar dipotong. */
   focalX: z.number().min(0).max(1).default(0.5),
   focalY: z.number().min(0).max(1).default(0.5),
@@ -17196,6 +17223,7 @@ export const updatedAtSchema = z.iso.datetime({ offset: true })
    - Path lama untuk redirect dihitung dengan URL builder yang sama dengan halaman publik, jadi pola permalink setiap site ikut dihormati. Rantai diratakan (A→B lalu B→C menjadi A→C dan B→C), dan redirect yang berangkat dari path yang kini berisi konten dihapus.
    - Pengecekan slug terjadi sebelum INSERT, jadi dua simpan bersamaan bisa memilih slug yang sama. Pelanggaran unique constraint (kode 23505) diubah menjadi galat field `slug`.
    - Arsip hanya mengubah status, versi, dan revisi, tanpa memvalidasi ulang isi, agar artikel lama dengan data yang tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
+   - Referensi artikel, `createArticleIn` (buat artikel di dalam transaksi pemanggil), dan bagian `tx` di nilai kembalian ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
 `packages/core/src/editor/editor-repository.ts`
 
@@ -17217,6 +17245,7 @@ export const updatedAtSchema = z.iso.datetime({ offset: true })
 // publik berubah -> redirect 301 dari path lama, rantai diratakan.
 import {
   and,
+  articleReferences,
   articleRevisions,
   articles,
   articleTags,
@@ -17262,9 +17291,10 @@ import {
   type ArticleInput,
   type MenuItemInput,
 } from './inputs'
+import type { GeneratedReference } from '../generated/payload'
 import { isReservedFirstSegment, permalinkFirstToken, slugCandidate, slugify } from './slug'
 
-type Tx = Parameters<Parameters<RepositoryContext['db']['transaction']>[0]>[0]
+export type Tx = Parameters<Parameters<RepositoryContext['db']['transaction']>[0]>[0]
 type Db = RepositoryContext['db'] | Tx
 /** Tabel konten bersiteId yang dicek kepemilikannya. */
 type OwnedTable = typeof articles | typeof pages | typeof categories | typeof tags | typeof authors | typeof media
@@ -17310,6 +17340,8 @@ export interface ArticleRecord {
   tagIds: string[]
   seo: ContentSeo
   attributes: Record<string, unknown>
+  /** Referensi sesuai urutan tampil. */
+  references: GeneratedReference[]
   version: number
   createdAt: Date
   updatedAt: Date
@@ -17327,6 +17359,7 @@ export interface MediaListItem {
   altText: string | null
   caption: string | null
   credit: string | null
+  sourceUrl: string | null
   focalX: number
   focalY: number
   createdAt: Date
@@ -17527,7 +17560,52 @@ export function createEditorRepository(ctx: RepositoryContext) {
       category_id: input.categoryId, author_id: input.authorId, featured_media_id: input.featuredMediaId,
       format: input.format, status: input.status, is_featured: input.isFeatured,
       published_at: input.publishedAt?.toISOString() ?? null, seo: input.seo, attributes: input.attributes, tag_ids: input.tagIds,
+      references: input.references,
     }
+  }
+
+  async function writeReferences(tx: Db, siteId: SiteId, articleId: string, refs: GeneratedReference[]) {
+    await tx.delete(articleReferences).where(and(eq(articleReferences.siteId, siteId), eq(articleReferences.articleId, articleId)))
+    if (refs.length) {
+      await tx.insert(articleReferences).values(refs.map((r, i) => ({
+        siteId, articleId, position: i + 1, title: r.title, url: r.url, publisher: r.publisher ?? null, kind: r.kind,
+      })))
+    }
+  }
+
+  async function referencesOf(tx: Db, siteId: SiteId, articleId: string): Promise<GeneratedReference[]> {
+    const rows = await tx
+      .select({ title: articleReferences.title, url: articleReferences.url, publisher: articleReferences.publisher, kind: articleReferences.kind })
+      .from(articleReferences)
+      .where(and(eq(articleReferences.siteId, siteId), eq(articleReferences.articleId, articleId)))
+      .orderBy(asc(articleReferences.position))
+    return rows.map((r) => ({ title: r.title, url: r.url, kind: r.kind as GeneratedReference['kind'], ...(r.publisher ? { publisher: r.publisher } : {}) }))
+  }
+
+  /**
+   * Buat artikel di dalam transaksi pemanggil: validasi, cek referensi data,
+   * slug unik, tag, referensi, revisi pertama. Dipakai createArticle dan
+   * approve hasil AI (generated-repository), agar aturannya satu.
+   */
+  async function createArticleIn(tx: Tx, siteId: SiteId, raw: unknown, userId: string | null, changeNote = 'Dibuat'): Promise<ArticleRecord> {
+    const input = parse(articleInputSchema, raw)
+    await checkArticleRefs(tx, siteId, input)
+    const slug = await uniqueSlug(tx, articles, siteId, input.slug, input.title, null, await articleReservedFirst(tx, siteId))
+    const publishedAt = effectivePublishedAt(input, null)
+    const [row] = await withSlugConflict(() => tx
+      .insert(articles)
+      .values({
+        siteId, categoryId: input.categoryId, authorId: input.authorId, featuredMediaId: input.featuredMediaId,
+        title: input.title, slug, excerpt: input.excerpt, body: input.body, bodyText: extractBodyText(input.body),
+        format: input.format, status: input.status, isFeatured: input.isFeatured, publishedAt, seo: input.seo,
+        attributes: input.attributes, version: 1, createdBy: userId, updatedBy: userId,
+      })
+      .returning({ id: articles.id }))
+    if (!row) throw new Error('insert artikel tidak mengembalikan baris')
+    await writeTags(tx, siteId, row.id, input.tagIds)
+    await writeReferences(tx, siteId, row.id, input.references)
+    await tx.insert(articleRevisions).values({ siteId, articleId: row.id, revisionNo: 1, snapshot: snapshotOf({ ...input, slug, publishedAt }), changeNote, createdBy: userId })
+    return loadArticle(tx, siteId, row.id)
   }
 
   async function writeTags(tx: Db, siteId: SiteId, articleId: string, tagIds: string[]) {
@@ -17560,7 +17638,8 @@ export function createEditorRepository(ctx: RepositoryContext) {
       id: row.id, title: row.title, slug: row.slug, excerpt: row.excerpt, body: row.body as Body,
       categoryId: row.categoryId, authorId: row.authorId, featuredMediaId: row.featuredMediaId, format: row.format,
       status: row.status, isFeatured: row.isFeatured, publishedAt: row.publishedAt, tagIds: tagRows.map((t) => t.tagId),
-      seo: row.seo as ContentSeo, attributes: row.attributes as Record<string, unknown>, version: row.version,
+      seo: row.seo as ContentSeo, attributes: row.attributes as Record<string, unknown>,
+      references: await referencesOf(tx, siteId, id), version: row.version,
       createdAt: row.createdAt, updatedAt: row.updatedAt,
     }
     return { ...record, publicPath: await articlePath(tx, siteId, record) }
@@ -17756,7 +17835,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
       if (!file.storageKey.startsWith(`${site.code}/`)) throw new Error(`storage_key ${file.storageKey} bukan milik site ${site.code}`)
       const [row] = await db
         .insert(media)
-        .values({ siteId, ...file, altText: meta.altText, caption: meta.caption, credit: meta.credit, focalX: meta.focalX, focalY: meta.focalY, createdBy: userId })
+        .values({ siteId, ...file, altText: meta.altText, caption: meta.caption, credit: meta.credit, sourceUrl: meta.sourceUrl, focalX: meta.focalX, focalY: meta.focalY, createdBy: userId })
         .returning(mediaListColumns)
       if (!row) throw new Error('insert media tidak mengembalikan baris')
       return row
@@ -17845,25 +17924,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
     },
 
     async createArticle(siteId: SiteId, raw: unknown, userId: string | null): Promise<ArticleRecord> {
-      const input = parse(articleInputSchema, raw)
-      return db.transaction(async (tx) => {
-        await checkArticleRefs(tx, siteId, input)
-        const slug = await uniqueSlug(tx, articles, siteId, input.slug, input.title, null, await articleReservedFirst(tx, siteId))
-        const publishedAt = effectivePublishedAt(input, null)
-        const [row] = await withSlugConflict(() => tx
-          .insert(articles)
-          .values({
-            siteId, categoryId: input.categoryId, authorId: input.authorId, featuredMediaId: input.featuredMediaId,
-            title: input.title, slug, excerpt: input.excerpt, body: input.body, bodyText: extractBodyText(input.body),
-            format: input.format, status: input.status, isFeatured: input.isFeatured, publishedAt, seo: input.seo,
-            attributes: input.attributes, version: 1, createdBy: userId, updatedBy: userId,
-          })
-          .returning({ id: articles.id }))
-        if (!row) throw new Error('insert artikel tidak mengembalikan baris')
-        await writeTags(tx, siteId, row.id, input.tagIds)
-        await tx.insert(articleRevisions).values({ siteId, articleId: row.id, revisionNo: 1, snapshot: snapshotOf({ ...input, slug, publishedAt }), changeNote: 'Dibuat', createdBy: userId })
-        return loadArticle(tx, siteId, row.id)
-      })
+      return db.transaction((tx) => createArticleIn(tx, siteId, raw, userId))
     },
 
     /** Simpan seluruh isi artikel; expectedVersion = version yang dibaca saat form dibuka. */
@@ -17889,6 +17950,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
           .returning({ id: articles.id }))
         if (!row) throw conflict('Artikel')
         await writeTags(tx, siteId, articleId, input.tagIds)
+        await writeReferences(tx, siteId, articleId, input.references)
         await tx.insert(articleRevisions).values({
           siteId, articleId, revisionNo: version + 1, snapshot: snapshotOf({ ...input, slug, publishedAt }),
           changeNote: changeNote?.trim().slice(0, 500) || null, createdBy: userId,
@@ -17923,6 +17985,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
           title: a.title, slug: a.slug, excerpt: a.excerpt, body: a.body, category_id: a.categoryId, author_id: a.authorId,
           featured_media_id: a.featuredMediaId, format: a.format, status: 'ARCHIVED', is_featured: a.isFeatured,
           published_at: a.publishedAt?.toISOString() ?? null, seo: a.seo, attributes: a.attributes, tag_ids: a.tagIds,
+          references: a.references,
         }
         await tx.insert(articleRevisions).values({ siteId, articleId, revisionNo: version + 1, snapshot, changeNote: 'Diarsipkan', createdBy: userId })
         return loadArticle(tx, siteId, articleId)
@@ -18119,7 +18182,14 @@ export function createEditorRepository(ctx: RepositoryContext) {
       )
     },
   } satisfies Record<string, SiteScoped>
-  return api
+  return {
+    ...api,
+    /**
+     * Operasi di dalam transaksi pemanggil, untuk repository lain (approve
+     * hasil AI). Argumen pertama tx, lalu siteId seperti fungsi lain.
+     */
+    tx: { createArticle: createArticleIn },
+  }
 }
 
 /** Kode PostgreSQL unique_violation pada constraint slug (uq_<tabel>_site_slug). */
@@ -18146,7 +18216,7 @@ async function withSlugConflict<T>(run: () => Promise<T>): Promise<T> {
 
 const mediaListColumns = {
   id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, sizeBytes: media.sizeBytes, width: media.width, height: media.height,
-  altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+  altText: media.altText, caption: media.caption, credit: media.credit, sourceUrl: media.sourceUrl, focalX: media.focalX, focalY: media.focalY,
   createdAt: media.createdAt, updatedAt: media.updatedAt,
 }
 
@@ -18408,8 +18478,9 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       await rejects(editor.createMedia(SITE, file('b'), { altText: '' }, USER), 'invalid', 'altText')
       await expect(editor.createMedia(SITE, { ...file('c'), storageKey: 'dapur-nusantara/2026/11/c.png' }, { altText: 'x' }, USER)).rejects.toThrow(/bukan milik site/)
 
-      const u = await editor.updateMedia(SITE, m.id, { altText: 'Rendang', credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 }, m.updatedAt.toISOString())
-      expect(u).toMatchObject({ credit: 'Foto: Uji', focalX: 0.3, focalY: 0.7 })
+      const u = await editor.updateMedia(SITE, m.id, { altText: 'Rendang', credit: 'Foto: Uji', sourceUrl: 'http://contoh.test/foto', focalX: 0.3, focalY: 0.7 }, m.updatedAt.toISOString())
+      expect(u).toMatchObject({ credit: 'Foto: Uji', sourceUrl: 'http://contoh.test/foto', focalX: 0.3, focalY: 0.7 })
+      await rejects(editor.updateMedia(SITE, m.id, { altText: 'x', sourceUrl: 'javascript:alert(1)' }, u.updatedAt.toISOString()), 'invalid', 'sourceUrl')
       await rejects(editor.updateMedia(SITE, m.id, { altText: 'x' }, m.updatedAt.toISOString()), 'conflict')
       await rejects(editor.updateMedia(OTHER, m.id, { altText: 'x' }, u.updatedAt.toISOString()), 'not-found')
 
@@ -18504,6 +18575,36 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       await editor.deleteMenuItem(SITE, 'footer', item.id, renamed.updatedAt.toISOString())
       // Sub-item ikut terhapus (CASCADE).
       expect((await editor.getMenu(SITE, 'footer')).items.some((i) => i.id === sub.id)).toBe(false)
+    })
+  })
+
+  describe('referensi artikel (ADR-010)', () => {
+    const refs = [
+      { title: 'Sumber utama', url: 'https://contoh.test/a', publisher: 'Contoh' },
+      { title: 'Video', url: 'http://contoh.test/v', kind: 'VIDEO' },
+    ]
+
+    it('tersimpan berurutan, diganti saat simpan, ikut di revisi dan arsip', async () => {
+      const a = await editor.createArticle(SITE, article({ slug: `ref-${run}`, references: refs }), USER)
+      expect(a.references).toEqual([
+        { title: 'Sumber utama', url: 'https://contoh.test/a', publisher: 'Contoh', kind: 'ARTICLE' },
+        { title: 'Video', url: 'http://contoh.test/v', kind: 'VIDEO' },
+      ])
+      const b = await editor.updateArticle(SITE, a.id, article({ slug: `ref-${run}`, references: [refs[1]] }), a.version, USER)
+      expect(b.references.map((r) => r.url)).toEqual(['http://contoh.test/v'])
+      const c = await editor.updateArticle(SITE, a.id, article({ slug: `ref-${run}` }), b.version, USER)
+      expect(c.references).toEqual([])
+      const archived = await editor.archiveArticle(SITE, a.id, c.version, USER)
+      expect(archived.references).toEqual([])
+    })
+
+    it.each([
+      ['URL dobel', [refs[0], { ...refs[0], title: 'Lagi' }], 'references.1.url'],
+      ['URL javascript:', [{ title: 'x', url: 'javascript:alert(1)' }], 'references.0.url'],
+      ['judul kosong', [{ title: ' ', url: 'https://contoh.test/x' }], 'references.0.title'],
+      ['jenis tidak dikenal', [{ title: 'x', url: 'https://contoh.test/x', kind: 'PODCAST' }], 'references.0.kind'],
+    ])('ditolak: %s', async (_name, references, field) => {
+      await rejects(editor.createArticle(SITE, article({ references }), USER), 'invalid', field)
     })
   })
 })
@@ -20328,6 +20429,8 @@ watch([status, search, page], () => router.replace({ query: { ...(status.value &
 </template>
 ```
 
+   Form artikel di bawah juga meneruskan `references` artikel yang dimuat; baris itu ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
+
 `apps/web/app/pages/admin/[site]/articles/[id].vue`
 
 ```vue
@@ -20471,6 +20574,8 @@ function payload() {
     tagIds: form.tagIds,
     seo: mergeSeo(article.value?.seo ?? {}, form.seo),
     attributes: article.value?.attributes ?? {},
+    // Form referensi menyusul (M5a 5a.3); sampai itu referensi tersimpan diteruskan utuh.
+    references: article.value?.references ?? [],
   }
 }
 
@@ -21699,7 +21804,7 @@ async function uploaded(media: Json<MediaListItem>) {
 </template>
 ```
 
-9. Tulis layar Media. Titik fokus dipilih dengan mengklik bagian terpenting gambar (atau tombol panah); template memakainya sebagai `object-position` saat gambar dipotong:
+9. Tulis layar Media (field "URL sumber" ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI"). Titik fokus dipilih dengan mengklik bagian terpenting gambar (atau tombol panah); template memakainya sebagai `object-position` saat gambar dipotong:
 
 `apps/web/app/pages/admin/[site]/media.vue`
 
@@ -21739,7 +21844,7 @@ watch(site, () => {
 })
 
 const selected = ref<Json<MediaListItem> | null>(null)
-const form = reactive({ altText: '', caption: '', credit: '', focalX: 0.5, focalY: 0.5 })
+const form = reactive({ altText: '', caption: '', credit: '', sourceUrl: '', focalX: 0.5, focalY: 0.5 })
 const usage = ref<string[] | null>(null)
 const errors = ref<Record<string, string>>({})
 const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
@@ -21749,7 +21854,7 @@ async function edit(m: Json<MediaListItem>) {
   selected.value = m
   errors.value = {}
   message.value = null
-  Object.assign(form, { altText: m.altText ?? '', caption: m.caption ?? '', credit: m.credit ?? '', focalX: m.focalX, focalY: m.focalY })
+  Object.assign(form, { altText: m.altText ?? '', caption: m.caption ?? '', credit: m.credit ?? '', sourceUrl: m.sourceUrl ?? '', focalX: m.focalX, focalY: m.focalY })
   usage.value = null
   if (site.value) usage.value = await adminApi<string[]>(site.value.id, `media/${m.id}/usage`).catch(() => null)
 }
@@ -21786,7 +21891,7 @@ async function save() {
   try {
     replace(await adminApi<Json<MediaListItem>>(site.value.id, `media/${selected.value.id}`, {
       method: 'PUT',
-      body: { media: { altText: form.altText, caption: form.caption || null, credit: form.credit || null, focalX: form.focalX, focalY: form.focalY }, updatedAt: selected.value.updatedAt },
+      body: { media: { altText: form.altText, caption: form.caption || null, credit: form.credit || null, sourceUrl: form.sourceUrl.trim() || null, focalX: form.focalX, focalY: form.focalY }, updatedAt: selected.value.updatedAt },
     }))
     message.value = { kind: 'ok', text: 'Keterangan media disimpan.' }
   } catch (e) {
@@ -21944,6 +22049,19 @@ const err = (field: string) => fieldError(errors.value, field)
             v-model="form.credit"
             type="text"
           >
+        </label>
+        <label class="field">
+          <span>URL sumber</span>
+          <input
+            v-model="form.sourceUrl"
+            type="url"
+            placeholder="https://… (halaman asal gambar)"
+            :aria-invalid="!!err('sourceUrl') || undefined"
+          >
+          <span
+            v-if="err('sourceUrl')"
+            class="field__error"
+          >{{ err('sourceUrl') }}</span>
         </label>
         <div class="field">
           <span>Dipakai di</span>
@@ -23419,6 +23537,7 @@ hasil AI. Yang harus diputuskan sekarang:
 import { z } from 'zod'
 import { BODY_VERSION, embedBlock, headingBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
 import { splitStorageKey } from '../media/storage'
+import { editorErrorMap } from '../editor/errors'
 import { SLUG_MAX, SLUG_PATTERN, slugify } from '../editor/slug'
 
 export const GENERATED_PAYLOAD_VERSION = 1
@@ -23548,7 +23667,7 @@ export type PayloadParseResult = { ok: true; payload: GeneratedPayload } | { ok:
 
 /** Validasi payload dari database; tidak melempar, mengembalikan daftar masalah untuk layar approval. */
 export function parseGeneratedPayload(raw: unknown): PayloadParseResult {
-  const result = generatedPayloadSchema.safeParse(raw)
+  const result = generatedPayloadSchema.safeParse(raw, { error: editorErrorMap })
   if (result.success) return { ok: true, payload: result.data }
   return {
     ok: false,
@@ -23643,7 +23762,7 @@ Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah a
 |---|---|---|
 | `version` | ya | `1` |
 | `title` | ya | 1–300 karakter |
-| `slug` | tidak | Huruf kecil, angka, tanda hubung. Tidak diisi = dibuat dari judul saat approve. Slug yang sudah dipakai artikel atau redirect site itu = galat |
+| `slug` | tidak | Huruf kecil, angka, tanda hubung. Tidak diisi = dibuat dari judul saat approve. Slug yang sudah dipakai artikel site itu = galat |
 | `excerpt` | tidak | Ringkasan, maks 1.000 karakter |
 | `category` | ya | Slug kategori yang **sudah ada** di site. Kategori tidak dibuat otomatis |
 | `author` | tidak | Slug penulis di site; tidak diisi = tanpa byline |
@@ -23741,12 +23860,12 @@ Galat memblokir approve. Peringatan hanya ditampilkan, dan pemilik proyek yang m
 
 | Pemeriksaan | Jenis |
 |---|---|
-| Payload lolos skema versi yang dikenal (bentuk, panjang, field tak dikenal, key gambar) | Galat |
+| Payload lolos skema versi yang dikenal (bentuk, panjang, field tak dikenal, key gambar). Bila tidak lolos, hanya masalah skema yang ditampilkan; pemeriksaan di bawah berjalan setelah payload diperbaiki | Galat |
 | Kategori dan penulis ada di site itu dan `ACTIVE` | Galat |
 | Tag belum ada di site | Peringatan (dibuat saat approve) |
 | `storageKey` diawali kode site, file ada di storage, dan tipenya gambar yang dikenali | Galat |
 | URL embed dikenali provider | Galat |
-| Slug valid dan belum dipakai artikel atau redirect site itu | Galat |
+| Slug valid dan belum dipakai artikel site itu (redirect lama dengan path yang sama tidak masalah: konten menang atas redirect) | Galat |
 | Tidak ada referensi sama sekali | Peringatan |
 | Gambar tanpa `credit` dan `sourceUrl` | Peringatan |
 | URL embed tidak ada di `references` | Peringatan (video tetap diberi tautan ke sumbernya) |
@@ -24106,3 +24225,754 @@ pnpm check
 ```
 
 7. Lengkapi kontrak agent (`docs/kontrak-agent.md`, bab sebelumnya) dengan hak yang benar-benar terpasang: kolom yang boleh di-`INSERT` dan di-`UPDATE`, `SELECT` per kolom (sehingga `SELECT *` pada `sites` ditolak), dan galat "sudah diputuskan" dari trigger bila `ON CONFLICT ... DO UPDATE` ditulis tanpa `WHERE status = 'READY_TO_PUBLISH'`.
+
+# Memeriksa dan Menyetujui Hasil AI
+
+Hasil AI sudah bisa masuk ke `generated_articles`. Bab ini menulis aturan keputusannya di `packages/core`: apa yang diperiksa, bagaimana hasil AI dipindah ke tabel konten, dan bagaimana menolaknya. Layar admin untuk aturan ini dibangun di bab berikutnya.
+
+1. Jadikan referensi bagian dari artikel biasa, bukan hanya hasil AI. Tambahkan `references` ke `articleInputSchema` (memakai `referenceSchema` dari payload, ditambah larangan URL dobel) dan `sourceUrl` ke `mediaMetaSchema`. Repository editor menulis ulang `article_references` setiap simpan, membacanya di `loadArticle`, dan menyertakannya di snapshot revisi dan arsip. Karena `references` bawaannya `[]`, form artikel admin harus meneruskan referensi yang dimuat; kalau tidak, menyimpan dari admin diam-diam menghapus referensi. Form artikel kini mengirim `references: article.value?.references ?? []`, dan layar Media punya field "URL sumber" dengan alasan yang sama.
+
+2. Pisahkan pembuatan artikel dari transaksinya. `createArticle` membuka transaksi sendiri, padahal approve harus membuat media, tag, artikel, dan referensi dalam satu transaksi bersama penguncian hasil AI. Isi `createArticle` dipindah ke `createArticleIn(tx, siteId, raw, userId, changeNote)`, dan `createArticle` tinggal membungkusnya. Fungsi itu tidak dimasukkan ke objek `api` editor, karena `api` dijaga `satisfies Record<string, SiteScoped>` (argumen pertama selalu `siteId`); repository mengembalikannya terpisah sebagai `tx.createArticle`.
+
+3. Tulis repository hasil AI:
+   - `review` menjalankan skema payload dulu. Bila gagal, hanya masalah skema yang dilaporkan. Bila lolos, pemeriksaan database dan storage berjalan: kategori dan penulis ada dan aktif, tag baru (peringatan), slug yang diminta belum dipakai, gambar diawali kode site, file ada, isinya JPEG/PNG/WebP sah dan ekstensinya cocok, URL embed dikenali, serta peringatan untuk referensi kosong, gambar tanpa kredit, dan video yang tidak tercantum di referensi. Redirect lama dengan path yang sama tidak diperiksa, karena halaman publik mencari konten dulu dan baru redirect bila kontennya tidak ada.
+   - Gambar yang `storage_key`-nya sudah tercatat di site yang sama dipakai ulang, karena `uq_media_storage_key` unik di seluruh database.
+   - `approve` berjalan dalam satu transaksi: kunci baris (`FOR UPDATE`), periksa token versi, periksa ulang, catat media baru, buat tag baru, panggil `editor.tx.createArticle` (sehingga slug, `body_text`, tag, referensi, dan revisi mengikuti aturan editor), lalu tandai `APPROVED` dengan `article_id`. Pilihan `publish` = terbit sekarang, `schedule` = tanggal di masa depan dengan zona waktu, `draft` = artikel `DRAFT`.
+   - `reject` mewajibkan alasan dan menandai `ARCHIVED`.
+   - Approve dan reject membawa `updatedAt` hasil AI yang dilihat admin. Agent bisa memperbarui hasil yang sama lewat `external_id` kapan saja; tanpa token ini, admin bisa menyetujui versi yang belum pernah dibacanya.
+
+`packages/core/src/generated/generated-repository.ts`
+
+```ts
+// Repository hasil AI (ADR-010, M5a 5a.2): antrian, pemeriksaan, approve,
+// tolak. Agent menulis generated_articles langsung ke database; repository
+// ini hanya dipakai admin.
+//
+//  - review: menjalankan skema payload dan pemeriksaan yang butuh database
+//    atau storage. Galat memblokir approve; peringatan hanya ditampilkan.
+//  - approve: satu transaksi. Baris hasil AI dikunci (FOR UPDATE), diperiksa
+//    ulang, lalu media, tag baru, artikel, dan referensi dibuat lewat aturan
+//    yang sama dengan editor (createArticle), dan hasil AI ditandai APPROVED.
+//    Klik ganda atau dua admin bersamaan: yang kedua melihat status APPROVED.
+//  - reject: alasan wajib, status ARCHIVED.
+//  - approve dan reject membawa updatedAt yang dilihat admin: bila agent
+//    memperbarui hasil itu sesudahnya, keputusan ditolak (conflict), agar
+//    yang terbit selalu versi yang sudah diperiksa.
+// Hasil yang sudah diputuskan tidak bisa diubah (trigger generated_articles_guard).
+import {
+  and,
+  articles,
+  authors,
+  categories,
+  count,
+  desc,
+  eq,
+  generatedArticles,
+  inArray,
+  media,
+  sites,
+  sql,
+  tags,
+} from '@framework/db'
+import type { Block } from '../content/blocks'
+import { embedSrc } from '../content/embed'
+import type { ArticleRecord, EditorRepository, Tx } from '../editor/editor-repository'
+import { conflict, EditorError, invalid, notFound } from '../editor/errors'
+import { updatedAtSchema } from '../editor/inputs'
+import { isReservedFirstSegment, permalinkFirstToken, slugify } from '../editor/slug'
+import { sniffImage } from '../media/image-info'
+import type { MediaStorage } from '../media/local-storage'
+import { normalizePaging, toPage, type Page, type RepositoryContext, type SiteId } from '../repositories/types'
+import { parseSiteSettings } from '../site/settings'
+import { parseGeneratedPayload, type GeneratedImage, type GeneratedPayload, type GeneratedStatus } from './payload'
+
+type Db = RepositoryContext['db'] | Tx
+
+export interface ReviewIssue {
+  level: 'error' | 'warning'
+  /** Lokasi di payload, mis. "category", "images.0.storageKey". Kosong = keseluruhan. */
+  field: string
+  message: string
+}
+
+export interface GeneratedListItem {
+  id: string
+  siteId: string
+  externalId: string
+  status: GeneratedStatus
+  /** Judul dari payload; null bila payload tidak punya judul berupa teks. */
+  title: string | null
+  agentNote: string | null
+  generatedAt: Date
+  reviewedAt: Date | null
+  articleId: string | null
+  /** Token versi: berubah setiap agent memperbarui hasil ini. */
+  updatedAt: Date
+}
+
+export interface GeneratedRecord extends GeneratedListItem {
+  payload: unknown
+  reviewNote: string | null
+  reviewedBy: string | null
+}
+
+/** Gambar setelah diperiksa: media yang sudah ada di site, atau file baru yang dicatat saat approve. */
+export type ResolvedImage =
+  | { kind: 'existing'; mediaId: string; image: GeneratedImage }
+  | { kind: 'new'; image: GeneratedImage; mimeType: string; sizeBytes: number; width: number; height: number }
+
+export interface ResolvedPlan {
+  payload: GeneratedPayload
+  categoryId: string
+  authorId: string | null
+  /** Tag per slug: id yang sudah ada, atau null = dibuat saat approve. */
+  tags: { name: string; slug: string; id: string | null }[]
+  images: Map<string, ResolvedImage>
+}
+
+export interface GeneratedReview {
+  record: GeneratedRecord
+  issues: ReviewIssue[]
+  /** Tidak ada galat dan status masih READY_TO_PUBLISH. */
+  canApprove: boolean
+  /** Hasil resolusi bila payload lolos skema (dipakai pratinjau); null bila tidak. */
+  plan: ResolvedPlan | null
+}
+
+export type ApproveMode = 'publish' | 'schedule' | 'draft'
+
+export interface ApproveInput {
+  /** updatedAt hasil AI yang ditampilkan saat memutuskan (ISO). Berbeda = agent sudah memperbaruinya -> conflict. */
+  expectedUpdatedAt: string
+  /** publish = terbit sekarang; schedule = terbit pada publishAt; draft = artikel DRAFT untuk diedit. */
+  mode: ApproveMode
+  /** ISO 8601 dengan zona waktu; wajib untuk schedule dan harus di masa depan. */
+  publishAt?: string
+  note?: string
+}
+
+export interface ApproveResult {
+  article: ArticleRecord
+  generated: GeneratedRecord
+}
+
+/** Penyimpanan yang dibaca saat memeriksa gambar. null = storage belum diatur di server. */
+export type ImageReader = Pick<MediaStorage, 'read'> | null
+
+const EXTENSION_MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
+const NOTE_MAX = 1_000
+
+const recordColumns = {
+  id: generatedArticles.id,
+  siteId: generatedArticles.siteId,
+  externalId: generatedArticles.externalId,
+  status: generatedArticles.status,
+  title: sql<string | null>`CASE WHEN jsonb_typeof(${generatedArticles.payload}->'title') = 'string' THEN ${generatedArticles.payload}->>'title' END`,
+  agentNote: generatedArticles.agentNote,
+  generatedAt: generatedArticles.generatedAt,
+  reviewedAt: generatedArticles.reviewedAt,
+  articleId: generatedArticles.articleId,
+  updatedAt: generatedArticles.updatedAt,
+}
+
+export function createGeneratedRepository(ctx: RepositoryContext, editor: EditorRepository) {
+  const { db } = ctx
+
+  async function loadRecord(tx: Db, siteId: SiteId, id: string, lock = false): Promise<GeneratedRecord> {
+    if (!UUID.test(id)) throw notFound('Hasil AI')
+    const query = tx
+      .select({ ...recordColumns, payload: generatedArticles.payload, reviewNote: generatedArticles.reviewNote, reviewedBy: generatedArticles.reviewedBy })
+      .from(generatedArticles)
+      .where(and(eq(generatedArticles.siteId, siteId), eq(generatedArticles.id, id)))
+      .limit(1)
+    const [row] = await (lock ? query.for('update') : query)
+    if (!row) throw notFound('Hasil AI')
+    return { ...row, status: row.status as GeneratedStatus }
+  }
+
+  /** Pemeriksaan yang butuh database dan storage; payload sudah lolos skema. */
+  async function resolvePlan(tx: Db, siteId: SiteId, payload: GeneratedPayload, storage: ImageReader): Promise<{ issues: ReviewIssue[]; plan: ResolvedPlan | null }> {
+    const issues: ReviewIssue[] = []
+    const error = (field: string, message: string) => issues.push({ level: 'error', field, message })
+    const warning = (field: string, message: string) => issues.push({ level: 'warning', field, message })
+
+    const [site] = await tx.select({ code: sites.code, settings: sites.settings }).from(sites).where(eq(sites.id, siteId)).limit(1)
+    if (!site) throw notFound('Site')
+
+    // Kategori: wajib ada dan aktif. Tidak dibuat otomatis (memengaruhi menu dan URL).
+    const [category] = await tx.select({ id: categories.id, status: categories.status }).from(categories)
+      .where(and(eq(categories.siteId, siteId), eq(categories.slug, payload.category))).limit(1)
+    if (!category) error('category', `kategori "${payload.category}" tidak ada di site ini`)
+    else if (category.status !== 'ACTIVE') error('category', `kategori "${payload.category}" tidak aktif`)
+
+    let authorId: string | null = null
+    if (payload.author) {
+      const [author] = await tx.select({ id: authors.id, status: authors.status }).from(authors)
+        .where(and(eq(authors.siteId, siteId), eq(authors.slug, payload.author))).limit(1)
+      if (!author) error('author', `penulis "${payload.author}" tidak ada di site ini`)
+      else if (author.status !== 'ACTIVE') error('author', `penulis "${payload.author}" tidak aktif`)
+      else authorId = author.id
+    }
+
+    // Tag: yang belum ada dibuat saat approve (peringatan).
+    const wanted = payload.tags.map((name) => ({ name, slug: slugify(name) }))
+    const existing = wanted.length
+      ? await tx.select({ id: tags.id, slug: tags.slug }).from(tags).where(and(eq(tags.siteId, siteId), inArray(tags.slug, wanted.map((t) => t.slug))))
+      : []
+    const tagIds = new Map(existing.map((t) => [t.slug, t.id]))
+    const resolvedTags = wanted.map((t) => ({ ...t, id: tagIds.get(t.slug) ?? null }))
+    const newTags = resolvedTags.filter((t) => !t.id).map((t) => t.name)
+    if (newTags.length) warning('tags', `tag baru akan dibuat: ${newTags.join(', ')}`)
+
+    // Slug yang diminta: belum dipakai artikel site ini dan bukan route sistem.
+    // Redirect lama dengan path yang sama tidak masalah: konten menang atas redirect.
+    if (payload.slug) {
+      const [taken] = await tx.select({ id: articles.id }).from(articles).where(and(eq(articles.siteId, siteId), eq(articles.slug, payload.slug))).limit(1)
+      if (taken) error('slug', `slug "${payload.slug}" sudah dipakai artikel lain`)
+      const settings = parseSiteSettings(site.settings)
+      if (permalinkFirstToken(settings.permalink) === ':slug' && isReservedFirstSegment(payload.slug)) error('slug', `"${payload.slug}" dipakai route sistem`)
+    }
+
+    // Gambar: diawali kode site; sudah tercatat di site ini = dipakai ulang;
+    // tercatat di site lain = galat; belum tercatat = file harus ada dan gambar sah.
+    const images = new Map<string, ResolvedImage>()
+    const keys = payload.images.map((i) => i.storageKey)
+    const known = keys.length
+      ? await tx.select({ id: media.id, siteId: media.siteId, storageKey: media.storageKey }).from(media).where(inArray(media.storageKey, keys))
+      : []
+    const knownByKey = new Map(known.map((m) => [m.storageKey, m]))
+    for (const [i, image] of payload.images.entries()) {
+      const field = `images.${i}.storageKey`
+      if (!image.storageKey.startsWith(`${site.code}/`)) {
+        error(field, `storageKey harus diawali "${site.code}/"`)
+        continue
+      }
+      if (!image.credit && !image.sourceUrl) warning(`images.${i}`, `gambar "${image.key}" tanpa kredit atau sourceUrl`)
+      const row = knownByKey.get(image.storageKey)
+      if (row) {
+        if (row.siteId !== siteId) error(field, 'file ini sudah tercatat sebagai media site lain')
+        else images.set(image.key, { kind: 'existing', mediaId: row.id, image })
+        continue
+      }
+      if (!storage) {
+        error(field, 'storage media belum diatur di server (MEDIA_DIR)')
+        continue
+      }
+      const bytes = await storage.read(image.storageKey)
+      if (!bytes) {
+        error(field, `file ${image.storageKey} tidak ada di storage`)
+        continue
+      }
+      const info = sniffImage(bytes)
+      if (!info) {
+        error(field, 'file bukan gambar JPEG, PNG, atau WebP yang sah')
+        continue
+      }
+      const extension = image.storageKey.split('.').pop()?.toLowerCase() ?? ''
+      if (EXTENSION_MIME[extension] !== info.mimeType) {
+        error(field, `ekstensi .${extension} tidak sesuai isi file (${info.mimeType})`)
+        continue
+      }
+      images.set(image.key, { kind: 'new', image, mimeType: info.mimeType, sizeBytes: bytes.length, width: info.width, height: info.height })
+    }
+
+    // Embed: provider harus bisa membangun alamat pemutar dari URL-nya.
+    const referenceUrls = new Set(payload.references.map((r) => r.url))
+    for (const [i, block] of payload.body.blocks.entries()) {
+      if (block.type !== 'embed') continue
+      if (!embedSrc(block.provider, block.url)) error(`body.blocks.${i}.url`, `URL ${block.provider} tidak dikenali: ${block.url}`)
+      else if (!referenceUrls.has(block.url)) warning(`body.blocks.${i}.url`, 'video tidak tercantum di referensi (tautan ke sumbernya tetap tampil)')
+    }
+    if (payload.references.length === 0) warning('references', 'tidak ada referensi sama sekali')
+
+    const hasError = issues.some((i) => i.level === 'error')
+    return {
+      issues,
+      plan: hasError || !category ? null : { payload, categoryId: category.id, authorId, tags: resolvedTags, images },
+    }
+  }
+
+  async function reviewIn(tx: Db, record: GeneratedRecord, storage: ImageReader): Promise<GeneratedReview> {
+    const issues: ReviewIssue[] = []
+    if (record.status !== 'READY_TO_PUBLISH') {
+      issues.push({ level: 'error', field: '', message: `hasil AI ini sudah diputuskan (${record.status})` })
+    }
+    const parsed = parseGeneratedPayload(record.payload)
+    if (!parsed.ok) {
+      issues.push(...parsed.issues.map((i) => ({ level: 'error' as const, field: i.path, message: i.message })))
+      return { record, issues, canApprove: false, plan: null }
+    }
+    const resolved = await resolvePlan(tx, record.siteId, parsed.payload, storage)
+    issues.push(...resolved.issues)
+    const canApprove = !issues.some((i) => i.level === 'error')
+    return { record, issues, canApprove, plan: canApprove ? resolved.plan : null }
+  }
+
+  /** Keputusan harus atas versi yang dilihat admin, bukan versi yang baru ditulis agent. */
+  function checkToken(record: GeneratedRecord, token: string) {
+    const parsed = updatedAtSchema.safeParse(token)
+    if (!parsed.success) throw invalid([{ field: 'expectedUpdatedAt', message: 'token versi hasil AI wajib (updatedAt)' }])
+    if (record.updatedAt.getTime() !== new Date(parsed.data).getTime()) {
+      throw new EditorError('conflict', 'Hasil AI ini baru saja diperbarui agent; muat ulang dan periksa lagi sebelum memutuskan')
+    }
+  }
+
+  function parseNote(raw: string | undefined, required: boolean): string | null {
+    const note = raw?.trim() ?? ''
+    if (required && !note) throw invalid([{ field: 'note', message: 'alasan wajib diisi' }])
+    if (note.length > NOTE_MAX) throw invalid([{ field: 'note', message: `Maksimal ${NOTE_MAX} karakter` }])
+    return note || null
+  }
+
+  /** Status dan tanggal artikel dari pilihan approval. */
+  function publication(input: ApproveInput): { status: 'PUBLISHED' | 'DRAFT'; publishedAt: string | null } {
+    if (input.mode === 'draft') return { status: 'DRAFT', publishedAt: null }
+    if (input.mode === 'publish') return { status: 'PUBLISHED', publishedAt: null } // null = sekarang
+    if (input.mode !== 'schedule') throw invalid([{ field: 'mode', message: 'pilihan approval tidak dikenal' }])
+    const at = input.publishAt ? new Date(input.publishAt) : null
+    if (!at || Number.isNaN(at.getTime()) || !/[zZ]|[+-]\d\d:?\d\d$/.test(input.publishAt ?? '')) {
+      throw invalid([{ field: 'publishAt', message: 'tanggal terbit wajib diisi (ISO 8601 dengan zona waktu)' }])
+    }
+    if (at <= ctx.now()) throw invalid([{ field: 'publishAt', message: 'tanggal terbit harus di masa depan' }])
+    return { status: 'PUBLISHED', publishedAt: at.toISOString() }
+  }
+
+  /** Block payload -> block body v1: gambar menunjuk media yang baru dicatat atau dipakai ulang. */
+  function toBody(payload: GeneratedPayload, mediaIds: Map<string, string>): { version: 1; blocks: Block[] } {
+    return {
+      version: payload.body.version,
+      blocks: payload.body.blocks.map((block): Block => {
+        if (block.type !== 'image') return block
+        const mediaId = mediaIds.get(block.image)
+        if (!mediaId) throw new Error(`gambar ${block.image} belum punya media`)
+        return block.caption ? { type: 'image', mediaId, caption: block.caption } : { type: 'image', mediaId }
+      }),
+    }
+  }
+
+  const api = {
+    /** Antrian lintas site milik user, terbaru dulu. siteIds kosong = daftar kosong. */
+    async list(siteIds: SiteId[], query: { status?: GeneratedStatus; page?: number; pageSize?: number } = {}): Promise<Page<GeneratedListItem>> {
+      const paging = normalizePaging({ page: query.page, pageSize: query.pageSize ?? 20 })
+      if (siteIds.length === 0) return toPage([], 0, paging.page, paging.pageSize)
+      const where = and(inArray(generatedArticles.siteId, siteIds), eq(generatedArticles.status, query.status ?? 'READY_TO_PUBLISH'))
+      const [total] = await db.select({ n: count() }).from(generatedArticles).where(where)
+      const rows = await db.select(recordColumns).from(generatedArticles).where(where)
+        .orderBy(desc(generatedArticles.generatedAt), desc(generatedArticles.id)).limit(paging.pageSize).offset(paging.offset)
+      return toPage(rows.map((r) => ({ ...r, status: r.status as GeneratedStatus })), total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    /** Jumlah yang menunggu keputusan per site (untuk navigasi admin). */
+    async countReady(siteIds: SiteId[]): Promise<Record<string, number>> {
+      if (siteIds.length === 0) return {}
+      const rows = await db.select({ siteId: generatedArticles.siteId, n: count() }).from(generatedArticles)
+        .where(and(inArray(generatedArticles.siteId, siteIds), eq(generatedArticles.status, 'READY_TO_PUBLISH')))
+        .groupBy(generatedArticles.siteId)
+      return Object.fromEntries(rows.map((r) => [r.siteId, r.n]))
+    },
+
+    async get(siteId: SiteId, id: string): Promise<GeneratedRecord> {
+      return loadRecord(db, siteId, id)
+    },
+
+    /** Pemeriksaan untuk layar approval. Tidak mengubah apa pun. */
+    async review(siteId: SiteId, id: string, storage: ImageReader): Promise<GeneratedReview> {
+      return reviewIn(db, await loadRecord(db, siteId, id), storage)
+    },
+
+    /** Pindahkan hasil AI ke tabel konten dalam satu transaksi. Galat pemeriksaan = invalid. */
+    async approve(siteId: SiteId, id: string, input: ApproveInput, userId: string | null, storage: ImageReader): Promise<ApproveResult> {
+      const note = parseNote(input.note, false)
+      const { status, publishedAt } = publication(input)
+      return db.transaction(async (tx) => {
+        const record = await loadRecord(tx, siteId, id, true)
+        if (record.status !== 'READY_TO_PUBLISH') throw conflict('Hasil AI')
+        checkToken(record, input.expectedUpdatedAt)
+        const review = await reviewIn(tx, record, storage)
+        if (!review.canApprove || !review.plan) {
+          throw invalid(review.issues.filter((i) => i.level === 'error').map((i) => ({ field: i.field, message: i.message })))
+        }
+        const { payload, images } = review.plan
+
+        // Media: catat file baru; yang sudah ada dipakai ulang.
+        const mediaIds = new Map<string, string>()
+        for (const [key, resolved] of images) {
+          if (resolved.kind === 'existing') {
+            mediaIds.set(key, resolved.mediaId)
+            continue
+          }
+          const { image } = resolved
+          const [row] = await tx.insert(media).values({
+            siteId, storageKey: image.storageKey, mimeType: resolved.mimeType, sizeBytes: resolved.sizeBytes,
+            width: resolved.width, height: resolved.height, altText: image.altText, caption: image.caption ?? null,
+            credit: image.credit ?? null, sourceUrl: image.sourceUrl ?? null,
+            focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5, createdBy: userId,
+          }).onConflictDoNothing().returning({ id: media.id })
+          if (!row) throw invalid([{ field: 'images', message: `file ${image.storageKey} baru saja dicatat di tempat lain; periksa lagi` }])
+          mediaIds.set(key, row.id)
+        }
+
+        // Tag baru, lalu id semua tag sesuai urutan payload.
+        const missing = review.plan.tags.filter((t) => !t.id)
+        if (missing.length) await tx.insert(tags).values(missing.map((t) => ({ siteId, name: t.name, slug: t.slug }))).onConflictDoNothing()
+        const tagRows = review.plan.tags.length
+          ? await tx.select({ id: tags.id, slug: tags.slug }).from(tags).where(and(eq(tags.siteId, siteId), inArray(tags.slug, review.plan.tags.map((t) => t.slug))))
+          : []
+        const tagBySlug = new Map(tagRows.map((t) => [t.slug, t.id]))
+
+        const article = await editor.tx.createArticle(tx, siteId, {
+          title: payload.title,
+          slug: payload.slug,
+          excerpt: payload.excerpt ?? null,
+          body: toBody(payload, mediaIds),
+          categoryId: review.plan.categoryId,
+          authorId: review.plan.authorId,
+          featuredMediaId: payload.cover ? (mediaIds.get(payload.cover) ?? null) : null,
+          format: payload.format,
+          status,
+          isFeatured: false,
+          publishedAt,
+          tagIds: review.plan.tags.map((t) => tagBySlug.get(t.slug)).filter((v): v is string => Boolean(v)),
+          seo: payload.seo,
+          attributes: {},
+          references: payload.references,
+        }, userId, `Dari hasil AI ${record.externalId}`)
+
+        await tx.update(generatedArticles)
+          .set({ status: 'APPROVED', reviewedBy: userId, reviewedAt: sql`now()`, reviewNote: note, articleId: article.id })
+          .where(and(eq(generatedArticles.siteId, siteId), eq(generatedArticles.id, record.id)))
+        return { article, generated: await loadRecord(tx, siteId, record.id) }
+      })
+    },
+
+    /** Tolak: alasan wajib, status ARCHIVED. Hasil yang sudah diputuskan = conflict. */
+    async reject(siteId: SiteId, id: string, rawNote: string, expectedUpdatedAt: string, userId: string | null): Promise<GeneratedRecord> {
+      const note = parseNote(rawNote, true)
+      return db.transaction(async (tx) => {
+        const record = await loadRecord(tx, siteId, id, true)
+        if (record.status !== 'READY_TO_PUBLISH') throw conflict('Hasil AI')
+        checkToken(record, expectedUpdatedAt)
+        await tx.update(generatedArticles)
+          .set({ status: 'ARCHIVED', reviewedBy: userId, reviewedAt: sql`now()`, reviewNote: note })
+          .where(and(eq(generatedArticles.siteId, siteId), eq(generatedArticles.id, record.id)))
+        return loadRecord(tx, siteId, record.id)
+      })
+    },
+  }
+  return api
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export type GeneratedRepository = ReturnType<typeof createGeneratedRepository>
+```
+
+4. Daftarkan di factory repository (`generated: createGeneratedRepository(ctx, editor)`, memakai instance editor yang sama) dan ekspor dari `packages/core/src/index.ts`. Pesan skema payload memakai `editorErrorMap` seperti form admin, dan level heading diberi pesan sendiri di `blocks.ts`:
+
+```ts
+level: z.union([z.literal(2), z.literal(3), z.literal(4)], { error: 'level heading harus 2, 3, atau 4' }),
+```
+
+5. Uji terhadap site uji sendiri, dengan storage tiruan di memori dan PNG minimal (signature + header IHDR) supaya pemeriksaan gambar berjalan tanpa file sungguhan. Test mencakup setiap jenis galat, approve lengkap (media, tag baru, referensi, `body_text`, revisi), jadwal dan draft, approve yang gagal tidak meninggalkan tag, dua approve bersamaan menghasilkan satu artikel, token versi, dan tolak:
+
+`packages/core/src/generated/generated-repository.test.ts`
+
+```ts
+// Repository hasil AI terhadap database dev (dilewati tanpa DATABASE_URL).
+// Pola sama dengan test editor: semua tulisan di site uji sendiri (ARCHIVED)
+// yang dihapus di afterAll beserta isinya (CASCADE). Hasil AI ditulis lewat
+// role aplikasi di sini; hak role agent diuji di packages/db/run_all.sh.
+import { articleReferences, articles, categories, authors, createDatabase, eq, generatedArticles, media, sites, tags } from '@framework/db'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { EditorError } from '../editor/errors'
+import { createRepositories } from '../repositories'
+import type { ImageReader } from './generated-repository'
+
+const OTHER = '01930000-0000-7000-8000-000000000102' // dapur-nusantara (seed, hanya dibaca)
+const OTHER_MEDIA_KEY = 'dapur-nusantara/2026/11/rendang.webp'
+const USER = '01930000-0000-7000-8000-000000000001'
+const run = `g${process.pid}x${Date.now().toString(36)}`
+const code = `uji-${run}`
+
+/** PNG minimal yang lolos sniffImage: signature + header IHDR. */
+function png(width: number, height: number): Uint8Array {
+  const b = new Uint8Array(33)
+  b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
+  new DataView(b.buffer).setUint32(16, width)
+  new DataView(b.buffer).setUint32(20, height)
+  return b
+}
+
+const files = new Map<string, Uint8Array>()
+const storage: ImageReader = { read: async (key) => files.get(key) ?? null }
+
+async function rejects(promise: Promise<unknown>, kind: EditorError['kind'], field?: string) {
+  const error = await promise.then(() => null, (e: unknown) => e)
+  expect(error, 'seharusnya gagal').toBeInstanceOf(EditorError)
+  const e = error as EditorError
+  expect(e.kind).toBe(kind)
+  if (field !== undefined) expect(e.issues.map((i) => i.field)).toContain(field)
+}
+
+describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 4, applicationName: 'vitest-generated' })
+  const repos = createRepositories(db)
+  const generated = repos.generated
+  let SITE = ''
+  let HIDDEN_CAT = ''
+  let seq = 0
+
+  beforeAll(async () => {
+    const [site] = await db.insert(sites).values({ code, name: `Site uji ${run}`, status: 'ARCHIVED' }).returning({ id: sites.id })
+    if (!site) throw new Error('site uji gagal dibuat')
+    SITE = site.id
+    await db.insert(categories).values({ siteId: SITE, name: 'Resep', slug: 'resep' })
+    HIDDEN_CAT = (await db.insert(categories).values({ siteId: SITE, name: 'Lama', slug: 'lama', status: 'HIDDEN' }).returning({ id: categories.id }))[0]?.id ?? ''
+    await db.insert(authors).values({ siteId: SITE, name: 'Redaksi', slug: 'redaksi' })
+    await db.insert(tags).values({ siteId: SITE, name: 'Pedas', slug: 'pedas' })
+  })
+
+  afterAll(async () => {
+    if (SITE) await db.delete(sites).where(eq(sites.id, SITE))
+    await db.$client.end()
+  })
+
+  const payload = (overrides: Record<string, unknown> = {}) => ({
+    version: 1,
+    title: `Sambal uji ${run}`,
+    category: 'resep',
+    author: 'redaksi',
+    tags: ['Pedas', `Baru ${run}`],
+    body: { version: 1, blocks: [{ type: 'paragraph', text: 'Isi sambal uji.' }] },
+    references: [{ title: 'Sumber', url: 'https://contoh.test/sambal' }],
+    ...overrides,
+  })
+
+  /** Tulis hasil AI seperti agent; mengembalikan id. */
+  async function ingest(p: unknown = payload(), siteId = SITE): Promise<string> {
+    const [row] = await db.insert(generatedArticles)
+      .values({ siteId, externalId: `${run}/${++seq}`, payload: p, agentNote: 'catatan agent' })
+      .returning({ id: generatedArticles.id })
+    if (!row) throw new Error('insert hasil AI gagal')
+    return row.id
+  }
+
+  /** Token versi yang dilihat admin. */
+  const token = async (id: string, siteId = SITE) => (await generated.get(siteId, id)).updatedAt.toISOString()
+  const approve = async (id: string, input: Record<string, unknown>, siteId = SITE) =>
+    generated.approve(siteId, id, { expectedUpdatedAt: await token(id).catch(() => new Date().toISOString()), ...input } as never, USER, storage)
+  const reject = async (id: string, note: string, siteId = SITE) =>
+    generated.reject(siteId, id, note, await token(id).catch(() => new Date().toISOString()), USER)
+
+  const errors = (issues: { level: string; field: string }[]) => issues.filter((i) => i.level === 'error').map((i) => i.field)
+  const warnings = (issues: { level: string; field: string }[]) => issues.filter((i) => i.level === 'warning').map((i) => i.field)
+
+  describe('antrian', () => {
+    it('daftar per site milik user, hanya READY_TO_PUBLISH, judul dari payload', async () => {
+      const id = await ingest()
+      const list = await generated.list([SITE])
+      expect(list.items.map((i) => i.id)).toContain(id)
+      expect(list.items.find((i) => i.id === id)).toMatchObject({ status: 'READY_TO_PUBLISH', title: `Sambal uji ${run}`, agentNote: 'catatan agent' })
+      expect((await generated.list([])).items).toEqual([])
+      expect((await generated.countReady([SITE]))[SITE]).toBeGreaterThanOrEqual(1)
+    })
+
+    it('site lain: tidak ditemukan (keberadaan tidak dibocorkan)', async () => {
+      const id = await ingest()
+      await rejects(generated.get(OTHER, id), 'not-found')
+      await rejects(generated.review(OTHER, id, storage), 'not-found')
+      await rejects(approve(id, { mode: 'publish' }, OTHER), 'not-found')
+      await rejects(reject(id, 'x', OTHER), 'not-found')
+      await rejects(generated.get(SITE, 'bukan-uuid'), 'not-found')
+    })
+  })
+
+  describe('pemeriksaan', () => {
+    it('payload valid: tanpa galat; tag baru = peringatan', async () => {
+      const review = await generated.review(SITE, await ingest(), storage)
+      expect(errors(review.issues)).toEqual([])
+      expect(warnings(review.issues)).toEqual(['tags'])
+      expect(review.canApprove).toBe(true)
+      expect(review.plan?.tags.map((t) => [t.slug, Boolean(t.id)])).toEqual([['pedas', true], [`baru-${run}`, false]])
+    })
+
+    it('payload tidak lolos skema: semua masalah skema, tanpa pemeriksaan database', async () => {
+      const review = await generated.review(SITE, await ingest(payload({ version: 9, status: 'PUBLISHED' })), storage)
+      expect(review.canApprove).toBe(false)
+      expect(errors(review.issues)).toEqual(expect.arrayContaining(['version', '']))
+    })
+
+    it.each([
+      ['kategori tidak ada', { category: 'minuman' }, 'category'],
+      ['kategori tidak aktif', { category: 'lama' }, 'category'],
+      ['penulis tidak ada', { author: 'tamu' }, 'author'],
+      ['embed URL tidak dikenali provider', { body: { version: 1, blocks: [{ type: 'embed', provider: 'youtube', url: 'https://www.youtube.com/channel/x' }] } }, 'body.blocks.0.url'],
+    ])('galat: %s', async (_name, overrides, field) => {
+      const review = await generated.review(SITE, await ingest(payload(overrides)), storage)
+      expect(errors(review.issues)).toContain(field)
+      expect(review.canApprove).toBe(false)
+      expect(review.plan).toBeNull()
+    })
+
+    it('slug yang sudah dipakai artikel site ini = galat; slug yang sama di site lain tidak masalah', async () => {
+      await repos.editor.createArticle(SITE, { title: 'Ada', slug: `dipakai-${run}`, body: payload().body, categoryId: HIDDEN_CAT }, USER)
+      const taken = await generated.review(SITE, await ingest(payload({ slug: `dipakai-${run}` })), storage)
+      expect(errors(taken.issues)).toContain('slug')
+      const seedSlug = await generated.review(SITE, await ingest(payload({ slug: 'rendang-padang-empuk' })), storage)
+      expect(errors(seedSlug.issues)).toEqual([])
+    })
+
+    it('gambar: prefix site, file ada, isi gambar sah, ekstensi cocok, milik site lain; tanpa kredit = peringatan', async () => {
+      files.set(`${code}/ok.png`, png(800, 600))
+      files.set(`${code}/bukan.png`, new TextEncoder().encode('<svg/>'))
+      files.set(`${code}/salah.webp`, png(10, 10))
+      const images = [
+        { key: 'a', storageKey: `${code}/ok.png`, altText: 'ok' },
+        { key: 'b', storageKey: `${code}/tidak-ada.png`, altText: 'x', credit: 'Foto' },
+        { key: 'c', storageKey: `${code}/bukan.png`, altText: 'x', credit: 'Foto' },
+        { key: 'd', storageKey: `${code}/salah.webp`, altText: 'x', credit: 'Foto' },
+        { key: 'e', storageKey: `site-lain/x.png`, altText: 'x', credit: 'Foto' },
+        { key: 'f', storageKey: OTHER_MEDIA_KEY.replace('dapur-nusantara', code), altText: 'x', credit: 'Foto' },
+      ]
+      const review = await generated.review(SITE, await ingest(payload({ images })), storage)
+      expect(errors(review.issues)).toEqual(['images.1.storageKey', 'images.2.storageKey', 'images.3.storageKey', 'images.4.storageKey', 'images.5.storageKey'])
+      expect(warnings(review.issues)).toContain('images.0')
+      const noStorage = await generated.review(SITE, await ingest(payload({ images: images.slice(0, 1) })), null)
+      expect(errors(noStorage.issues)).toEqual(['images.0.storageKey'])
+    })
+
+    it('media yang sudah tercatat: site sendiri dipakai ulang, site lain = galat', async () => {
+      const [own] = await db.insert(media).values({ siteId: SITE, storageKey: `${code}/lama.webp`, mimeType: 'image/webp', sizeBytes: 10, width: 1, height: 1 }).returning({ id: media.id })
+      const [seedMedia] = await db.select({ storageKey: media.storageKey }).from(media).where(eq(media.siteId, OTHER)).limit(1)
+      const review = await generated.review(SITE, await ingest(payload({
+        images: [{ key: 'a', storageKey: `${code}/lama.webp`, altText: 'x', credit: 'F' }],
+        cover: 'a',
+      })), storage)
+      expect(errors(review.issues)).toEqual([])
+      expect(review.plan?.images.get('a')).toMatchObject({ kind: 'existing', mediaId: own?.id })
+      // storage_key seed site lain tidak diawali kode site uji: galat prefix sudah cukup
+      // membuktikan file site lain tidak bisa dipakai.
+      const foreign = await generated.review(SITE, await ingest(payload({ images: [{ key: 'a', storageKey: seedMedia?.storageKey ?? '', altText: 'x' }] })), storage)
+      expect(errors(foreign.issues)).toEqual(['images.0.storageKey'])
+    })
+
+    it('tanpa referensi dan video yang tidak tercantum di referensi = peringatan', async () => {
+      const review = await generated.review(SITE, await ingest(payload({
+        tags: [],
+        references: [],
+        body: { version: 1, blocks: [{ type: 'embed', provider: 'youtube', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }] },
+      })), storage)
+      expect(errors(review.issues)).toEqual([])
+      expect(warnings(review.issues).sort()).toEqual(['body.blocks.0.url', 'references'])
+    })
+  })
+
+  describe('approve', () => {
+    it('terbit sekarang: media, tag baru, artikel, referensi, revisi; hasil AI APPROVED', async () => {
+      files.set(`${code}/sampul.png`, png(1200, 630))
+      const id = await ingest(payload({
+        slug: `sambal-${run}`,
+        cover: 'sampul',
+        images: [{ key: 'sampul', storageKey: `${code}/sampul.png`, altText: 'Sambal', credit: 'Foto: Uji', sourceUrl: 'https://contoh.test/foto' }],
+        body: { version: 1, blocks: [{ type: 'paragraph', text: 'Ulek kasar.' }, { type: 'image', image: 'sampul', caption: 'Sambal' }] },
+        references: [{ title: 'Sumber', url: 'https://contoh.test/sambal', publisher: 'Contoh' }, { title: 'Video', url: 'https://youtu.be/abc', kind: 'VIDEO' }],
+      }))
+      const { article, generated: after } = await approve(id, { mode: 'publish', note: 'oke' })
+
+      expect(after).toMatchObject({ status: 'APPROVED', articleId: article.id, reviewNote: 'oke', reviewedBy: USER })
+      expect(article).toMatchObject({ status: 'PUBLISHED', slug: `sambal-${run}`, excerpt: null })
+      expect(article.publishedAt).not.toBeNull()
+      const [cover] = await db.select().from(media).where(eq(media.id, article.featuredMediaId ?? ''))
+      expect(cover).toMatchObject({ siteId: SITE, storageKey: `${code}/sampul.png`, mimeType: 'image/png', sizeBytes: 33, width: 1200, height: 630, credit: 'Foto: Uji', sourceUrl: 'https://contoh.test/foto', createdBy: USER })
+      expect(article.body.blocks[1]).toEqual({ type: 'image', mediaId: cover?.id, caption: 'Sambal' })
+      const tagRows = await db.select({ slug: tags.slug }).from(tags).where(eq(tags.siteId, SITE))
+      expect(tagRows.map((t) => t.slug)).toEqual(expect.arrayContaining(['pedas', `baru-${run}`]))
+      expect(article.tagIds).toHaveLength(2)
+      const refs = await db.select().from(articleReferences).where(eq(articleReferences.articleId, article.id)).orderBy(articleReferences.position)
+      expect(refs.map((r) => [r.position, r.url, r.kind, r.publisher])).toEqual([[1, 'https://contoh.test/sambal', 'ARTICLE', 'Contoh'], [2, 'https://youtu.be/abc', 'VIDEO', null]])
+      expect(article.references).toHaveLength(2)
+      const [row] = await db.select({ bodyText: articles.bodyText }).from(articles).where(eq(articles.id, article.id))
+      expect(row?.bodyText).toBe('Ulek kasar.')
+      expect(await repos.editor.listRevisions(SITE, article.id)).toMatchObject([{ revisionNo: 1, changeNote: expect.stringContaining('Dari hasil AI') }])
+      // Sudah diputuskan: tidak bisa di-approve atau ditolak lagi.
+      await rejects(approve(id, { mode: 'publish' }), 'conflict')
+      await rejects(reject(id, 'telat'), 'conflict')
+      const review = await generated.review(SITE, id, storage)
+      expect(review.canApprove).toBe(false)
+    })
+
+    it('jadwalkan: tanggal wajib, di masa depan, dengan zona waktu', async () => {
+      const id = await ingest()
+      await rejects(approve(id, { mode: 'schedule' }), 'invalid', 'publishAt')
+      await rejects(approve(id, { mode: 'schedule', publishAt: '2020-01-01T00:00:00Z' }), 'invalid', 'publishAt')
+      await rejects(approve(id, { mode: 'schedule', publishAt: '2099-01-01T08:00:00' }), 'invalid', 'publishAt')
+      const { article } = await approve(id, { mode: 'schedule', publishAt: '2099-01-01T08:00:00+07:00' })
+      expect(article).toMatchObject({ status: 'PUBLISHED', publicPath: null })
+      expect(article.publishedAt?.toISOString()).toBe('2099-01-01T01:00:00.000Z')
+    })
+
+    it('pindahkan sebagai draft: artikel DRAFT tanpa tanggal', async () => {
+      const { article } = await approve(await ingest(), { mode: 'draft' })
+      expect(article).toMatchObject({ status: 'DRAFT', publishedAt: null })
+    })
+
+    it('ada galat: ditolak dengan daftar galat, tidak ada yang ditulis', async () => {
+      const id = await ingest(payload({ category: 'minuman', tags: [`Tidak dibuat ${run}`] }))
+      await rejects(approve(id, { mode: 'publish' }), 'invalid', 'category')
+      expect((await generated.get(SITE, id)).status).toBe('READY_TO_PUBLISH')
+      const leaked = await db.select({ id: tags.id }).from(tags).where(eq(tags.slug, `tidak-dibuat-${run}`))
+      expect(leaked).toEqual([])
+    })
+
+    it('mode tidak dikenal ditolak', async () => {
+      await rejects(approve(await ingest(), { mode: 'langsung' as never }), 'invalid', 'mode')
+    })
+
+    it('dua approve bersamaan: satu artikel, yang lain conflict', async () => {
+      const id = await ingest(payload({ slug: `balapan-${run}` }))
+      const results = await Promise.allSettled([
+        approve(id, { mode: 'publish' }),
+        approve(id, { mode: 'publish' }),
+      ])
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      const failed = results.find((r) => r.status === 'rejected')
+      expect((failed as PromiseRejectedResult).reason).toBeInstanceOf(EditorError)
+      expect(((failed as PromiseRejectedResult).reason as EditorError).kind).toBe('conflict')
+      const created = await db.select({ id: articles.id }).from(articles).where(eq(articles.slug, `balapan-${run}`))
+      expect(created).toHaveLength(1)
+    })
+  })
+
+  describe('versi yang dilihat admin', () => {
+    it('agent memperbarui hasil setelah admin membukanya: approve dan tolak = conflict', async () => {
+      const id = await ingest()
+      const seen = await token(id)
+      await new Promise((r) => setTimeout(r, 5))
+      await db.update(generatedArticles).set({ payload: payload({ title: `Versi baru ${run}` }) }).where(eq(generatedArticles.id, id))
+      await rejects(generated.approve(SITE, id, { mode: 'publish', expectedUpdatedAt: seen }, USER, storage), 'conflict')
+      await rejects(generated.reject(SITE, id, 'x', seen, USER), 'conflict')
+      await rejects(generated.approve(SITE, id, { mode: 'publish', expectedUpdatedAt: 'kemarin' }, USER, storage), 'invalid', 'expectedUpdatedAt')
+      const { article } = await approve(id, { mode: 'draft' })
+      expect(article.title).toBe(`Versi baru ${run}`)
+    })
+  })
+
+  describe('tolak', () => {
+    it('alasan wajib; ARCHIVED dengan alasan; tidak membuat artikel', async () => {
+      const id = await ingest()
+      await rejects(reject(id, '   '), 'invalid', 'note')
+      await rejects(reject(id, 'x'.repeat(1_001)), 'invalid', 'note')
+      const rejected = await reject(id, '  Fakta tidak cocok dengan sumber.  ')
+      expect(rejected).toMatchObject({ status: 'ARCHIVED', reviewNote: 'Fakta tidak cocok dengan sumber.', reviewedBy: USER, articleId: null })
+      expect(rejected.reviewedAt).not.toBeNull()
+      expect((await generated.list([SITE], { status: 'ARCHIVED' })).items.map((i) => i.id)).toContain(id)
+      expect((await generated.list([SITE])).items.map((i) => i.id)).not.toContain(id)
+    })
+  })
+})
+```
+
+```bash
+pnpm check
+#  Tests  571 passed | 1 skipped
+```

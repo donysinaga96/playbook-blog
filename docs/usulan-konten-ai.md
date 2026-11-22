@@ -60,7 +60,7 @@ generated_articles  (status READY_TO_PUBLISH, payload JSON berversi)
 | Tag belum ada di site | Peringatan (dibuat saat approve) |
 | Gambar: file `storage_key` ada di storage; tipe gambar dikenali | Galat |
 | URL embed dikenali provider (YouTube, Vimeo, X) | Galat |
-| Slug valid dan belum dipakai artikel atau redirect site itu | Galat |
+| Slug valid dan belum dipakai artikel site itu (redirect lama dengan path yang sama tidak masalah: konten menang atas redirect) | Galat |
 | Judul ada; panjang judul SEO dan deskripsi dalam batas | Galat / peringatan |
 | URL referensi http(s) dan judulnya terisi | Galat |
 | Tidak ada referensi sama sekali | Peringatan |

@@ -33,7 +33,7 @@ watch(site, () => {
 })
 
 const selected = ref<Json<MediaListItem> | null>(null)
-const form = reactive({ altText: '', caption: '', credit: '', focalX: 0.5, focalY: 0.5 })
+const form = reactive({ altText: '', caption: '', credit: '', sourceUrl: '', focalX: 0.5, focalY: 0.5 })
 const usage = ref<string[] | null>(null)
 const errors = ref<Record<string, string>>({})
 const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
@@ -43,7 +43,7 @@ async function edit(m: Json<MediaListItem>) {
   selected.value = m
   errors.value = {}
   message.value = null
-  Object.assign(form, { altText: m.altText ?? '', caption: m.caption ?? '', credit: m.credit ?? '', focalX: m.focalX, focalY: m.focalY })
+  Object.assign(form, { altText: m.altText ?? '', caption: m.caption ?? '', credit: m.credit ?? '', sourceUrl: m.sourceUrl ?? '', focalX: m.focalX, focalY: m.focalY })
   usage.value = null
   if (site.value) usage.value = await adminApi<string[]>(site.value.id, `media/${m.id}/usage`).catch(() => null)
 }
@@ -80,7 +80,7 @@ async function save() {
   try {
     replace(await adminApi<Json<MediaListItem>>(site.value.id, `media/${selected.value.id}`, {
       method: 'PUT',
-      body: { media: { altText: form.altText, caption: form.caption || null, credit: form.credit || null, focalX: form.focalX, focalY: form.focalY }, updatedAt: selected.value.updatedAt },
+      body: { media: { altText: form.altText, caption: form.caption || null, credit: form.credit || null, sourceUrl: form.sourceUrl.trim() || null, focalX: form.focalX, focalY: form.focalY }, updatedAt: selected.value.updatedAt },
     }))
     message.value = { kind: 'ok', text: 'Keterangan media disimpan.' }
   } catch (e) {
@@ -238,6 +238,19 @@ const err = (field: string) => fieldError(errors.value, field)
             v-model="form.credit"
             type="text"
           >
+        </label>
+        <label class="field">
+          <span>URL sumber</span>
+          <input
+            v-model="form.sourceUrl"
+            type="url"
+            placeholder="https://… (halaman asal gambar)"
+            :aria-invalid="!!err('sourceUrl') || undefined"
+          >
+          <span
+            v-if="err('sourceUrl')"
+            class="field__error"
+          >{{ err('sourceUrl') }}</span>
         </label>
         <div class="field">
           <span>Dipakai di</span>

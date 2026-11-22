@@ -15,6 +15,7 @@
 // publik berubah -> redirect 301 dari path lama, rantai diratakan.
 import {
   and,
+  articleReferences,
   articleRevisions,
   articles,
   articleTags,
@@ -60,9 +61,10 @@ import {
   type ArticleInput,
   type MenuItemInput,
 } from './inputs'
+import type { GeneratedReference } from '../generated/payload'
 import { isReservedFirstSegment, permalinkFirstToken, slugCandidate, slugify } from './slug'
 
-type Tx = Parameters<Parameters<RepositoryContext['db']['transaction']>[0]>[0]
+export type Tx = Parameters<Parameters<RepositoryContext['db']['transaction']>[0]>[0]
 type Db = RepositoryContext['db'] | Tx
 /** Tabel konten bersiteId yang dicek kepemilikannya. */
 type OwnedTable = typeof articles | typeof pages | typeof categories | typeof tags | typeof authors | typeof media
@@ -108,6 +110,8 @@ export interface ArticleRecord {
   tagIds: string[]
   seo: ContentSeo
   attributes: Record<string, unknown>
+  /** Referensi sesuai urutan tampil. */
+  references: GeneratedReference[]
   version: number
   createdAt: Date
   updatedAt: Date
@@ -125,6 +129,7 @@ export interface MediaListItem {
   altText: string | null
   caption: string | null
   credit: string | null
+  sourceUrl: string | null
   focalX: number
   focalY: number
   createdAt: Date
@@ -325,7 +330,52 @@ export function createEditorRepository(ctx: RepositoryContext) {
       category_id: input.categoryId, author_id: input.authorId, featured_media_id: input.featuredMediaId,
       format: input.format, status: input.status, is_featured: input.isFeatured,
       published_at: input.publishedAt?.toISOString() ?? null, seo: input.seo, attributes: input.attributes, tag_ids: input.tagIds,
+      references: input.references,
     }
+  }
+
+  async function writeReferences(tx: Db, siteId: SiteId, articleId: string, refs: GeneratedReference[]) {
+    await tx.delete(articleReferences).where(and(eq(articleReferences.siteId, siteId), eq(articleReferences.articleId, articleId)))
+    if (refs.length) {
+      await tx.insert(articleReferences).values(refs.map((r, i) => ({
+        siteId, articleId, position: i + 1, title: r.title, url: r.url, publisher: r.publisher ?? null, kind: r.kind,
+      })))
+    }
+  }
+
+  async function referencesOf(tx: Db, siteId: SiteId, articleId: string): Promise<GeneratedReference[]> {
+    const rows = await tx
+      .select({ title: articleReferences.title, url: articleReferences.url, publisher: articleReferences.publisher, kind: articleReferences.kind })
+      .from(articleReferences)
+      .where(and(eq(articleReferences.siteId, siteId), eq(articleReferences.articleId, articleId)))
+      .orderBy(asc(articleReferences.position))
+    return rows.map((r) => ({ title: r.title, url: r.url, kind: r.kind as GeneratedReference['kind'], ...(r.publisher ? { publisher: r.publisher } : {}) }))
+  }
+
+  /**
+   * Buat artikel di dalam transaksi pemanggil: validasi, cek referensi data,
+   * slug unik, tag, referensi, revisi pertama. Dipakai createArticle dan
+   * approve hasil AI (generated-repository), agar aturannya satu.
+   */
+  async function createArticleIn(tx: Tx, siteId: SiteId, raw: unknown, userId: string | null, changeNote = 'Dibuat'): Promise<ArticleRecord> {
+    const input = parse(articleInputSchema, raw)
+    await checkArticleRefs(tx, siteId, input)
+    const slug = await uniqueSlug(tx, articles, siteId, input.slug, input.title, null, await articleReservedFirst(tx, siteId))
+    const publishedAt = effectivePublishedAt(input, null)
+    const [row] = await withSlugConflict(() => tx
+      .insert(articles)
+      .values({
+        siteId, categoryId: input.categoryId, authorId: input.authorId, featuredMediaId: input.featuredMediaId,
+        title: input.title, slug, excerpt: input.excerpt, body: input.body, bodyText: extractBodyText(input.body),
+        format: input.format, status: input.status, isFeatured: input.isFeatured, publishedAt, seo: input.seo,
+        attributes: input.attributes, version: 1, createdBy: userId, updatedBy: userId,
+      })
+      .returning({ id: articles.id }))
+    if (!row) throw new Error('insert artikel tidak mengembalikan baris')
+    await writeTags(tx, siteId, row.id, input.tagIds)
+    await writeReferences(tx, siteId, row.id, input.references)
+    await tx.insert(articleRevisions).values({ siteId, articleId: row.id, revisionNo: 1, snapshot: snapshotOf({ ...input, slug, publishedAt }), changeNote, createdBy: userId })
+    return loadArticle(tx, siteId, row.id)
   }
 
   async function writeTags(tx: Db, siteId: SiteId, articleId: string, tagIds: string[]) {
@@ -358,7 +408,8 @@ export function createEditorRepository(ctx: RepositoryContext) {
       id: row.id, title: row.title, slug: row.slug, excerpt: row.excerpt, body: row.body as Body,
       categoryId: row.categoryId, authorId: row.authorId, featuredMediaId: row.featuredMediaId, format: row.format,
       status: row.status, isFeatured: row.isFeatured, publishedAt: row.publishedAt, tagIds: tagRows.map((t) => t.tagId),
-      seo: row.seo as ContentSeo, attributes: row.attributes as Record<string, unknown>, version: row.version,
+      seo: row.seo as ContentSeo, attributes: row.attributes as Record<string, unknown>,
+      references: await referencesOf(tx, siteId, id), version: row.version,
       createdAt: row.createdAt, updatedAt: row.updatedAt,
     }
     return { ...record, publicPath: await articlePath(tx, siteId, record) }
@@ -554,7 +605,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
       if (!file.storageKey.startsWith(`${site.code}/`)) throw new Error(`storage_key ${file.storageKey} bukan milik site ${site.code}`)
       const [row] = await db
         .insert(media)
-        .values({ siteId, ...file, altText: meta.altText, caption: meta.caption, credit: meta.credit, focalX: meta.focalX, focalY: meta.focalY, createdBy: userId })
+        .values({ siteId, ...file, altText: meta.altText, caption: meta.caption, credit: meta.credit, sourceUrl: meta.sourceUrl, focalX: meta.focalX, focalY: meta.focalY, createdBy: userId })
         .returning(mediaListColumns)
       if (!row) throw new Error('insert media tidak mengembalikan baris')
       return row
@@ -643,25 +694,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
     },
 
     async createArticle(siteId: SiteId, raw: unknown, userId: string | null): Promise<ArticleRecord> {
-      const input = parse(articleInputSchema, raw)
-      return db.transaction(async (tx) => {
-        await checkArticleRefs(tx, siteId, input)
-        const slug = await uniqueSlug(tx, articles, siteId, input.slug, input.title, null, await articleReservedFirst(tx, siteId))
-        const publishedAt = effectivePublishedAt(input, null)
-        const [row] = await withSlugConflict(() => tx
-          .insert(articles)
-          .values({
-            siteId, categoryId: input.categoryId, authorId: input.authorId, featuredMediaId: input.featuredMediaId,
-            title: input.title, slug, excerpt: input.excerpt, body: input.body, bodyText: extractBodyText(input.body),
-            format: input.format, status: input.status, isFeatured: input.isFeatured, publishedAt, seo: input.seo,
-            attributes: input.attributes, version: 1, createdBy: userId, updatedBy: userId,
-          })
-          .returning({ id: articles.id }))
-        if (!row) throw new Error('insert artikel tidak mengembalikan baris')
-        await writeTags(tx, siteId, row.id, input.tagIds)
-        await tx.insert(articleRevisions).values({ siteId, articleId: row.id, revisionNo: 1, snapshot: snapshotOf({ ...input, slug, publishedAt }), changeNote: 'Dibuat', createdBy: userId })
-        return loadArticle(tx, siteId, row.id)
-      })
+      return db.transaction((tx) => createArticleIn(tx, siteId, raw, userId))
     },
 
     /** Simpan seluruh isi artikel; expectedVersion = version yang dibaca saat form dibuka. */
@@ -687,6 +720,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
           .returning({ id: articles.id }))
         if (!row) throw conflict('Artikel')
         await writeTags(tx, siteId, articleId, input.tagIds)
+        await writeReferences(tx, siteId, articleId, input.references)
         await tx.insert(articleRevisions).values({
           siteId, articleId, revisionNo: version + 1, snapshot: snapshotOf({ ...input, slug, publishedAt }),
           changeNote: changeNote?.trim().slice(0, 500) || null, createdBy: userId,
@@ -721,6 +755,7 @@ export function createEditorRepository(ctx: RepositoryContext) {
           title: a.title, slug: a.slug, excerpt: a.excerpt, body: a.body, category_id: a.categoryId, author_id: a.authorId,
           featured_media_id: a.featuredMediaId, format: a.format, status: 'ARCHIVED', is_featured: a.isFeatured,
           published_at: a.publishedAt?.toISOString() ?? null, seo: a.seo, attributes: a.attributes, tag_ids: a.tagIds,
+          references: a.references,
         }
         await tx.insert(articleRevisions).values({ siteId, articleId, revisionNo: version + 1, snapshot, changeNote: 'Diarsipkan', createdBy: userId })
         return loadArticle(tx, siteId, articleId)
@@ -917,7 +952,14 @@ export function createEditorRepository(ctx: RepositoryContext) {
       )
     },
   } satisfies Record<string, SiteScoped>
-  return api
+  return {
+    ...api,
+    /**
+     * Operasi di dalam transaksi pemanggil, untuk repository lain (approve
+     * hasil AI). Argumen pertama tx, lalu siteId seperti fungsi lain.
+     */
+    tx: { createArticle: createArticleIn },
+  }
 }
 
 /** Kode PostgreSQL unique_violation pada constraint slug (uq_<tabel>_site_slug). */
@@ -944,7 +986,7 @@ async function withSlugConflict<T>(run: () => Promise<T>): Promise<T> {
 
 const mediaListColumns = {
   id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, sizeBytes: media.sizeBytes, width: media.width, height: media.height,
-  altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+  altText: media.altText, caption: media.caption, credit: media.credit, sourceUrl: media.sourceUrl, focalX: media.focalX, focalY: media.focalY,
   createdAt: media.createdAt, updatedAt: media.updatedAt,
 }
 

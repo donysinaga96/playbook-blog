@@ -138,6 +138,8 @@ function payload() {
     tagIds: form.tagIds,
     seo: mergeSeo(article.value?.seo ?? {}, form.seo),
     attributes: article.value?.attributes ?? {},
+    // Form referensi menyusul (M5a 5a.3); sampai itu referensi tersimpan diteruskan utuh.
+    references: article.value?.references ?? [],
   }
 }
 

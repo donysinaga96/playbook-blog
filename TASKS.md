@@ -12,7 +12,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
-| M5a — Alur konten AI dan approval | 8 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5a — Alur konten AI dan approval | 13 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
 **Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
@@ -314,11 +314,11 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 - [x] Test integritas + hak akses role; `drizzle-kit pull`; seed dev: 2 hasil AI (satu valid, satu dengan galat) beserta referensi — 19 test integritas baru (bagian 7, total 61), 12 pemeriksaan role agent lewat `SET LOCAL ROLE` (bagian 7 `run_all.sh`), total 81 pemeriksaan; schema Drizzle 18 tabel; snapshot view model diperbarui (kredit gambar rendang di seed)
 
 **5a.2 Pemeriksaan dan approve di core [K3] [K4]**
-- [ ] `reviewGenerated(siteId, id)`: galat dan peringatan sesuai tabel di docs/usulan-konten-ai.md
-- [ ] `approveGenerated`: satu transaksi, `FOR UPDATE`, periksa ulang, buat media (pakai ulang baris yang `storage_key`-nya sudah ada di site yang sama, karena `uq_media_storage_key` unik global; milik site lain = galat) + artikel (`PUBLISHED` sekarang/terjadwal, atau `DRAFT`) + tag + referensi, hitung `body_text`, revisi pertama mencatat asal hasil AI, tandai `APPROVED` + `article_id`
-- [ ] `rejectGenerated`: alasan wajib → `ARCHIVED` + `review_note`
-- [ ] Referensi untuk artikel biasa: repository editor membaca/menulis `article_references`
-- [ ] Test: tiap jenis galat, transisi terlarang, dua approve bersamaan = satu artikel, slug bentrok di tengah transaksi, isolasi site
+- [x] `reviewGenerated(siteId, id)`: galat dan peringatan sesuai tabel di docs/usulan-konten-ai.md — `repos.generated.review(siteId, id, storage)` di `src/generated/generated-repository.ts`; skema gagal = hanya masalah skema; gambar: prefix kode site, file ada, magic bytes JPEG/PNG/WebP, ekstensi cocok; bentrok redirect **tidak** diperiksa (konten menang atas redirect, `build-page.ts`), dokumen diselaraskan
+- [x] `approveGenerated`: satu transaksi, `FOR UPDATE`, periksa ulang, buat media (pakai ulang baris yang `storage_key`-nya sudah ada di site yang sama, karena `uq_media_storage_key` unik global; milik site lain = galat) + artikel (`PUBLISHED` sekarang/terjadwal, atau `DRAFT`) + tag + referensi, hitung `body_text`, revisi pertama mencatat asal hasil AI, tandai `APPROVED` + `article_id` — lewat `editor.tx.createArticle` (isi `createArticle` dipindah ke `createArticleIn` dalam transaksi pemanggil); tambahan: token versi `expectedUpdatedAt` untuk approve dan tolak, karena agent bisa memperbarui hasil yang sama lewat `external_id` setelah admin membukanya
+- [x] `rejectGenerated`: alasan wajib → `ARCHIVED` + `review_note` — maks 1.000 karakter
+- [x] Referensi untuk artikel biasa: repository editor membaca/menulis `article_references` — juga di revisi dan arsip; `media.sourceUrl` di `mediaMetaSchema`; form artikel admin meneruskan referensi yang dimuat dan layar Media punya field "URL sumber" (tanpa itu simpan dari admin menghapus data baru ini)
+- [x] Test: tiap jenis galat, transisi terlarang, dua approve bersamaan = satu artikel, slug bentrok di tengah transaksi, isolasi site — 20 test di `generated-repository.test.ts` (storage tiruan + PNG minimal) dan 5 test referensi/`sourceUrl` di test editor; slug bentrok di tengah transaksi ditangani `withSlugConflict` yang sudah diuji di editor
 
 **5a.3 Antrian approval di admin [K3]**
 - [ ] API `/api/admin/generated` (semua site milik user) + detail, approve, reject, approve massal (hanya item tanpa galat)

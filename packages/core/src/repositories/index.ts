@@ -1,6 +1,7 @@
 import type { Database } from '@framework/db'
 import { createContentRepository } from './content-repository'
 import { createEditorRepository } from '../editor/editor-repository'
+import { createGeneratedRepository } from '../generated/generated-repository'
 import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
@@ -29,12 +30,15 @@ export interface RepositoryOptions {
  */
 export function createRepositories(db: Database, options: RepositoryOptions = {}) {
   const ctx: RepositoryContext = { db, now: options.now ?? (() => new Date()) }
+  const editor = createEditorRepository(ctx)
   return {
     sites: createSiteRepository(ctx),
     content: createContentRepository(ctx),
     menus: createMenuRepository(ctx),
     users: createUserRepository(ctx),
-    editor: createEditorRepository(ctx),
+    editor,
+    /** Hasil AI agent: antrian, pemeriksaan, approve, tolak (ADR-010). */
+    generated: createGeneratedRepository(ctx, editor),
   }
 }
 

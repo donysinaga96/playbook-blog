@@ -26,7 +26,7 @@ export const paragraphBlock = z.strictObject({
 export const headingBlock = z.strictObject({
   type: z.literal('heading'),
   // Level 1 dipakai judul artikel oleh template, jadi isi mulai dari 2.
-  level: z.union([z.literal(2), z.literal(3), z.literal(4)]),
+  level: z.union([z.literal(2), z.literal(3), z.literal(4)], { error: 'level heading harus 2, 3, atau 4' }),
   text: shortText,
 })
 
