@@ -725,6 +725,8 @@ export * from './site/resolve'
 
 9. Validasi config saat server start lewat plugin Nitro. Bila env salah, plugin melempar `SiteModeConfigError` dan proses berhenti dengan exit 1, alih-alih baru gagal saat request pertama:
 
+   (Validasi `PUBLIC_CACHE_TTL` ditambahkan di bab "Mengatur Cache Halaman Publik".)
+
 @@include apps/web/server/plugins/site-mode.ts ts@@
 
 10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template" dan berubah menjadi `ResolvedTheme` di bab "Menyusun Halaman Depan dari Section") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
@@ -738,6 +740,8 @@ export * from './site/resolve'
     - Redirect mempertahankan path, query, dan port.
     - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template", lalu dipindah ke sebelum view model di bab "Menyusun Halaman Depan dari Section".
     - Penanganan path admin (host admin, 404 di domain site) ditambahkan di bab "Membangun Login Admin".
+
+   (Header cache (`setPublicCache`, `adminNoStore`) ditambahkan di bab "Mengatur Cache Halaman Publik".)
 
 @@include apps/web/server/middleware/site.ts ts@@
 
@@ -1199,6 +1203,8 @@ done
 
 12. Buat tiga route feed dengan satu helper bersama. Host tak dikenal sudah ditolak middleware, alias sudah dialihkan ke primary:
 
+   (TTL feed memakai `setPublicCache` sejak bab "Mengatur Cache Halaman Publik".)
+
 @@include apps/web/server/utils/feed-response.ts ts@@
 
 @@include apps/web/server/routes/sitemap.xml.get.ts ts@@
@@ -1620,6 +1626,8 @@ routeRules: {
 @@include apps/web/app/pages/admin/index.vue vue@@
 
 16. Tulis gate admin terhadap server hasil build, dengan helper request umum `requestWithHost` di `scripts/lib/built-server.mjs` (bab "Membuktikan Isolasi Antar-Site"). Gate memeriksa host admin dan domain site (termasuk path ter-encode), penjaga Origin, login salah dan benar, sesi, logout, rate limit, dan login paralel:
+
+   (Pemeriksaan header cache ditambahkan di bab "Mengatur Cache Halaman Publik".)
 
 @@include apps/web/scripts/gate-admin.mjs js@@
 
@@ -2180,3 +2188,33 @@ pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
    http://sumatera.localhost:3000 langsung tampil dengan template news (beranda kosong, RSS dan sitemap 200), www dialihkan 301 ke domain primary, dan site muncul di pemilih site admin. Buat kategori di admin sebelum menerima hasil AI untuk site itu.
 
 5. Buktikan di CI: job `build` membuat site ketiga lewat CLI di database hasil migrate, lalu smoke test memeriksa ketiga domain dengan template masing-masing. Gate isolasi, gate admin, dan gate konten berjalan setelahnya dengan site ketiga itu ada.
+
+# Mengatur Cache Halaman Publik
+
+Halaman publik dirender di server setiap request. Saat nanti ada reverse proxy atau CDN di depan aplikasi, mereka perlu tahu apa yang boleh disimpan dan berapa lama. Bab ini memasang header itu di aplikasi; cache di proxy sendiri dikerjakan bersama deploy.
+
+1. Tetapkan aturannya di satu tempat:
+   - Halaman publik berstatus 200 tanpa cookie sesi admin: `public, max-age=0, s-maxage=<TTL>`. Browser selalu meminta ulang (tidak ada halaman basi di browser pembaca), sedangkan cache bersama boleh menyimpan selama TTL.
+   - Status lain: `no-store`. Artikel terjadwal yang masih 404 tidak boleh tersimpan, kalau tidak, artikel itu tetap 404 di cache setelah waktunya tiba.
+   - Request yang membawa cookie `blog_admin`: `private, no-store`. Di mode single, admin ada di domain site.
+   - Halaman admin (SPA) dan pratinjau: `no-store`. API admin sudah diatur `admin-guard`.
+   - RSS dan sitemap memakai TTL yang sama dengan halaman, sehingga hanya ada satu angka keterlambatan.
+
+   TTL dibaca dari `PUBLIC_CACHE_TTL` (bawaan 60 detik, 0 sampai 3600; 0 = `no-store`). Angka ini adalah batas keterlambatan artikel terjadwal atau artikel yang baru di-approve bila ada cache bersama. Nilai yang salah membuat server gagal start, divalidasi di plugin yang sama dengan `SITE_MODE`.
+
+@@include apps/web/server/utils/cache-control.ts ts@@
+
+@@include apps/web/server/utils/cache-control.test.ts ts@@
+
+2. Pasang di middleware site setelah halaman dibangun (`setPublicCache(event, built.status)`), di path admin non-pratinjau (`adminNoStore`), dan di respons feed. Kunci cache di proxy wajib memuat Host (URL lengkap), dan proxy harus melewati cache untuk request yang membawa cookie sesi admin; keduanya dicatat untuk konfigurasi proxy saat deploy.
+
+3. Periksa di build produksi, bukan hanya di dev, karena header bisa ditimpa renderer:
+
+```bash
+curl -sI http://tekno.localhost:3000/ | grep -i cache-control
+# cache-control: public, max-age=0, s-maxage=60
+curl -sI http://tekno.localhost:3000/tidak/ada | grep -i cache-control
+# cache-control: no-store
+```
+
+   Gate admin kini juga memeriksa header: halaman admin `no-store`, request dengan cookie sesi admin `private, no-store`, URL artikel terjadwal `no-store` selama masih 404, dan `s-maxage` setelah terbit.

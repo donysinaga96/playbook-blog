@@ -372,6 +372,12 @@ SITE_MODE=multi
 # Awalan URL media. Default /media (dilayani aplikasi). Ganti ke URL CDN bila perlu.
 # MEDIA_BASE_URL=/media
 
+# --- Cache publik ---
+# s-maxage halaman publik, RSS, dan sitemap (detik, 0..3600; bawaan 60; 0 = no-store).
+# Ini juga batas keterlambatan artikel terjadwal atau yang baru di-approve bila
+# ada cache bersama (reverse proxy/CDN) di depan aplikasi.
+# PUBLIC_CACHE_TTL=60
+
 # Admin (ADR-009). Tanpa ADMIN_SESSION_SECRET, admin nonaktif (semua path
 # admin 404). Secret minimal 32 karakter, mis. hasil `openssl rand -base64 48`.
 # Mode multi: admin hanya di ADMIN_HOST (dev: http://admin.localhost:3000/admin).
@@ -6192,20 +6198,25 @@ export function useSiteMode(): SiteMode {
 
 9. Validasi config saat server start lewat plugin Nitro. Bila env salah, plugin melempar `SiteModeConfigError` dan proses berhenti dengan exit 1, alih-alih baru gagal saat request pertama:
 
+   (Validasi `PUBLIC_CACHE_TTL` ditambahkan di bab "Mengatur Cache Halaman Publik".)
+
 `apps/web/server/plugins/site-mode.ts`
 
 ```ts
-// Validasi SITE_MODE / SITE_CODE saat server start, bukan saat request
+// Validasi SITE_MODE / SITE_CODE dan PUBLIC_CACHE_TTL saat server start, bukan saat request
 // pertama: config salah harus membuat proses gagal start.
 //
 // Folder server/plugins/ adalah satu-satunya tempat yang sengaja memakai
 // API Nitro (defineNitroPlugin); nuxt/server di Nuxt 4.6 belum punya
 // padanannya. Saat upgrade ke Nuxt 5, cukup folder ini yang diperiksa.
+import { publicCacheTtl } from '../utils/cache-control'
 import { useSiteMode } from '../utils/site-mode'
 
 export default defineNitroPlugin(() => {
   const mode = useSiteMode()
   console.info(mode.mode === 'single' ? `[site] mode single, SITE_CODE=${mode.siteCode}` : '[site] mode multi')
+  // PUBLIC_CACHE_TTL salah = gagal start, bukan galat di request pertama.
+  console.info(`[site] cache publik s-maxage=${publicCacheTtl()} detik`)
 })
 ```
 
@@ -6250,6 +6261,8 @@ export {}
     - Pemuatan theme aktif (`event.context.theme`) ditambahkan di bab "Membangun Sistem Template", lalu dipindah ke sebelum view model di bab "Menyusun Halaman Depan dari Section".
     - Penanganan path admin (host admin, 404 di domain site) ditambahkan di bab "Membangun Login Admin".
 
+   (Header cache (`setPublicCache`, `adminNoStore`) ditambahkan di bab "Mengatur Cache Halaman Publik".)
+
 `apps/web/server/middleware/site.ts`
 
 ```ts
@@ -6271,6 +6284,7 @@ export {}
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
@@ -6290,7 +6304,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -6304,7 +6318,7 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
@@ -6321,6 +6335,8 @@ export default defineEventHandler(async (event) => {
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
+    // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
+    setPublicCache(event, built.status)
     return
   }
 
@@ -6334,6 +6350,12 @@ export default defineEventHandler(async (event) => {
 
   return notFound(event)
 })
+
+/** Halaman admin (SPA) tidak pernah di-cache; API admin sudah diatur admin-guard. */
+function adminNoStore(event: RequestEvent): undefined {
+  event.res.headers.set('cache-control', NO_STORE)
+  return undefined
+}
 
 function notFound(event: RequestEvent) {
   setResponseStatus(event, 404)
@@ -11780,6 +11802,7 @@ export function useFeedBuilder() {
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
@@ -11799,7 +11822,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -11813,7 +11836,7 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
@@ -11830,6 +11853,8 @@ export default defineEventHandler(async (event) => {
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
+    // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
+    setPublicCache(event, built.status)
     return
   }
 
@@ -11843,6 +11868,12 @@ export default defineEventHandler(async (event) => {
 
   return notFound(event)
 })
+
+/** Halaman admin (SPA) tidak pernah di-cache; API admin sudah diatur admin-guard. */
+function adminNoStore(event: RequestEvent): undefined {
+  event.res.headers.set('cache-control', NO_STORE)
+  return undefined
+}
 
 function notFound(event: RequestEvent) {
   setResponseStatus(event, 404)
@@ -12797,6 +12828,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
@@ -12816,7 +12848,7 @@ export default defineEventHandler(async (event) => {
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
   if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
-    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
     return sendRedirect(event, '/admin', 302)
   }
   if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
@@ -12830,7 +12862,7 @@ export default defineEventHandler(async (event) => {
     // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
     // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
     event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
-    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : undefined
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
     if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
 
     // Halaman publik: theme diselesaikan dulu (layout section menentukan data
@@ -12847,6 +12879,8 @@ export default defineEventHandler(async (event) => {
     for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
+    // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
+    setPublicCache(event, built.status)
     return
   }
 
@@ -12860,6 +12894,12 @@ export default defineEventHandler(async (event) => {
 
   return notFound(event)
 })
+
+/** Halaman admin (SPA) tidak pernah di-cache; API admin sudah diatur admin-guard. */
+function adminNoStore(event: RequestEvent): undefined {
+  event.res.headers.set('cache-control', NO_STORE)
+  return undefined
+}
 
 function notFound(event: RequestEvent) {
   setResponseStatus(event, 404)
@@ -12937,12 +12977,15 @@ export function useFeedBuilder() {
 
 12. Buat tiga route feed dengan satu helper bersama. Host tak dikenal sudah ditolak middleware, alias sudah dialihkan ke primary:
 
+   (TTL feed memakai `setPublicCache` sejak bab "Mengatur Cache Halaman Publik".)
+
 `apps/web/server/utils/feed-response.ts`
 
 ```ts
 // Respons feed (sitemap, RSS, robots) untuk site request ini. Middleware
 // site sudah menolak Host tak dikenal (404) dan mengalihkan alias (301).
 import { setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { setPublicCache } from './cache-control'
 
 export async function feedResponse(
   event: RequestEvent,
@@ -12956,8 +12999,8 @@ export async function feedResponse(
   }
   const body = await render(site, siteOrigin)
   event.res.headers.set('content-type', contentType)
-  // Feed boleh sedikit basi; cukup segar untuk artikel terjadwal yang baru tayang.
-  event.res.headers.set('cache-control', 'public, max-age=300')
+  // TTL sama dengan halaman: satu batas keterlambatan untuk artikel terjadwal.
+  setPublicCache(event, 200)
   return body
 }
 ```
@@ -16841,6 +16884,8 @@ if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 
 16. Tulis gate admin terhadap server hasil build, dengan helper request umum `requestWithHost` di `scripts/lib/built-server.mjs` (bab "Membuktikan Isolasi Antar-Site"). Gate memeriksa host admin dan domain site (termasuk path ter-encode), penjaga Origin, login salah dan benar, sesi, logout, rate limit, dan login paralel:
 
+   (Pemeriksaan header cache ditambahkan di bab "Mengatur Cache Halaman Publik".)
+
 `apps/web/scripts/gate-admin.mjs`
 
 ```js
@@ -16850,6 +16895,7 @@ if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 // login salah/benar, sesi, logout, dan rate limit login.
 // 4.2: API per site (404 site lain, 422 input salah, 409 versi lama).
 // 4.3: upload media. 4.4: tema dan pratinjau.
+// M5 5.4: header cache halaman publik, 404 terjadwal, dan admin.
 // 4.6 (gate M4): buat artikel lewat API admin, jadwalkan beberapa detik ke
 // depan, pastikan sebelum waktunya tidak ada di URL artikel, home, sitemap,
 // dan RSS, lalu tampil di semuanya tepat setelah waktunya. Artikel uji
@@ -16910,6 +16956,9 @@ try {
   check('host admin / diarahkan ke /admin', r.status === 302 && r.headers.location === '/admin', `${r.status} ${r.headers.location}`)
   r = await admin('/admin')
   check('host admin /admin (SPA) 200', r.status === 200 && r.body.includes('<div id="__nuxt"'), String(r.status))
+  check('cache: halaman admin no-store', r.headers['cache-control'] === 'no-store', String(r.headers['cache-control']))
+  r = await requestWithHost(port, { path: '/', host: siteHost, headers: { cookie: 'blog_admin=x' } })
+  check('cache: request dengan cookie sesi admin private, no-store', r.headers['cache-control'] === 'private, no-store', String(r.headers['cache-control']))
   r = await requestWithHost(port, { path: '/admin', host: siteHost })
   check('domain site /admin 404', r.status === 404, String(r.status))
   r = await requestWithHost(port, { path: '/api/admin/me', host: siteHost })
@@ -17058,6 +17107,7 @@ try {
     return {
       page: page.status === 200 && page.body.includes(title),
       pageStatus: page.status,
+      pageCache: page.headers['cache-control'],
       home: home.status === 200 && home.body.includes(slug),
       sitemap: sitemap.status === 200 && sitemap.body.includes(`${articlePath}<`),
       rss: rss.status === 200 && rss.body.includes(slug),
@@ -17069,6 +17119,8 @@ try {
       const stillEarly = Date.now() < publishAt.getTime()
       check('jadwal: pemeriksaan "sebelum" selesai sebelum waktunya (naikkan GATE_SCHEDULE_LEAD_MS bila gagal)', stillEarly, `${publishAt.getTime() - Date.now()} ms tersisa`)
       check('jadwal: sebelum waktunya URL artikel 404', before.pageStatus === 404, String(before.pageStatus))
+      // M5 5.4: 404 artikel terjadwal tidak boleh tersimpan di cache bersama.
+      check('cache: 404 sebelum jadwal no-store', before.pageCache === 'no-store', String(before.pageCache))
       check('jadwal: sebelum waktunya tidak ada di home, sitemap, RSS', !before.home && !before.sitemap && !before.rss, JSON.stringify(before))
 
       // Tunggu sampai waktunya, lalu request pertama sesudahnya harus sudah menampilkan.
@@ -17077,6 +17129,7 @@ try {
       const lateMs = Date.now() - publishAt.getTime()
       check('jadwal: request pertama setelah waktunya menampilkan artikel', after.page, `${after.pageStatus}, ${lateMs} ms setelah jadwal`)
       check('jadwal: setelah waktunya ada di home, sitemap, RSS', after.home && after.sitemap && after.rss, JSON.stringify(after))
+      check('cache: halaman publik s-maxage, browser max-age=0', /^public, max-age=0, s-maxage=\d+$/.test(String(after.pageCache)), String(after.pageCache))
       r = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}`, { cookie: adminCookie })
       const published = r.status === 200 ? JSON.parse(r.body) : null
       check('jadwal: API admin kini memberi URL publik yang sama', published?.publicPath === articlePath, `${published?.publicPath} vs ${articlePath}`)
@@ -27307,3 +27360,106 @@ pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
    http://sumatera.localhost:3000 langsung tampil dengan template news (beranda kosong, RSS dan sitemap 200), www dialihkan 301 ke domain primary, dan site muncul di pemilih site admin. Buat kategori di admin sebelum menerima hasil AI untuk site itu.
 
 5. Buktikan di CI: job `build` membuat site ketiga lewat CLI di database hasil migrate, lalu smoke test memeriksa ketiga domain dengan template masing-masing. Gate isolasi, gate admin, dan gate konten berjalan setelahnya dengan site ketiga itu ada.
+
+# Mengatur Cache Halaman Publik
+
+Halaman publik dirender di server setiap request. Saat nanti ada reverse proxy atau CDN di depan aplikasi, mereka perlu tahu apa yang boleh disimpan dan berapa lama. Bab ini memasang header itu di aplikasi; cache di proxy sendiri dikerjakan bersama deploy.
+
+1. Tetapkan aturannya di satu tempat:
+   - Halaman publik berstatus 200 tanpa cookie sesi admin: `public, max-age=0, s-maxage=<TTL>`. Browser selalu meminta ulang (tidak ada halaman basi di browser pembaca), sedangkan cache bersama boleh menyimpan selama TTL.
+   - Status lain: `no-store`. Artikel terjadwal yang masih 404 tidak boleh tersimpan, kalau tidak, artikel itu tetap 404 di cache setelah waktunya tiba.
+   - Request yang membawa cookie `blog_admin`: `private, no-store`. Di mode single, admin ada di domain site.
+   - Halaman admin (SPA) dan pratinjau: `no-store`. API admin sudah diatur `admin-guard`.
+   - RSS dan sitemap memakai TTL yang sama dengan halaman, sehingga hanya ada satu angka keterlambatan.
+
+   TTL dibaca dari `PUBLIC_CACHE_TTL` (bawaan 60 detik, 0 sampai 3600; 0 = `no-store`). Angka ini adalah batas keterlambatan artikel terjadwal atau artikel yang baru di-approve bila ada cache bersama. Nilai yang salah membuat server gagal start, divalidasi di plugin yang sama dengan `SITE_MODE`.
+
+`apps/web/server/utils/cache-control.ts`
+
+```ts
+// Header cache respons publik (M5 5.4, usulan M5-D, bagian aplikasi).
+//
+//  - Halaman publik 200 tanpa cookie sesi admin: `public, max-age=0,
+//    s-maxage=<TTL>`. Browser selalu meminta ulang; cache bersama (reverse
+//    proxy/CDN, M5 deploy) boleh menyimpan selama TTL. TTL inilah batas
+//    keterlambatan artikel terjadwal dan artikel yang baru di-approve.
+//  - Status lain (404, 500, ...): no-store, agar artikel terjadwal yang masih
+//    404 tidak tersimpan di cache.
+//  - Request dengan cookie sesi admin (mode single: admin di domain site):
+//    private, no-store.
+//  - Feed (sitemap, RSS, robots) memakai TTL yang sama.
+// Kunci cache di proxy wajib memuat Host (URL lengkap); itu urusan konfigurasi
+// proxy saat deploy (usulan M5-D), dan proxy harus melewati cache untuk
+// request yang membawa cookie sesi admin.
+//
+// PUBLIC_CACHE_TTL (detik, bawaan 60, 0..3600); 0 = no-store untuk semua.
+import type { RequestEvent } from 'nuxt/server'
+
+export const NO_STORE = 'no-store'
+const SESSION_COOKIE = /(?:^|;\s*)blog_admin=/
+
+let ttl: number | undefined
+
+export function publicCacheTtl(): number {
+  if (ttl === undefined) {
+    const raw = process.env['PUBLIC_CACHE_TTL']?.trim()
+    const parsed = raw ? Number(raw) : 60
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3600) {
+      throw new Error(`PUBLIC_CACHE_TTL harus bilangan bulat 0..3600 detik (sekarang: ${raw})`)
+    }
+    ttl = parsed
+  }
+  return ttl
+}
+
+/** Nilai Cache-Control untuk respons publik; murni, mudah diuji. */
+export function publicCacheControl(status: number, hasSessionCookie: boolean, seconds: number): string {
+  if (hasSessionCookie) return 'private, no-store'
+  if (status !== 200 || seconds === 0) return NO_STORE
+  return `public, max-age=0, s-maxage=${seconds}`
+}
+
+export function hasAdminSession(event: RequestEvent): boolean {
+  return SESSION_COOKIE.test(event.req.headers.get('cookie') ?? '')
+}
+
+export function setPublicCache(event: RequestEvent, status: number) {
+  event.res.headers.set('cache-control', publicCacheControl(status, hasAdminSession(event), publicCacheTtl()))
+}
+```
+
+`apps/web/server/utils/cache-control.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { publicCacheControl } from './cache-control'
+
+describe('publicCacheControl', () => {
+  it('halaman 200 tanpa sesi: cache bersama selama TTL, browser selalu meminta ulang', () => {
+    expect(publicCacheControl(200, false, 60)).toBe('public, max-age=0, s-maxage=60')
+  })
+  it('status selain 200 tidak disimpan (artikel terjadwal yang masih 404)', () => {
+    expect(publicCacheControl(404, false, 60)).toBe('no-store')
+    expect(publicCacheControl(500, false, 60)).toBe('no-store')
+  })
+  it('cookie sesi admin: private, no-store', () => {
+    expect(publicCacheControl(200, true, 60)).toBe('private, no-store')
+  })
+  it('TTL 0 mematikan cache', () => {
+    expect(publicCacheControl(200, false, 0)).toBe('no-store')
+  })
+})
+```
+
+2. Pasang di middleware site setelah halaman dibangun (`setPublicCache(event, built.status)`), di path admin non-pratinjau (`adminNoStore`), dan di respons feed. Kunci cache di proxy wajib memuat Host (URL lengkap), dan proxy harus melewati cache untuk request yang membawa cookie sesi admin; keduanya dicatat untuk konfigurasi proxy saat deploy.
+
+3. Periksa di build produksi, bukan hanya di dev, karena header bisa ditimpa renderer:
+
+```bash
+curl -sI http://tekno.localhost:3000/ | grep -i cache-control
+# cache-control: public, max-age=0, s-maxage=60
+curl -sI http://tekno.localhost:3000/tidak/ada | grep -i cache-control
+# cache-control: no-store
+```
+
+   Gate admin kini juga memeriksa header: halaman admin `no-store`, request dengan cookie sesi admin `private, no-store`, URL artikel terjadwal `no-store` selama masih 404, dan `s-maxage` setelah terbit.

@@ -4,6 +4,7 @@
 // login salah/benar, sesi, logout, dan rate limit login.
 // 4.2: API per site (404 site lain, 422 input salah, 409 versi lama).
 // 4.3: upload media. 4.4: tema dan pratinjau.
+// M5 5.4: header cache halaman publik, 404 terjadwal, dan admin.
 // 4.6 (gate M4): buat artikel lewat API admin, jadwalkan beberapa detik ke
 // depan, pastikan sebelum waktunya tidak ada di URL artikel, home, sitemap,
 // dan RSS, lalu tampil di semuanya tepat setelah waktunya. Artikel uji
@@ -64,6 +65,9 @@ try {
   check('host admin / diarahkan ke /admin', r.status === 302 && r.headers.location === '/admin', `${r.status} ${r.headers.location}`)
   r = await admin('/admin')
   check('host admin /admin (SPA) 200', r.status === 200 && r.body.includes('<div id="__nuxt"'), String(r.status))
+  check('cache: halaman admin no-store', r.headers['cache-control'] === 'no-store', String(r.headers['cache-control']))
+  r = await requestWithHost(port, { path: '/', host: siteHost, headers: { cookie: 'blog_admin=x' } })
+  check('cache: request dengan cookie sesi admin private, no-store', r.headers['cache-control'] === 'private, no-store', String(r.headers['cache-control']))
   r = await requestWithHost(port, { path: '/admin', host: siteHost })
   check('domain site /admin 404', r.status === 404, String(r.status))
   r = await requestWithHost(port, { path: '/api/admin/me', host: siteHost })
@@ -212,6 +216,7 @@ try {
     return {
       page: page.status === 200 && page.body.includes(title),
       pageStatus: page.status,
+      pageCache: page.headers['cache-control'],
       home: home.status === 200 && home.body.includes(slug),
       sitemap: sitemap.status === 200 && sitemap.body.includes(`${articlePath}<`),
       rss: rss.status === 200 && rss.body.includes(slug),
@@ -223,6 +228,8 @@ try {
       const stillEarly = Date.now() < publishAt.getTime()
       check('jadwal: pemeriksaan "sebelum" selesai sebelum waktunya (naikkan GATE_SCHEDULE_LEAD_MS bila gagal)', stillEarly, `${publishAt.getTime() - Date.now()} ms tersisa`)
       check('jadwal: sebelum waktunya URL artikel 404', before.pageStatus === 404, String(before.pageStatus))
+      // M5 5.4: 404 artikel terjadwal tidak boleh tersimpan di cache bersama.
+      check('cache: 404 sebelum jadwal no-store', before.pageCache === 'no-store', String(before.pageCache))
       check('jadwal: sebelum waktunya tidak ada di home, sitemap, RSS', !before.home && !before.sitemap && !before.rss, JSON.stringify(before))
 
       // Tunggu sampai waktunya, lalu request pertama sesudahnya harus sudah menampilkan.
@@ -231,6 +238,7 @@ try {
       const lateMs = Date.now() - publishAt.getTime()
       check('jadwal: request pertama setelah waktunya menampilkan artikel', after.page, `${after.pageStatus}, ${lateMs} ms setelah jadwal`)
       check('jadwal: setelah waktunya ada di home, sitemap, RSS', after.home && after.sitemap && after.rss, JSON.stringify(after))
+      check('cache: halaman publik s-maxage, browser max-age=0', /^public, max-age=0, s-maxage=\d+$/.test(String(after.pageCache)), String(after.pageCache))
       r = await admin(`/api/admin/sites/${tekno.id}/articles/${scheduled.id}`, { cookie: adminCookie })
       const published = r.status === 200 ? JSON.parse(r.body) : null
       check('jadwal: API admin kini memberi URL publik yang sama', published?.publicPath === articlePath, `${published?.publicPath} vs ${articlePath}`)

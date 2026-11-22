@@ -13,9 +13,9 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
 | M5a — Alur konten AI dan approval | 22 / 22 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit e7a7cdb) |
-| M5 — Produksi pertama (titik evaluasi) | 2 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
+| M5 — Produksi pertama (titik evaluasi) | 3 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
-**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5: 5.1b `site:create` selesai; berikutnya header cache di aplikasi, log JSON, skrip backup/restore. Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5: 5.1b `site:create` dan header cache di aplikasi selesai; berikutnya log JSON, skrip backup/restore. Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -412,9 +412,9 @@ Usulan A–I untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--pro
 - [ ] Uji restore sekali; catat tanggal, durasi, dan ukuran di TASKS.md
 
 **5.4 Cache publik [D]**
-- [ ] Header cache HTML publik dengan TTL pendek, hanya untuk respons tanpa cookie sesi (`blog_admin`); admin dan preview `no-store`
+- [x] Header cache HTML publik dengan TTL pendek, hanya untuk respons tanpa cookie sesi (`blog_admin`); admin dan preview `no-store` — `apps/web/server/utils/cache-control.ts`: 200 = `public, max-age=0, s-maxage=<PUBLIC_CACHE_TTL>` (bawaan 60 detik), status lain `no-store`, cookie sesi `private, no-store`; RSS/sitemap memakai TTL yang sama (sebelumnya `max-age=300`); diperiksa di build produksi dan di gate admin (57 pemeriksaan)
 - [ ] Cache di reverse proxy dengan kunci Host + path + query; gate paralel M2 dijalankan ulang melewati cache
-- [ ] Test: artikel terjadwal tampil paling lambat TTL setelah `published_at` (gate M4 tetap memukul aplikasi langsung)
+- [ ] Test: artikel terjadwal tampil paling lambat TTL setelah `published_at` (gate M4 tetap memukul aplikasi langsung) — bagian aplikasi selesai (404 terjadwal `no-store`, `s-maxage` setelah terbit, di gate admin); pembuktian lewat cache menunggu proxy (deploy, ditahan)
 - [ ] R2: tidak dikerjakan sampai pemicunya terpenuhi (angka ditetapkan di ADR-010); storage adapter sudah menjadi titik gantinya
 
 **5.5 Monitoring [E]**
