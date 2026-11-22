@@ -2635,3 +2635,80 @@ pnpm revenue:demo --remove   # hapus lagi
 ```
 
    Isi `REVENUE_MOCK=true` di `.env` agar tombol "Tarik data sekarang" dan "Kirim event uji" berjalan tanpa kredensial. Panduan memasang kredensial asli, env lengkap, dan langkah verifikasi manual ada di `docs/pendapatan.md`.
+
+# Kerangka AI Agent Pembuat Konten
+
+Kontrak agent sudah lengkap sejak bab alur konten AI, tetapi belum ada agent yang benar-benar login sebagai `blog_agent`. Contoh hasil AI di antrian ditulis lewat `SET ROLE`. Bab ini membuat kerangka agent minimal di `examples/agent-minimal/`. Kerangka ini belum memakai LLM, tetapi sudah menjalankan langkah yang sama dengan agent sungguhan: login, membaca pilihan yang sah, menyimpan gambar, lalu menulis ke antrian terbit. Folder ini sengaja berada di luar workspace pnpm. Agent dibangun di luar aplikasi (ADR-010), jadi folder ini cukup disalin ke repo agent Anda.
+
+1. Aktifkan login role agent di database lokal. Isi `AGENT_DB_PASSWORD` di `.env` repo, lalu jalankan skrip role tanpa mengulang seed. Role yang sudah ada diberi password dan `LOGIN`, dan haknya dipasang ulang:
+
+```bash
+SEED_DEV_DATA=false pnpm db:migrate
+```
+
+2. Buat paketnya. Node 24 menjalankan TypeScript langsung (type stripping), jadi tidak ada langkah build. Konsekuensinya, kode tidak boleh memakai sintaks yang harus diterjemahkan, seperti `enum` atau parameter property. `erasableSyntaxOnly` di tsconfig menjaga aturan itu, dan import antarfile memakai ekstensi `.ts`:
+
+@@include examples/agent-minimal/package.json json@@
+
+@@include examples/agent-minimal/tsconfig.json jsonc@@
+
+@@include examples/agent-minimal/.env.example ini@@
+
+3. Tulis akses database. Role `blog_agent` hanya boleh membaca kolom tertentu, jadi setiap `SELECT` menyebut kolomnya satu per satu (`SELECT *` ditolak). Agent membaca kategori dan penulis yang `ACTIVE`, karena hanya keduanya yang lolos approval. Agent juga membaca alasan penolakan terakhir sebagai bahan belajar. Penulisan memakai `ON CONFLICT ... WHERE status = 'READY_TO_PUBLISH'` dari kontrak. `RETURNING (xmax = 0)` membedakan baris baru dari baris yang diperbarui, dan nol baris berarti hasil itu sudah diputuskan admin:
+
+@@include examples/agent-minimal/src/db.ts ts@@
+
+4. Tulis penyimpanan gambar. Untuk sekarang targetnya folder yang sama dengan `MEDIA_DIR` aplikasi. Penulisan lewat file sementara lalu `rename`, jadi aplikasi tidak pernah membaca file yang setengah jadi. Key diperiksa di sisi agent dengan aturan yang lebih ketat dari aplikasi: harus diawali kode site, huruf kecil, dan tanpa `..`. Saat provider object storage dipilih, cukup buat implementasi `ImageStorage` yang lain:
+
+@@include examples/agent-minimal/src/storage.ts ts@@
+
+5. Supaya alur gambar bisa diuji tanpa model gambar, buat PNG polos bergradasi dengan `zlib` bawaan Node (`deflateSync`, `crc32`). Hasilnya lolos pemeriksaan tipe gambar saat approval:
+
+@@include examples/agent-minimal/src/placeholder-png.ts ts@@
+
+6. Tulis tipe hasil yang dipakai bersama oleh kedua pembuat konten (contoh dan Claude, langkah 11):
+
+@@include examples/agent-minimal/src/article.ts ts@@
+
+   Lalu tulis pembuat artikel contoh tanpa LLM (mode `--sample`). Fungsi ini menyusun payload versi 1 dengan body versi 2 yang memakai semua bagian kontrak: kategori dari konteks, penulis aktif pertama, gambar sampul dengan kredit, block gambar dan tautan, referensi, dan SEO. Slug memuat waktu, jadi setiap run menghasilkan artikel baru:
+
+@@include examples/agent-minimal/src/sample.ts ts@@
+
+7. Rangkai alurnya. Urutannya penting: gambar disimpan **sebelum** payload ditulis, karena admin bisa membuka antrian kapan saja dan approval memeriksa bahwa file sudah ada. `external_id` berbentuk `<run>/<slug>`, sehingga menjalankan ulang run yang sama memperbarui hasilnya dan tidak menggandakannya. `--dry-run` tidak menulis apa pun dan hanya mencetak payload, sedangkan `--sample` memakai pembuat contoh. File ini sudah memuat pilihan mode Claude dari langkah 11:
+
+@@include examples/agent-minimal/src/agent.ts ts@@
+
+8. Pasang dependency dan jalankan:
+
+```bash
+cd examples/agent-minimal
+cp .env.example .env               # password agent, AGENT_MEDIA_DIR = MEDIA_DIR aplikasi
+pnpm install --ignore-workspace    # pg, SDK Anthropic, zod; bukan paket workspace
+pnpm sample -- --dry-run
+pnpm sample
+# site beritakonoha (Berita Konoha): 8 kategori aktif, 1 penulis, 0 tag
+# gambar  beritakonoha/2026/11/uji-agent-20261122165305-cover.png (4228 byte)
+# hasil   run-2026-11-22/uji-agent-20261122165305: baru
+```
+
+9. Buka **Antrian terbit** di admin. Hasil "[Uji agent] ..." lolos semua pemeriksaan dan hanya punya satu peringatan: tag "Uji Agent" akan dibuat. Tolak hasil itu dengan alasan apa saja. Pada run berikutnya, alasan itu tercetak di awal output agent. Begitulah agent belajar dari penolakan.
+
+10. Bila agent dijalankan di PC sementara aplikasi di VPS, ada tiga hal yang berubah. Database dijangkau lewat tunnel SSH, karena Postgres hanya terbuka di `127.0.0.1`. Gambar harus sampai ke `MEDIA_DIR` VPS sebelum INSERT, lewat `rsync` atau object storage. Jadwal subuh butuh mesin yang selalu menyala. Rinciannya ada di `examples/agent-minimal/README.md`.
+
+11. Pasang Claude sebagai penulis. Agent tidak membutuhkan loop buatan sendiri. Tool runner di SDK Anthropic (`client.beta.messages.toolRunner`) menjalankan putaran model → tool → model sampai selesai. Ada tiga tool:
+   - `web_search` dan `web_fetch` adalah tool server: dijalankan di infrastruktur Anthropic, jadi agent tidak perlu kode pencarian. Lokasi pencarian diarahkan ke Indonesia.
+   - `submit_article` adalah tool milik agent dengan skema Zod yang meniru payload versi 1. Daftar kategori menjadi `enum` dari kategori aktif site, sehingga model tidak bisa memakai kategori yang tidak ada. Input yang tidak lolos skema dikembalikan ke model sebagai galat untuk diperbaiki.
+
+   Model terbaru tidak menerima paksaan memanggil tool (`tool_choice` `any`/`tool` ditolak). Karena itu prompt sistem meminta `submit_article` dipanggil tepat sekali di akhir, dan agent memeriksa bahwa tool itu benar-benar dipanggil. Prompt sistem berisi cara kerja redaksi: utamakan sumber resmi, jangan mengarang fakta, semua sumber masuk `references`, lalu tinjau draf sendiri sebelum mengirim. Pesan pengguna berisi konteks dari database: kategori, tag yang ada, judul yang sudah pernah dibuat, dan alasan penolakan. `fallbacks: "default"` membuat API mengulang permintaan di model cadangan bila model utama menolak karena classifier keamanan.
+
+@@include examples/agent-minimal/src/generate.ts ts@@
+
+12. Isi `ANTHROPIC_API_KEY` di `.env` agent. Key ini dibuat di Claude Console, dan pemakaiannya ditagih per token di akun API, terpisah dari langganan claude.ai. Lalu jalankan:
+
+```bash
+pnpm run dry-run                                  # Claude menulis, payload dicetak saja
+AGENT_TOPIC="Cara mengurus SKCK online" pnpm start
+```
+
+   Satu run memakan beberapa menit, karena model mencari, membaca beberapa halaman, menulis, lalu meninjau. Hasilnya masuk Antrian terbit dengan `agent_note` berisi sumber yang dicek dan hal yang perlu diverifikasi redaksi. Mode Claude belum menyertakan gambar dan belum memakai block `embed` untuk video. Batasan ini dan cara menekan biaya dicatat di `examples/agent-minimal/README.md`.
+

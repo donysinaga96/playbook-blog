@@ -1,0 +1,23 @@
+{
+  "name": "blog-agent-minimal",
+  "private": true,
+  "description": "Kerangka minimal AI agent konten (docs/kontrak-agent.md). Bukan bagian workspace pnpm.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/agent.ts",
+    "dry-run": "node --env-file=.env src/agent.ts --dry-run",
+    "sample": "node --env-file=.env src/agent.ts --sample"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
+    "pg": "^8.16.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.15.0"
+  }
+}

@@ -39661,3 +39661,674 @@ pnpm revenue:demo --remove   # hapus lagi
 ```
 
    Isi `REVENUE_MOCK=true` di `.env` agar tombol "Tarik data sekarang" dan "Kirim event uji" berjalan tanpa kredensial. Panduan memasang kredensial asli, env lengkap, dan langkah verifikasi manual ada di `docs/pendapatan.md`.
+
+# Kerangka AI Agent Pembuat Konten
+
+Kontrak agent sudah lengkap sejak bab alur konten AI, tetapi belum ada agent yang benar-benar login sebagai `blog_agent`. Contoh hasil AI di antrian ditulis lewat `SET ROLE`. Bab ini membuat kerangka agent minimal di `examples/agent-minimal/`. Kerangka ini belum memakai LLM, tetapi sudah menjalankan langkah yang sama dengan agent sungguhan: login, membaca pilihan yang sah, menyimpan gambar, lalu menulis ke antrian terbit. Folder ini sengaja berada di luar workspace pnpm. Agent dibangun di luar aplikasi (ADR-010), jadi folder ini cukup disalin ke repo agent Anda.
+
+1. Aktifkan login role agent di database lokal. Isi `AGENT_DB_PASSWORD` di `.env` repo, lalu jalankan skrip role tanpa mengulang seed. Role yang sudah ada diberi password dan `LOGIN`, dan haknya dipasang ulang:
+
+```bash
+SEED_DEV_DATA=false pnpm db:migrate
+```
+
+2. Buat paketnya. Node 24 menjalankan TypeScript langsung (type stripping), jadi tidak ada langkah build. Konsekuensinya, kode tidak boleh memakai sintaks yang harus diterjemahkan, seperti `enum` atau parameter property. `erasableSyntaxOnly` di tsconfig menjaga aturan itu, dan import antarfile memakai ekstensi `.ts`:
+
+`examples/agent-minimal/package.json`
+
+```json
+{
+  "name": "blog-agent-minimal",
+  "private": true,
+  "description": "Kerangka minimal AI agent konten (docs/kontrak-agent.md). Bukan bagian workspace pnpm.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/agent.ts",
+    "dry-run": "node --env-file=.env src/agent.ts --dry-run",
+    "sample": "node --env-file=.env src/agent.ts --sample"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
+    "pg": "^8.16.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.15.0"
+  }
+}
+```
+
+`examples/agent-minimal/tsconfig.json`
+
+```jsonc
+{
+  // Hanya untuk editor/tsc --noEmit. Node 24 menjalankan .ts langsung
+  // (type stripping), jadi kode tidak memakai enum atau parameter property.
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+`examples/agent-minimal/.env.example`
+
+```ini
+# Salin ke .env (tidak masuk Git). Lihat README.md.
+
+# Login sebagai role blog_agent (hak terbatas, docs/kontrak-agent.md).
+# Lokal: password = AGENT_DB_PASSWORD di .env repo.
+# Agent di PC, database di VPS: buka tunnel dulu, mis.
+#   ssh -N -L 5433:localhost:5432 user@vps
+# lalu pakai port 5433 di bawah.
+AGENT_DATABASE_URL=postgres://blog_agent:ganti_password_agent@localhost:5432/blog_dev
+
+# Site tujuan (sites.code).
+AGENT_SITE_CODE=beritakonoha
+
+# Folder storage gambar = MEDIA_DIR aplikasi (path absolut).
+# Agent di PC + VPS: simpan di folder lokal lalu rsync ke MEDIA_DIR VPS
+# sebelum INSERT, atau ganti src/storage.ts dengan object storage.
+AGENT_MEDIA_DIR=/home/user/playbook/.data/media
+
+# Claude API (pnpm start). Kunci dari https://platform.claude.com (Claude
+# Console); biaya per token, terpisah dari langganan claude.ai Pro/Max.
+# Tidak dibutuhkan untuk `pnpm sample`.
+ANTHROPIC_API_KEY=
+# Opsional: model; bawaan claude-opus-5-5.
+# AGENT_MODEL=claude-opus-5-5
+# Opsional: topik atau arahan redaksi; kosong = model memilih topik sendiri.
+# AGENT_TOPIC=Cara mengurus SKCK online
+
+# Opsional: slug kategori; kosong = model memilih (mode --sample: kategori aktif pertama).
+# AGENT_CATEGORY=tata-cara
+# Opsional: ID run; bawaan run-<tanggal UTC>. external_id = <run>/<slug>.
+# AGENT_RUN_ID=run-2026-11-23-subuh
+# Opsional, mode --sample: gambar sampul (JPEG/PNG/WebP); kosong = PNG polos buatan agent.
+# AGENT_COVER_IMAGE=/path/ke/gambar.webp
+```
+
+3. Tulis akses database. Role `blog_agent` hanya boleh membaca kolom tertentu, jadi setiap `SELECT` menyebut kolomnya satu per satu (`SELECT *` ditolak). Agent membaca kategori dan penulis yang `ACTIVE`, karena hanya keduanya yang lolos approval. Agent juga membaca alasan penolakan terakhir sebagai bahan belajar. Penulisan memakai `ON CONFLICT ... WHERE status = 'READY_TO_PUBLISH'` dari kontrak. `RETURNING (xmax = 0)` membedakan baris baru dari baris yang diperbarui, dan nol baris berarti hasil itu sudah diputuskan admin:
+
+`examples/agent-minimal/src/db.ts`
+
+```ts
+// Akses database sebagai role blog_agent. Hanya kolom yang diizinkan
+// (packages/db/scripts/agent_role.sql) yang boleh di-SELECT: `SELECT *` ditolak.
+import type pg from 'pg'
+
+export interface SiteContext {
+  site: { id: string; code: string; name: string }
+  categories: { slug: string; name: string; parentSlug: string | null }[]
+  authors: { slug: string; name: string }[]
+  tags: string[]
+  /** Alasan penolakan terbaru: bahan belajar untuk run berikutnya. */
+  rejections: { externalId: string; reviewNote: string }[]
+  /** Judul hasil AI terbaru (semua status): agar topik tidak diulang. */
+  recentTitles: string[]
+}
+
+export async function loadContext(db: pg.Client, siteCode: string): Promise<SiteContext> {
+  const sites = await db.query<{ id: string; code: string; name: string; status: string }>(
+    'SELECT id, code, name, status FROM sites WHERE code = $1', [siteCode])
+  const site = sites.rows[0]
+  if (!site) throw new Error(`site "${siteCode}" tidak ditemukan`)
+
+  // Hanya kategori dan penulis ACTIVE yang lolos pemeriksaan approval.
+  const categories = await db.query<{ slug: string; name: string; parent_slug: string | null }>(
+    `SELECT c.slug, c.name, p.slug AS parent_slug
+       FROM categories c LEFT JOIN categories p ON p.id = c.parent_id
+      WHERE c.site_id = $1 AND c.status = 'ACTIVE'
+      ORDER BY c.name`, [site.id])
+  const authors = await db.query<{ slug: string; name: string }>(
+    `SELECT slug, name FROM authors WHERE site_id = $1 AND status = 'ACTIVE' ORDER BY name`, [site.id])
+  const tags = await db.query<{ name: string }>(
+    'SELECT name FROM tags WHERE site_id = $1 ORDER BY name', [site.id])
+  const rejections = await db.query<{ external_id: string; review_note: string }>(
+    `SELECT external_id, review_note FROM generated_articles
+      WHERE site_id = $1 AND status = 'ARCHIVED'
+      ORDER BY reviewed_at DESC LIMIT 10`, [site.id])
+  const recent = await db.query<{ title: string | null }>(
+    `SELECT payload->>'title' AS title FROM generated_articles
+      WHERE site_id = $1 ORDER BY generated_at DESC LIMIT 30`, [site.id])
+
+  return {
+    site: { id: site.id, code: site.code, name: site.name },
+    categories: categories.rows.map((r) => ({ slug: r.slug, name: r.name, parentSlug: r.parent_slug })),
+    authors: authors.rows,
+    tags: tags.rows.map((r) => r.name),
+    rejections: rejections.rows.map((r) => ({ externalId: r.external_id, reviewNote: r.review_note })),
+    recentTitles: recent.rows.flatMap((r) => (r.title ? [r.title] : [])),
+  }
+}
+
+export type UpsertResult = 'inserted' | 'updated' | 'already-decided'
+
+/**
+ * Tulis satu hasil (contoh SQL di docs/kontrak-agent.md). external_id yang
+ * sama memperbarui baris yang masih READY_TO_PUBLISH; baris yang sudah
+ * diputuskan tidak berubah (0 baris).
+ */
+export async function upsertGenerated(
+  db: pg.Client,
+  input: { siteId: string; externalId: string; payload: unknown; agentNote: string | null },
+): Promise<UpsertResult> {
+  const result = await db.query<{ inserted: boolean }>(
+    `INSERT INTO generated_articles (site_id, external_id, payload, agent_note)
+     VALUES ($1, $2, $3::jsonb, $4)
+     ON CONFLICT (site_id, external_id) DO UPDATE
+        SET payload = EXCLUDED.payload,
+            agent_note = EXCLUDED.agent_note,
+            generated_at = now()
+      WHERE generated_articles.status = 'READY_TO_PUBLISH'
+     RETURNING (xmax = 0) AS inserted`,
+    [input.siteId, input.externalId, JSON.stringify(input.payload), input.agentNote])
+  const row = result.rows[0]
+  if (!row) return 'already-decided'
+  return row.inserted ? 'inserted' : 'updated'
+}
+```
+
+4. Tulis penyimpanan gambar. Untuk sekarang targetnya folder yang sama dengan `MEDIA_DIR` aplikasi. Penulisan lewat file sementara lalu `rename`, jadi aplikasi tidak pernah membaca file yang setengah jadi. Key diperiksa di sisi agent dengan aturan yang lebih ketat dari aplikasi: harus diawali kode site, huruf kecil, dan tanpa `..`. Saat provider object storage dipilih, cukup buat implementasi `ImageStorage` yang lain:
+
+`examples/agent-minimal/src/storage.ts`
+
+```ts
+// Penyimpanan gambar. Sekarang: folder lokal yang sama dengan MEDIA_DIR
+// aplikasi (file di <dir>/<storageKey>). Setelah provider object storage
+// dipilih, buat implementasi lain dengan antarmuka yang sama.
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
+
+export interface ImageStorage {
+  put(storageKey: string, bytes: Uint8Array): Promise<void>
+}
+
+// Aturan key sama dengan aplikasi: huruf kecil, angka, titik, _ dan -,
+// dipisah "/", segmen pertama = kode site, tanpa "." / "..".
+const SEGMENT = /^[a-z0-9][a-z0-9._-]*$/
+
+export function assertStorageKey(storageKey: string, siteCode: string): void {
+  const segments = storageKey.split('/')
+  const valid = segments.length >= 2 && segments.every((s) => SEGMENT.test(s) && s !== '.' && s !== '..')
+  if (!valid || segments[0] !== siteCode) {
+    throw new Error(`storageKey tidak valid (harus "${siteCode}/...", huruf kecil): ${storageKey}`)
+  }
+}
+
+export function localDirStorage(directory: string): ImageStorage {
+  const base = resolve(directory)
+  return {
+    async put(storageKey, bytes) {
+      const file = join(base, ...storageKey.split('/'))
+      if (!file.startsWith(base + sep)) throw new Error(`storageKey keluar dari folder: ${storageKey}`)
+      await mkdir(dirname(file), { recursive: true })
+      // Tulis ke file sementara lalu rename: aplikasi tidak pernah membaca file setengah jadi.
+      const temp = `${file}.${randomUUID()}.tmp`
+      try {
+        await writeFile(temp, bytes, { flag: 'wx' })
+        await rename(temp, file)
+      } catch (error) {
+        await rm(temp, { force: true })
+        throw error
+      }
+    },
+  }
+}
+```
+
+5. Supaya alur gambar bisa diuji tanpa model gambar, buat PNG polos bergradasi dengan `zlib` bawaan Node (`deflateSync`, `crc32`). Hasilnya lolos pemeriksaan tipe gambar saat approval:
+
+`examples/agent-minimal/src/placeholder-png.ts`
+
+```ts
+// PNG polos bergradasi, tanpa dependency. Hanya agar alur gambar bisa diuji
+// tanpa model gambar atau file contoh; ganti dengan gambar sungguhan.
+import { crc32, deflateSync } from 'node:zlib'
+
+export function placeholderPng(width = 1200, height = 630, from = [16, 42, 84], to = [74, 120, 180]): Uint8Array {
+  const row = 1 + width * 3
+  const raw = Buffer.alloc(row * height)
+  for (let y = 0; y < height; y++) {
+    raw[y * row] = 0 // filter: none
+    const t = y / (height - 1)
+    const rgb = from.map((f, i) => Math.round(f + (to[i]! - f) * t))
+    for (let x = 0; x < width; x++) raw.set(rgb, y * row + 1 + x * 3)
+  }
+
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8 // bit depth
+  header[9] = 2 // RGB
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+function chunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(data.length)
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(body))
+  return Buffer.concat([length, body, crc])
+}
+```
+
+6. Tulis tipe hasil yang dipakai bersama oleh kedua pembuat konten (contoh dan Claude, langkah 11):
+
+`examples/agent-minimal/src/article.ts`
+
+```ts
+// Bentuk hasil yang dikembalikan pembuat konten (Claude atau contoh) ke agent.ts.
+
+export interface GeneratedImage {
+  storageKey: string
+  bytes: Uint8Array
+}
+
+export interface GeneratedArticle {
+  slug: string
+  /** Payload v1 sesuai docs/kontrak-agent.md. */
+  payload: Record<string, unknown>
+  agentNote: string
+  /** Disimpan ke storage SEBELUM payload ditulis ke database. */
+  images: GeneratedImage[]
+}
+
+export interface GenerateOptions {
+  /** Slug kategori; kosong = model memilih dari kategori aktif. */
+  category?: string
+  /** Topik atau arahan redaksi; kosong = model memilih topik sendiri. */
+  topic?: string
+  coverImage?: string
+  now: Date
+}
+```
+
+   Lalu tulis pembuat artikel contoh tanpa LLM (mode `--sample`). Fungsi ini menyusun payload versi 1 dengan body versi 2 yang memakai semua bagian kontrak: kategori dari konteks, penulis aktif pertama, gambar sampul dengan kredit, block gambar dan tautan, referensi, dan SEO. Slug memuat waktu, jadi setiap run menghasilkan artikel baru:
+
+`examples/agent-minimal/src/sample.ts`
+
+```ts
+// Artikel contoh TANPA LLM (`--sample`): menyusun payload v1 yang lolos skema
+// (docs/kontrak-agent.md), lengkap dengan gambar sampul, agar alur agent ->
+// antrian -> approve bisa diuji tanpa API key dan tanpa biaya.
+import { readFile } from 'node:fs/promises'
+import { extname } from 'node:path'
+import type { GenerateOptions, GeneratedArticle } from './article.ts'
+import type { SiteContext } from './db.ts'
+import { placeholderPng } from './placeholder-png.ts'
+
+const IMAGE_EXT: Record<string, string> = { '.jpg': 'jpg', '.jpeg': 'jpg', '.png': 'png', '.webp': 'webp' }
+
+export async function generateSample(ctx: SiteContext, options: GenerateOptions): Promise<GeneratedArticle> {
+  const category = pickCategory(ctx, options.category)
+  const stamp = options.now.toISOString().slice(0, 16).replace('T', ' ')
+  const slug = `uji-agent-${options.now.toISOString().slice(0, 19).replace(/[^0-9]/g, '')}`
+
+  const cover = await loadCover(options.coverImage)
+  const yyyy = String(options.now.getUTCFullYear())
+  const mm = String(options.now.getUTCMonth() + 1).padStart(2, '0')
+  const coverKey = `${ctx.site.code}/${yyyy}/${mm}/${slug}-cover.${cover.ext}`
+
+  const payload = {
+    version: 1,
+    title: `[Uji agent] Artikel percobaan ${stamp} UTC`,
+    slug,
+    excerpt: 'Artikel percobaan dari kerangka agent minimal. Tolak setelah alur dicek.',
+    category: category.slug,
+    ...(ctx.authors[0] ? { author: ctx.authors[0].slug } : {}),
+    tags: ['Uji Agent'],
+    cover: 'cover',
+    images: [
+      {
+        key: 'cover',
+        storageKey: coverKey,
+        altText: 'Gambar sampul percobaan bergradasi biru',
+        credit: 'Gambar: dibuat oleh agent',
+      },
+    ],
+    body: {
+      version: 2,
+      blocks: [
+        { type: 'paragraph', text: `Artikel ini ditulis oleh kerangka agent minimal untuk kategori ${category.name}.` },
+        { type: 'heading', level: 2, text: 'Yang diuji' },
+        {
+          type: 'list',
+          style: 'bullet',
+          items: ['Login sebagai blog_agent', 'Membaca kategori aktif', 'Menyimpan gambar ke storage', 'Menulis hasil ke antrian terbit'],
+        },
+        { type: 'image', image: 'cover', caption: 'Gambar sampul percobaan' },
+        { type: 'link', url: 'https://example.com/', label: 'Contoh tautan', description: 'Block tautan body versi 2' },
+      ],
+    },
+    references: [
+      { title: 'Example Domain', url: 'https://example.com/', publisher: 'IANA' },
+    ],
+    seo: { description: 'Artikel percobaan kerangka agent minimal.' },
+  }
+
+  const note = [
+    'Mode contoh (--sample): isi tanpa LLM.',
+    ctx.rejections.length ? `${ctx.rejections.length} penolakan terakhir dibaca.` : 'Belum ada penolakan.',
+  ].join(' ')
+
+  return { slug, payload, agentNote: note, images: [{ storageKey: coverKey, bytes: cover.bytes }] }
+}
+
+function pickCategory(ctx: SiteContext, wanted: string | undefined) {
+  if (wanted) {
+    const found = ctx.categories.find((c) => c.slug === wanted)
+    if (!found) throw new Error(`kategori "${wanted}" tidak aktif di ${ctx.site.code}. Pilihan: ${ctx.categories.map((c) => c.slug).join(', ')}`)
+    return found
+  }
+  const first = ctx.categories[0]
+  if (!first) throw new Error(`site ${ctx.site.code} belum punya kategori aktif`)
+  return first
+}
+
+async function loadCover(path: string | undefined): Promise<{ bytes: Uint8Array; ext: string }> {
+  if (!path) return { bytes: placeholderPng(), ext: 'png' }
+  const ext = IMAGE_EXT[extname(path).toLowerCase()]
+  if (!ext) throw new Error(`gambar harus JPEG/PNG/WebP: ${path}`)
+  const bytes = new Uint8Array(await readFile(path))
+  if (bytes.length > 10 * 1024 * 1024) throw new Error(`gambar lebih dari 10 MB: ${path}`)
+  return { bytes, ext }
+}
+```
+
+7. Rangkai alurnya. Urutannya penting: gambar disimpan **sebelum** payload ditulis, karena admin bisa membuka antrian kapan saja dan approval memeriksa bahwa file sudah ada. `external_id` berbentuk `<run>/<slug>`, sehingga menjalankan ulang run yang sama memperbarui hasilnya dan tidak menggandakannya. `--dry-run` tidak menulis apa pun dan hanya mencetak payload, sedangkan `--sample` memakai pembuat contoh. File ini sudah memuat pilihan mode Claude dari langkah 11:
+
+`examples/agent-minimal/src/agent.ts`
+
+```ts
+// Agent minimal: koneksi -> baca konteks site -> buat artikel -> simpan
+// gambar -> tulis hasil ke generated_articles (antrian terbit).
+//   node --env-file=.env src/agent.ts [--sample] [--dry-run]
+// --sample : artikel contoh tanpa LLM (tanpa API key, tanpa biaya).
+// --dry-run: tidak menulis apa pun; cetak payload saja. Tanpa --sample tetap
+//            memanggil Claude (berbayar).
+import pg from 'pg'
+import { loadContext, upsertGenerated } from './db.ts'
+import { generateArticle } from './generate.ts'
+import { generateSample } from './sample.ts'
+import { assertStorageKey, localDirStorage } from './storage.ts'
+
+function env(name: string, required = true): string | undefined {
+  const value = process.env[name]?.trim()
+  if (required && !value) throw new Error(`${name} belum diisi (lihat .env.example)`)
+  return value || undefined
+}
+
+async function main() {
+  const dryRun = process.argv.includes('--dry-run')
+  const sample = process.argv.includes('--sample')
+  if (!sample) env('ANTHROPIC_API_KEY')
+  const now = new Date()
+  const siteCode = env('AGENT_SITE_CODE')!
+  const runId = env('AGENT_RUN_ID', false) ?? `run-${now.toISOString().slice(0, 10)}`
+  const storage = localDirStorage(env('AGENT_MEDIA_DIR')!)
+
+  const db = new pg.Client({ connectionString: env('AGENT_DATABASE_URL'), application_name: 'blog-agent-minimal' })
+  await db.connect()
+  try {
+    const ctx = await loadContext(db, siteCode)
+    console.log(`site ${ctx.site.code} (${ctx.site.name}): ${ctx.categories.length} kategori aktif, ${ctx.authors.length} penulis, ${ctx.tags.length} tag`)
+    for (const r of ctx.rejections) console.log(`  ditolak ${r.externalId}: ${r.reviewNote}`)
+
+    const options = {
+      category: env('AGENT_CATEGORY', false),
+      topic: env('AGENT_TOPIC', false),
+      coverImage: env('AGENT_COVER_IMAGE', false),
+      now,
+    }
+    if (!sample) console.log('menulis dengan Claude (riset + tulis + tinjau), biasanya beberapa menit...')
+    const article = sample ? await generateSample(ctx, options) : await generateArticle(ctx, options)
+    const externalId = `${runId}/${article.slug}`
+    for (const image of article.images) assertStorageKey(image.storageKey, ctx.site.code)
+
+    if (dryRun) {
+      console.log(`[dry-run] external_id ${externalId}`)
+      console.log(JSON.stringify(article.payload, null, 2))
+      return
+    }
+
+    // Urutan penting: file gambar harus sudah ada sebelum admin meng-approve.
+    for (const image of article.images) {
+      await storage.put(image.storageKey, image.bytes)
+      console.log(`gambar  ${image.storageKey} (${image.bytes.length} byte)`)
+    }
+
+    const result = await upsertGenerated(db, {
+      siteId: ctx.site.id,
+      externalId,
+      payload: article.payload,
+      agentNote: article.agentNote,
+    })
+    const label = { inserted: 'baru', updated: 'diperbarui', 'already-decided': 'tidak diubah (sudah diputuskan admin)' }[result]
+    console.log(`hasil   ${externalId}: ${label}`)
+    console.log('Buka Antrian terbit di admin untuk meninjau.')
+  } finally {
+    await db.end()
+  }
+}
+
+main().catch((error: unknown) => {
+  console.error(`agent gagal: ${error instanceof Error ? error.message : String(error)}`)
+  process.exitCode = 1
+})
+```
+
+8. Pasang dependency dan jalankan:
+
+```bash
+cd examples/agent-minimal
+cp .env.example .env               # password agent, AGENT_MEDIA_DIR = MEDIA_DIR aplikasi
+pnpm install --ignore-workspace    # pg, SDK Anthropic, zod; bukan paket workspace
+pnpm sample -- --dry-run
+pnpm sample
+# site beritakonoha (Berita Konoha): 8 kategori aktif, 1 penulis, 0 tag
+# gambar  beritakonoha/2026/11/uji-agent-20261122165305-cover.png (4228 byte)
+# hasil   run-2026-11-22/uji-agent-20261122165305: baru
+```
+
+9. Buka **Antrian terbit** di admin. Hasil "[Uji agent] ..." lolos semua pemeriksaan dan hanya punya satu peringatan: tag "Uji Agent" akan dibuat. Tolak hasil itu dengan alasan apa saja. Pada run berikutnya, alasan itu tercetak di awal output agent. Begitulah agent belajar dari penolakan.
+
+10. Bila agent dijalankan di PC sementara aplikasi di VPS, ada tiga hal yang berubah. Database dijangkau lewat tunnel SSH, karena Postgres hanya terbuka di `127.0.0.1`. Gambar harus sampai ke `MEDIA_DIR` VPS sebelum INSERT, lewat `rsync` atau object storage. Jadwal subuh butuh mesin yang selalu menyala. Rinciannya ada di `examples/agent-minimal/README.md`.
+
+11. Pasang Claude sebagai penulis. Agent tidak membutuhkan loop buatan sendiri. Tool runner di SDK Anthropic (`client.beta.messages.toolRunner`) menjalankan putaran model → tool → model sampai selesai. Ada tiga tool:
+   - `web_search` dan `web_fetch` adalah tool server: dijalankan di infrastruktur Anthropic, jadi agent tidak perlu kode pencarian. Lokasi pencarian diarahkan ke Indonesia.
+   - `submit_article` adalah tool milik agent dengan skema Zod yang meniru payload versi 1. Daftar kategori menjadi `enum` dari kategori aktif site, sehingga model tidak bisa memakai kategori yang tidak ada. Input yang tidak lolos skema dikembalikan ke model sebagai galat untuk diperbaiki.
+
+   Model terbaru tidak menerima paksaan memanggil tool (`tool_choice` `any`/`tool` ditolak). Karena itu prompt sistem meminta `submit_article` dipanggil tepat sekali di akhir, dan agent memeriksa bahwa tool itu benar-benar dipanggil. Prompt sistem berisi cara kerja redaksi: utamakan sumber resmi, jangan mengarang fakta, semua sumber masuk `references`, lalu tinjau draf sendiri sebelum mengirim. Pesan pengguna berisi konteks dari database: kategori, tag yang ada, judul yang sudah pernah dibuat, dan alasan penolakan. `fallbacks: "default"` membuat API mengulang permintaan di model cadangan bila model utama menolak karena classifier keamanan.
+
+`examples/agent-minimal/src/generate.ts`
+
+```ts
+// Pembuat konten dengan Claude API: riset sumber (web search + web fetch),
+// tulis artikel berbahasa Indonesia, tinjau sendiri, lalu kirim lewat tool
+// submit_article. Skema tool di bawah mengikuti payload v1
+// (docs/kontrak-agent.md); pemeriksaan lengkap tetap terjadi saat approval.
+//
+// Kredensial: ANTHROPIC_API_KEY (dibaca otomatis oleh SDK). Biaya dihitung
+// per token di akun API (Claude Console), terpisah dari langganan claude.ai.
+import Anthropic from '@anthropic-ai/sdk'
+import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod'
+import { z } from 'zod'
+import type { GenerateOptions, GeneratedArticle } from './article.ts'
+import type { SiteContext } from './db.ts'
+
+const MODEL = process.env['AGENT_MODEL']?.trim() || 'claude-opus-5-5'
+
+// Aturan yang sama dengan skema payload di aplikasi (packages/core).
+const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/
+const HTTP_URL = /^https?:\/\/\S+$/
+const LINK_URL = /^(https?:\/\/\S+|mailto:[^\s@]+@[^\s@]+)$/
+const text = (max: number) => z.string().trim().min(1).max(max)
+
+const blockSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('paragraph'), text: text(20_000).describe('Teks polos, bukan HTML atau Markdown') }),
+  z.strictObject({ type: z.literal('heading'), level: z.union([z.literal(2), z.literal(3)]), text: text(1_000) }),
+  z.strictObject({ type: z.literal('quote'), text: text(20_000), cite: text(1_000).optional().describe('Siapa yang dikutip') }),
+  z.strictObject({ type: z.literal('list'), style: z.enum(['bullet', 'numbered']), items: z.array(text(1_000)).min(1).max(50) }),
+  z.strictObject({
+    type: z.literal('link'),
+    url: z.string().regex(LINK_URL, 'http(s) atau mailto, huruf kecil, tanpa spasi').max(2_048),
+    label: text(200),
+    description: text(500).optional(),
+  }).describe('Tautan ke layanan resmi, mis. portal pendaftaran'),
+])
+
+function articleSchema(categorySlugs: [string, ...string[]]) {
+  return z.strictObject({
+    title: text(300),
+    slug: z.string().max(120).regex(SLUG, 'huruf kecil, angka, tanda hubung').describe('Dari judul, ringkas'),
+    excerpt: text(1_000).describe('Ringkasan 1-2 kalimat'),
+    category: z.enum(categorySlugs),
+    tags: z.array(text(60)).max(6).describe('Pakai tag yang sudah ada bila cocok'),
+    blocks: z.array(blockSchema).min(3).max(200),
+    references: z.array(z.strictObject({
+      title: text(300),
+      url: z.string().regex(HTTP_URL, 'http(s), huruf kecil, tanpa spasi').max(2_048),
+      publisher: text(200).optional(),
+      kind: z.enum(['ARTICLE', 'VIDEO', 'IMAGE', 'OTHER']),
+    })).min(1).max(100).describe('SEMUA sumber yang dipakai untuk menulis isi'),
+    seoDescription: text(320),
+    agentNote: text(2_000).describe('Untuk redaksi: sumber yang dicek, klaim yang masih diragukan, hal yang perlu diverifikasi manusia'),
+  })
+}
+
+type Article = z.infer<ReturnType<typeof articleSchema>>
+
+const SYSTEM = `Anda penulis dan editor untuk sebuah situs berita/panduan berbahasa Indonesia.
+Pembaca Anda masyarakat umum: tulis dalam bahasa Indonesia baku yang jelas dan mudah diikuti.
+
+Cara kerja:
+1. Riset dengan web_search dan web_fetch. Utamakan sumber resmi (situs pemerintah .go.id, lembaga terkait) dan media yang kredibel. Baca halamannya, jangan hanya cuplikan hasil pencarian.
+2. Tulis hanya fakta yang ada di sumber. Jangan mengarang angka, tanggal, nama, kutipan, atau prosedur. Bila sumber berbeda pendapat atau informasinya mungkin sudah usang, katakan di artikel dan catat di agentNote.
+3. Struktur: paragraf pembuka yang langsung menjawab inti topik, lalu bagian-bagian dengan heading level 2 (level 3 untuk subbagian). Gunakan list untuk langkah atau syarat. Panjang wajar 600-1.200 kata. Judul artikel tidak diulang sebagai heading.
+4. Setiap sumber yang Anda pakai masuk ke references, sesuai urutan kemunculannya. Untuk layanan resmi yang perlu dibuka pembaca (mis. portal pendaftaran), tambahkan block link.
+5. Sebelum mengirim, tinjau draf Anda sendiri: apakah setiap klaim didukung sumber, apakah kategori tepat, apakah ada informasi yang bisa menyesatkan pembaca. Perbaiki dulu bila perlu.
+6. Kirim hasil akhir dengan memanggil submit_article tepat sekali. Bila tool menolak input, perbaiki sesuai pesan dan kirim lagi.`
+
+export async function generateArticle(ctx: SiteContext, options: GenerateOptions): Promise<GeneratedArticle> {
+  const categories = options.category
+    ? ctx.categories.filter((c) => c.slug === options.category)
+    : ctx.categories
+  const slugs = categories.map((c) => c.slug)
+  if (!slugs.length) {
+    throw new Error(options.category
+      ? `kategori "${options.category}" tidak aktif di ${ctx.site.code}`
+      : `site ${ctx.site.code} belum punya kategori aktif`)
+  }
+  const schema = articleSchema(slugs as [string, ...string[]])
+
+  const result: { article?: Article } = {}
+  const submitArticle = betaZodTool({
+    name: 'submit_article',
+    description: 'Kirim artikel final yang sudah ditinjau. Panggil tepat sekali, di akhir.',
+    inputSchema: schema,
+    run: async (input) => {
+      result.article = input
+      return 'Diterima. Pekerjaan selesai; tidak perlu memanggil tool lagi.'
+    },
+  })
+
+  const client = new Anthropic()
+  const runner = client.beta.messages.toolRunner({
+    model: MODEL,
+    max_tokens: 16_000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'high' },
+    // Bila model utama menolak (classifier keamanan), API mengulang di model
+    // cadangan dalam panggilan yang sama.
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    system: SYSTEM,
+    tools: [
+      { type: 'web_search_20260209', name: 'web_search', max_uses: 8, user_location: { type: 'approximate', country: 'ID', timezone: 'Asia/Jakarta' } },
+      { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 10 },
+      submitArticle,
+    ],
+    messages: [{ role: 'user', content: brief(ctx, categories, options) }],
+    max_iterations: 8,
+  })
+
+  const final = await runner.runUntilDone()
+  if (final.stop_reason === 'refusal') {
+    throw new Error(`model menolak menulis topik ini (${final.stop_details?.category ?? 'tanpa kategori'})`)
+  }
+  const article = result.article
+  if (!article) throw new Error(`model selesai tanpa memanggil submit_article (stop_reason ${final.stop_reason})`)
+
+  const payload = {
+    version: 1,
+    title: article.title,
+    slug: article.slug,
+    excerpt: article.excerpt,
+    category: article.category,
+    ...(ctx.authors[0] ? { author: ctx.authors[0].slug } : {}),
+    tags: article.tags,
+    body: { version: 2, blocks: article.blocks },
+    references: article.references,
+    seo: { description: article.seoDescription },
+  }
+  return {
+    slug: article.slug,
+    payload,
+    agentNote: `${article.agentNote}\n\nModel: ${final.model}.`,
+    images: [],
+  }
+}
+
+function brief(ctx: SiteContext, categories: SiteContext['categories'], options: GenerateOptions): string {
+  const lines = [
+    `Situs: ${ctx.site.name}. Tanggal hari ini: ${options.now.toISOString().slice(0, 10)}.`,
+    options.topic
+      ? `Topik dari redaksi: ${options.topic}`
+      : 'Pilih sendiri satu topik yang bermanfaat dan masih relevan bagi pembaca situs ini.',
+    '',
+    'Kategori yang boleh dipakai (slug: nama):',
+    ...categories.map((c) => `- ${c.slug}: ${c.name}${c.parentSlug ? ` (sub dari ${c.parentSlug})` : ''}`),
+  ]
+  if (ctx.tags.length) lines.push('', `Tag yang sudah ada: ${ctx.tags.join(', ')}`)
+  if (ctx.recentTitles.length) {
+    lines.push('', 'Judul yang sudah pernah dibuat (jangan diulang):', ...ctx.recentTitles.map((t) => `- ${t}`))
+  }
+  if (ctx.rejections.length) {
+    lines.push('', 'Alasan redaksi menolak hasil sebelumnya (hindari kesalahan yang sama):',
+      ...ctx.rejections.map((r) => `- ${r.reviewNote}`))
+  }
+  return lines.join('\n')
+}
+```
+
+12. Isi `ANTHROPIC_API_KEY` di `.env` agent. Key ini dibuat di Claude Console, dan pemakaiannya ditagih per token di akun API, terpisah dari langganan claude.ai. Lalu jalankan:
+
+```bash
+pnpm run dry-run                                  # Claude menulis, payload dicetak saja
+AGENT_TOPIC="Cara mengurus SKCK online" pnpm start
+```
+
+   Satu run memakan beberapa menit, karena model mencari, membaca beberapa halaman, menulis, lalu meninjau. Hasilnya masuk Antrian terbit dengan `agent_note` berisi sumber yang dicek dan hal yang perlu diverifikasi redaksi. Mode Claude belum menyertakan gambar dan belum memakai block `embed` untuk video. Batasan ini dan cara menekan biaya dicatat di `examples/agent-minimal/README.md`.
+
