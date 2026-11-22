@@ -1587,6 +1587,8 @@ routeRules: {
 
 15. Tulis halaman admin minimal. Tampilan lengkap dibuat di bab "Membangun Layar Admin"; file di bawah sudah versi akhirnya (login bergaya admin, `/admin` mengarahkan ke site pertama, `adminApi` dan pembaca galat field di composable). Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
 
+   Label status hasil AI dan `useQueueCount`/`refreshQueueCount` ditambahkan di bab "Membangun Antrian Terbit".
+
 @@include apps/web/app/composables/useAdmin.ts ts@@
 
 @@include apps/web/app/pages/admin/login.vue vue@@
@@ -1671,6 +1673,8 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 4. Tulis pembungkus route API per site. Satu tempat untuk sesi, akses site, dan pemetaan galat:
 
+   `toHttpError` dipisahkan untuk route lintas site di bab "Membangun Antrian Terbit".
+
 @@include apps/web/server/utils/admin-api.ts ts@@
 
 5. Tulis route di `server/api/admin/sites/[siteId]/`. Setiap route hanya meneruskan body ke repository editor, karena validasi ada di core:
@@ -1693,9 +1697,13 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 8. Tulis CSS admin di bawah `.adm`, agar tidak pernah bertabrakan dengan CSS template (`.tpl`) di aplikasi yang sama. Perhatikan dua hal: selector judul editor diperkuat (`.adm input[type='text'].adm-editor__title`) karena gaya umum `.adm input[type='text']` lebih spesifik, dan textarea memakai `field-sizing: content` agar tingginya mengikuti isi:
 
+   Gaya status hasil AI, penghitung antrian, dan daftar pemeriksaan ditambahkan di bab "Membangun Antrian Terbit".
+
 @@include apps/web/app/assets/admin.css css@@
 
 9. Pakai layout Nuxt untuk kerangka admin. `app.vue` menjadi `<NuxtLayout><NuxtPage /></NuxtLayout>`; halaman publik tidak memakai layout, jadi tetap dirender apa adanya. Logout hanya pindah ke halaman login bila server benar-benar menghapus sesi, agar komputer bersama tidak tertinggal dalam keadaan login. Matikan `vue/multi-word-component-names` juga untuk `app/layouts/**`:
+
+   Menu "Antrian terbit" dengan jumlah yang menunggu ditambahkan di bab "Membangun Antrian Terbit".
 
 @@include apps/web/app/layouts/admin.vue vue@@
 
@@ -1821,6 +1829,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 @@include apps/web/server/api/admin/sites/[siteId]/theme/preview.post.ts ts@@
 
 6. Render pratinjau dengan pembangun halaman publik yang sama. Galat akses dijawab teks polos dengan status yang benar: di build produksi, galat yang dilempar di path `/admin/**` dirender sebagai halaman SPA berstatus 404 (gate admin menangkap ini; di dev statusnya benar). Media di pratinjau lewat route admin sendiri, karena `/media` hanya melayani domain site:
+
+   Mode pratinjau hasil AI (`?generated=<id>`) ditambahkan di bab "Membangun Antrian Terbit".
 
 @@include apps/web/server/utils/theme-preview.ts ts@@
 
@@ -1998,3 +2008,47 @@ level: z.union([z.literal(2), z.literal(3), z.literal(4)], { error: 'level headi
 pnpm check
 #  Tests  571 passed | 1 skipped
 ```
+
+# Membangun Antrian Terbit
+
+Aturan keputusan sudah ada di core. Bab ini memberinya layar: daftar hasil AI dari semua site, halaman detail dengan pratinjau dan pemeriksaan, keputusan per hasil atau beberapa sekaligus, serta form referensi di editor artikel.
+
+1. Pratinjau memakai pembangun halaman publik yang sama. `createPageBuilder` hanya bergantung pada repository `content` dan `menus`, jadi pratinjau tidak butuh jalur render sendiri: bungkus `content` agar artikel sintetis dari hasil AI "terbit" di slug-nya dan media sementaranya bisa dibaca. Halaman lalu dirender dengan template dan theme aktif site itu, persis seperti nanti tampil, tanpa menulis apa pun ke database:
+
+@@include packages/core/src/generated/preview-content.ts ts@@
+
+   Artikel sintetisnya dibuat `generated.preview(siteId, id, storage)` di repository hasil AI (bab sebelumnya): kategori, induk kategori, dan penulis dibaca dari database; tag dan gambar yang belum ada diberi id sementara. Hasil dengan galat tidak punya pratinjau.
+
+2. Tambahkan mode `?generated=<id>` di pratinjau. `preparePreview` kini memilih salah satu dari dua pembangun: draf tema (`buildThemeDraft`, perilaku lama) atau hasil AI (`buildGenerated`), yang menghitung URL artikel dengan `createUrlBuilder` lalu membangun halaman itu. Gambar baru dilayani `/admin/preview-media`, yang memang membaca file langsung dari storage dengan pemeriksaan sesi dan kode site.
+
+3. Tulis API:
+   - `GET /api/admin/generated?status=&siteId=&page=`: antrian dari semua site milik user, ditambah jumlah yang menunggu per site.
+   - `GET /api/admin/sites/:siteId/generated/:id`: hasil pemeriksaan dan alamat pratinjau.
+   - `POST .../approve` dan `POST .../reject`: keputusan, selalu dengan `expectedUpdatedAt`.
+   - `POST /api/admin/generated/approve-bulk`: terbitkan sekarang beberapa hasil. Setiap item satu transaksi sendiri, jadi hasil yang punya galat atau sudah diperbarui agent dilaporkan tanpa membatalkan yang lain.
+
+   Route lintas site tidak memakai `defineAdminSiteHandler`, jadi pemetaan galat editor ke HTTP dipisah menjadi `toHttpError`. Pemeriksaan Origin untuk POST tetap dijalankan middleware `admin-guard` untuk semua `/api/admin/*`.
+
+@@include apps/web/server/api/admin/generated/index.get.ts ts@@
+
+@@include apps/web/server/api/admin/generated/approve-bulk.post.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/generated/[id].get.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/generated/[id]/approve.post.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/generated/[id]/reject.post.ts ts@@
+
+4. Tulis halaman antrian. Filter site dan status, kotak centang untuk menerbitkan beberapa sekaligus, dan laporan per item bila ada yang gagal. Tautan setiap baris membuka detail di site hasil itu (`/admin/<kode-site>/queue/<id>`), jadi pemilih site di rail ikut berpindah:
+
+@@include apps/web/app/pages/admin/[site]/queue/index.vue vue@@
+
+5. Tulis halaman detail. Galat dan peringatan tampil di atas, pratinjau dalam iframe (hanya bila tidak ada galat), dan panel keputusan di samping. Tombol terbit, jadwal, dan draft nonaktif selama ada galat; tolak selalu bisa dengan alasan wajib. Bila server menjawab 409 (agent memperbarui hasil itu sesudah halaman dibuka), muncul tombol "Muat ulang":
+
+@@include apps/web/app/pages/admin/[site]/queue/[id].vue vue@@
+
+6. Tambahkan form referensi di editor artikel, sebagai komponen sendiri: judul, URL, penerbit, jenis, urutan naik/turun, hapus. Form artikel kini mengisi `references` dari isian ini, bukan sekadar meneruskan referensi yang dimuat:
+
+@@include apps/web/app/components/admin/ReferencesEditor.vue vue@@
+
+7. Uji di browser sungguhan. Selain test core untuk `preview` dan `withPreviewArticle`, jalankan alur ini dengan Playwright: login, buka antrian, buka hasil yang valid (pratinjau tampil dengan template site), buka hasil yang rusak (galat tampil, pratinjau tidak), lalu tambah referensi di editor; konsol browser harus bersih. Untuk menguji approve dan tolak lewat API, pakai baris hasil AI sementara, bukan baris seed: artikel yang terbit di site seed mengubah snapshot view model.

@@ -5,12 +5,18 @@
 // Halaman Vue-nya pages/admin/preview/[...path].vue (segmen statis, jadi
 // tidak tertukar dengan pages/admin/[site]/* walau kode site = 'media').
 //
+// ?generated=<id> (M5a 5a.3): pratinjau hasil AI sebagai artikel site itu,
+// dengan theme aktif. Artikel sintetis disisipkan lewat withPreviewArticle,
+// jadi tidak ada yang ditulis ke database.
+//
 // Halaman dibangun oleh pembangun halaman publik yang sama (ADR-007), lalu
 // dirender pages/[...slug].vue seperti halaman biasa. noindex, tanpa cache,
 // hanya bisa dibingkai dari origin yang sama.
+import { createMediaUrlResolver, createPageBuilder, createUrlBuilder, EditorError, withPreviewArticle } from '@framework/core'
 import { getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { requireAdmin, routedPath } from './admin'
 import { useRepositories } from './database'
+import { useMediaStorage } from './media'
 import { usePreviewPageBuilder } from './pages'
 import { getPreviewDraft } from './preview-drafts'
 import { resolveSiteTheme, templateManifests } from './templates'
@@ -34,42 +40,84 @@ export async function preparePreview(event: RequestEvent) {
   }
   const [code = '', ...parts] = routedPath(url.pathname).slice(PREVIEW_PREFIX.length).split('/')
   if (!admin.sites.some((s) => s.code === code)) return plain(event, 404, 'Site tidak ditemukan.')
-  const repos = useRepositories()
-  const site = await repos.sites.findByCode(code)
+  const site = await useRepositories().sites.findByCode(code)
   if (!site) return plain(event, 404, 'Site tidak ditemukan.')
 
+  const prefix = `${PREVIEW_PREFIX}${code}`
+  const generatedId = url.searchParams.get('generated')
+  const built = generatedId
+    ? await buildGenerated(site, generatedId, url, prefix)
+    : await buildThemeDraft(site, admin.user.id, url, parts, prefix)
+  if ('text' in built) return plain(event, built.status, built.text)
+  const { result, theme, draftId } = built
+  const headers = event.res.headers
+  headers.set('cache-control', 'no-store')
+  headers.set('x-robots-tag', 'noindex, nofollow')
+  headers.set('x-frame-options', 'SAMEORIGIN')
+  if (result.kind === 'redirect') {
+    // Redirect internal tetap di dalam pratinjau; tujuan luar dibiarkan.
+    const target = result.location.startsWith('/') ? new URL(`${prefix}${result.location}`, url.origin) : null
+    if (target && draftId) target.searchParams.set('draft', draftId)
+    return sendRedirect(event, target ? `${target.pathname}${target.search}` : result.location, result.status)
+  }
+  event.context.site = site
+  event.context.siteOrigin = `${url.origin}${prefix}`
+  event.context.theme = theme
+  event.context.page = { status: result.status, ...result.page }
+  event.context.themePreview = { draft: Boolean(draftId) }
+}
+
+type Site = NonNullable<Awaited<ReturnType<ReturnType<typeof useRepositories>['sites']['findByCode']>>>
+type Built = { result: Awaited<ReturnType<ReturnType<typeof usePreviewPageBuilder>['build']>>; theme: ReturnType<typeof resolveSiteTheme>; draftId: string | null } | { status: number; text: string }
+
+/** Halaman site dengan config tema draf (?draft=<id>) atau theme aktif. */
+async function buildThemeDraft(site: Site, userId: string, url: URL, parts: string[], prefix: string): Promise<Built> {
+  const repos = useRepositories()
   const draftId = url.searchParams.get('draft')
-  const draft = getPreviewDraft(draftId, admin.user.id, site.id)
+  const draft = getPreviewDraft(draftId, userId, site.id)
   // Parameter pratinjau bukan bagian halaman site (mis. tidak boleh ikut pencarian).
   url.searchParams.delete('draft')
   const stored = draft
     ? { templateKey: draft.templateKey, templateVersion: templateManifests.get(draft.templateKey).version, tokens: draft.tokens, options: draft.options, layouts: draft.layouts }
     : await repos.sites.getActiveTheme(site.id)
   const theme = resolveSiteTheme(site, stored)
-
-  const prefix = `${PREVIEW_PREFIX}${code}`
-  const built = await usePreviewPageBuilder().build({
+  const result = await usePreviewPageBuilder().build({
     site,
     pathname: `/${parts.join('/')}`,
     searchParams: url.searchParams,
     origin: `${url.origin}${prefix}`,
     layouts: theme.layouts,
   })
-  const headers = event.res.headers
-  headers.set('cache-control', 'no-store')
-  headers.set('x-robots-tag', 'noindex, nofollow')
-  headers.set('x-frame-options', 'SAMEORIGIN')
-  if (built.kind === 'redirect') {
-    // Redirect internal tetap di dalam pratinjau; tujuan luar dibiarkan.
-    const target = built.location.startsWith('/') ? new URL(`${prefix}${built.location}`, url.origin) : null
-    if (target && draftId) target.searchParams.set('draft', draftId)
-    return sendRedirect(event, target ? `${target.pathname}${target.search}` : built.location, built.status)
+  return { result, theme, draftId: draft ? draftId : null }
+}
+
+/** Hasil AI (?generated=<id>) sebagai artikel site itu, dengan theme aktif. */
+async function buildGenerated(site: Site, id: string, url: URL, prefix: string): Promise<Built> {
+  const repos = useRepositories()
+  url.searchParams.delete('generated')
+  let found
+  try {
+    found = await repos.generated.preview(site.id, id, useMediaStorage())
+  } catch (error) {
+    if (error instanceof EditorError && error.kind === 'not-found') return { status: 404, text: 'Hasil AI tidak ditemukan.' }
+    throw error
   }
-  event.context.site = site
-  event.context.siteOrigin = `${url.origin}${prefix}`
-  event.context.theme = theme
-  event.context.page = { status: built.status, ...built.page }
-  event.context.themePreview = { draft: Boolean(draft) }
+  if (!found.preview) return { status: 422, text: 'Hasil AI ini masih punya galat. Perbaiki dulu, lalu buka pratinjau lagi.' }
+  const theme = resolveSiteTheme(site, await repos.sites.getActiveTheme(site.id))
+  const builder = createPageBuilder(
+    { content: withPreviewArticle(repos.content, site.id, found.preview), menus: repos.menus },
+    { mediaUrl: createMediaUrlResolver({ baseUrl: '/admin/preview-media' }) },
+  )
+  const { article } = found.preview
+  const urls = createUrlBuilder({ permalink: site.settings.permalink, timeZone: site.timezone })
+  const result = await builder.build({
+    site,
+    pathname: urls.article({ slug: article.slug, categorySlug: article.category.slug, publishedAt: article.publishedAt }),
+    searchParams: url.searchParams,
+    origin: `${url.origin}${prefix}`,
+    layouts: theme.layouts,
+  })
+  return { result, theme, draftId: null }
 }
 
 function plain(event: RequestEvent, status: number, text: string) {

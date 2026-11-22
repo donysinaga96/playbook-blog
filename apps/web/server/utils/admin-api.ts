@@ -24,12 +24,17 @@ export function defineAdminSiteHandler<T>(handler: (ctx: AdminSiteContext) => Pr
     try {
       return await handler({ event, admin, site, editor: useRepositories().editor })
     } catch (error) {
-      if (error instanceof EditorError) {
-        throw createError({ statusCode: STATUS[error.kind], statusMessage: error.message, data: { kind: error.kind, issues: error.issues } })
-      }
-      throw error
+      throw toHttpError(error)
     }
   })
+}
+
+/** EditorError -> galat HTTP (404/409/422 + issues); galat lain dikembalikan apa adanya. */
+export function toHttpError(error: unknown): unknown {
+  if (error instanceof EditorError) {
+    return createError({ statusCode: STATUS[error.kind], statusMessage: error.message, data: { kind: error.kind, issues: error.issues } })
+  }
+  return error
 }
 
 /** Parameter route wajib (mis. :id); kosong = 404. */

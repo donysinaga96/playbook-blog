@@ -94,6 +94,8 @@ export const STATUS_LABELS: Record<string, string> = {
   REVIEW: 'Perlu ditinjau',
   PUBLISHED: 'Terbit',
   ARCHIVED: 'Arsip',
+  READY_TO_PUBLISH: 'Menunggu',
+  APPROVED: 'Disetujui',
   ACTIVE: 'Tampil',
   HIDDEN: 'Disembunyikan',
 }
@@ -108,4 +110,18 @@ export function displayStatus(status: string, publishedAt: string | null): { key
 export function formatSiteDate(iso: string | null, site: Pick<AdminSite, 'timezone' | 'defaultLocale'>): string {
   if (!iso) return '-'
   return new Intl.DateTimeFormat(site.defaultLocale, { timeZone: site.timezone, day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
+}
+
+/** Jumlah hasil AI yang menunggu keputusan di semua site (navigasi admin). */
+export function useQueueCount() {
+  return useState<number | null>('admin-queue-count', () => null)
+}
+
+export async function refreshQueueCount() {
+  try {
+    const res = await $fetch<{ ready: Record<string, number> }>('/api/admin/generated', { query: { pageSize: 1 } })
+    useQueueCount().value = Object.values(res.ready).reduce((a, b) => a + b, 0)
+  } catch {
+    useQueueCount().value = null
+  }
 }

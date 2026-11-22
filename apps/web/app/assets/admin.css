@@ -418,6 +418,35 @@
 .adm .status--archived { background: #f1f2f1; color: #8a8f93; }
 .adm .status--active { background: var(--accent-soft); color: var(--accent); }
 .adm .status--hidden { background: #f1f2f1; color: #8a8f93; }
+.adm .status--ready_to_publish { background: #fbf0d9; color: var(--warn); }
+.adm .status--approved { background: var(--accent-soft); color: var(--accent); }
+.adm .count {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 0.35rem;
+  padding: 0 0.4em;
+  border-radius: 999px;
+  background: var(--warn);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
+.adm .issues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.adm .issues li {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border-left: 4px solid;
+}
+.adm .issues__error { background: #fdecea; border-color: #b3261e; }
+.adm .issues__warning { background: #fbf0d9; border-color: var(--warn); }
 
 /* ---------- Editor: kolom utama + panel kanan ---------------------- */
 

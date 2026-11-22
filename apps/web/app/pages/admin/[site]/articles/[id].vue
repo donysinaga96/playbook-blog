@@ -6,6 +6,7 @@
   dibuka; versi berbeda (diubah di tab lain) -> 409 dan diminta muat ulang.
 -->
 <script setup lang="ts">
+import type { ReferenceRow } from '~/components/admin/ReferencesEditor.vue'
 import type { ArticleRecord, Block, CategoryRecord, RevisionItem, TagRecord } from '@framework/core'
 
 definePageMeta({ layout: 'admin' })
@@ -28,13 +29,14 @@ interface Form {
   isFeatured: boolean
   publishedLocal: string
   tagIds: string[]
+  references: ReferenceRow[]
   seo: { title: string; description: string; og_image_id: string | null; canonical: string; robots: string }
   changeNote: string
 }
 
 const emptyForm = (): Form => ({
   title: '', slug: '', excerpt: '', blocks: [{ type: 'paragraph', text: '' }], categoryId: '', authorId: '',
-  featuredMediaId: null, format: 'STANDARD', status: 'DRAFT', isFeatured: false, publishedLocal: '', tagIds: [],
+  featuredMediaId: null, format: 'STANDARD', status: 'DRAFT', isFeatured: false, publishedLocal: '', tagIds: [], references: [],
   seo: { title: '', description: '', og_image_id: null, canonical: '', robots: '' }, changeNote: '',
 })
 
@@ -83,6 +85,7 @@ function fill(a: Json<ArticleRecord>) {
     title: a.title, slug: a.slug, excerpt: a.excerpt ?? '', blocks: structuredClone(a.body.blocks), categoryId: a.categoryId,
     authorId: a.authorId ?? '', featuredMediaId: a.featuredMediaId, format: a.format, status: a.status, isFeatured: a.isFeatured,
     publishedLocal: isoToZonedInput(a.publishedAt, tz), tagIds: [...a.tagIds],
+    references: a.references.map((r) => ({ title: r.title, url: r.url, publisher: r.publisher ?? '', kind: r.kind })),
     seo: { title: a.seo.title ?? '', description: a.seo.description ?? '', og_image_id: a.seo.og_image_id ?? null, canonical: a.seo.canonical ?? '', robots: a.seo.robots ?? '' },
     changeNote: '',
   })
@@ -138,8 +141,7 @@ function payload() {
     tagIds: form.tagIds,
     seo: mergeSeo(article.value?.seo ?? {}, form.seo),
     attributes: article.value?.attributes ?? {},
-    // Form referensi menyusul (M5a 5a.3); sampai itu referensi tersimpan diteruskan utuh.
-    references: article.value?.references ?? [],
+    references: form.references.map((r) => ({ title: r.title, url: r.url.trim(), kind: r.kind, ...(r.publisher.trim() ? { publisher: r.publisher } : {}) })),
   }
 }
 
@@ -321,6 +323,10 @@ onBeforeRouteLeave(() => {
         >
           {{ err('body') }}
         </p>
+        <AdminReferencesEditor
+          v-model="form.references"
+          :errors="errors"
+        />
       </div>
 
       <aside>

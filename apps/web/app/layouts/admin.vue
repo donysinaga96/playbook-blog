@@ -19,6 +19,7 @@ await ensureAdminMe().catch((e) => {
 })
 
 const nav = [
+  { to: 'queue', label: 'Antrian terbit' },
   { to: 'articles', label: 'Artikel' },
   { to: 'pages', label: 'Halaman' },
   { to: 'categories', label: 'Kategori' },
@@ -47,6 +48,9 @@ async function logout() {
   await navigateTo('/admin/login')
 }
 
+const queueCount = useQueueCount()
+// Jumlah antrian diperbarui setiap pindah halaman (mis. setelah approve).
+watch(() => route.path, () => { if (me.value) void refreshQueueCount() }, { immediate: true })
 useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), htmlAttrs: { lang: 'id' } })
 </script>
 
@@ -90,6 +94,11 @@ useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), h
             :to="site ? `/admin/${site.code}/${item.to}` : '/admin'"
           >
             {{ item.label }}
+            <span
+              v-if="item.to === 'queue' && queueCount"
+              class="count"
+              :aria-label="`${queueCount} menunggu`"
+            >{{ queueCount }}</span>
           </NuxtLink>
         </nav>
         <div class="adm-rail__user">

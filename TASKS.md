@@ -12,7 +12,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
-| M5a — Alur konten AI dan approval | 13 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5a — Alur konten AI dan approval | 17 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
 **Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
@@ -321,11 +321,12 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 - [x] Test: tiap jenis galat, transisi terlarang, dua approve bersamaan = satu artikel, slug bentrok di tengah transaksi, isolasi site — 20 test di `generated-repository.test.ts` (storage tiruan + PNG minimal) dan 5 test referensi/`sourceUrl` di test editor; slug bentrok di tengah transaksi ditangani `withSlugConflict` yang sudah diuji di editor
 
 **5a.3 Antrian approval di admin [K3]**
-- [ ] API `/api/admin/generated` (semua site milik user) + detail, approve, reject, approve massal (hanya item tanpa galat)
-- [ ] Halaman "Antrian terbit": daftar per site dengan jumlah galat/peringatan; jumlah antrian di navigasi admin
-- [ ] Halaman detail: pratinjau hasil AI dengan template site (SSR di host admin, `noindex`, `no-store`, hanya admin site itu), daftar pemeriksaan, daftar referensi, tombol Terbitkan sekarang / Jadwalkan / Pindahkan sebagai draft / Tolak (alasan wajib)
-- [ ] Editor artikel: bagian referensi
+- [x] API `/api/admin/generated` (semua site milik user) + detail, approve, reject, approve massal (hanya item tanpa galat) — approve massal: satu transaksi per item, yang bergalat atau sudah diperbarui agent dilaporkan per item; `toHttpError` untuk route lintas site
+- [x] Halaman "Antrian terbit": daftar per site dengan jumlah galat/peringatan; jumlah antrian di navigasi admin — **tanpa** jumlah galat/peringatan di daftar: menghitungnya berarti membaca semua file gambar setiap kali daftar dibuka; galat tampil di detail dan di laporan approve massal. Filter site dan status (menunggu/disetujui/ditolak)
+- [x] Halaman detail: pratinjau hasil AI dengan template site (SSR di host admin, `noindex`, `no-store`, hanya admin site itu), daftar pemeriksaan, daftar referensi, tombol Terbitkan sekarang / Jadwalkan / Pindahkan sebagai draft / Tolak (alasan wajib) — pratinjau `/admin/preview/<kode>/?generated=<id>` lewat pembangun halaman publik yang sama (`withPreviewArticle` membungkus repository konten), theme aktif, tanpa menulis ke database; 409 = tombol "Muat ulang"
+- [x] Editor artikel: bagian referensi — komponen `AdminReferencesEditor`
 - › Skill: `frontend-design:frontend-design` untuk halaman antrian; `/run` untuk memeriksa alur di browser
+- Catatan 22 Nov 2026: `frontend-design` tidak dipakai; halaman antrian mengikuti bahasa visual admin yang sudah ada (kelas `.adm-*`) agar konsisten. Alur diperiksa dengan skrip Playwright (antrian, detail valid + pratinjau, detail bergalat, form referensi; konsol bersih) dan curl (approve terjadwal, token lama 409, tolak tanpa alasan 422, tanpa Origin 403, approve massal) memakai baris uji sementara yang dihapus sesudahnya.
 
 **5a.4 Referensi di halaman konten [K6]**
 - [ ] View model artikel: `references` + sumber gambar (`credit`, `source_url`) + URL asli embed

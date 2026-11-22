@@ -31,6 +31,8 @@ import {
 import type { Block } from '../content/blocks'
 import { embedSrc } from '../content/embed'
 import type { ArticleRecord, EditorRepository, Tx } from '../editor/editor-repository'
+import type { ArticleDetail } from '../repositories/content-repository'
+import type { MediaRef } from '../repositories/types'
 import { conflict, EditorError, invalid, notFound } from '../editor/errors'
 import { updatedAtSchema } from '../editor/inputs'
 import { isReservedFirstSegment, permalinkFirstToken, slugify } from '../editor/slug'
@@ -103,6 +105,13 @@ export interface ApproveInput {
   /** ISO 8601 dengan zona waktu; wajib untuk schedule dan harus di masa depan. */
   publishAt?: string
   note?: string
+}
+
+/** Artikel sintetis dari hasil AI untuk dirender pembangun halaman publik (pratinjau). */
+export interface GeneratedPreview {
+  article: ArticleDetail
+  /** Media untuk gambar di artikel itu; file baru memakai id sementara. */
+  media: MediaRef[]
 }
 
 export interface ApproveResult {
@@ -304,6 +313,69 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     }
   }
 
+  /** Artikel sintetis dari plan yang lolos pemeriksaan; id sementara untuk yang belum ada di database. */
+  async function previewOf(siteId: SiteId, plan: ResolvedPlan): Promise<GeneratedPreview> {
+    const { payload } = plan
+    const [category] = await db.select({ id: categories.id, name: categories.name, slug: categories.slug, parentId: categories.parentId })
+      .from(categories).where(and(eq(categories.siteId, siteId), eq(categories.id, plan.categoryId))).limit(1)
+    if (!category) throw notFound('Kategori')
+    const [parent] = category.parentId
+      ? await db.select({ id: categories.id, name: categories.name, slug: categories.slug }).from(categories)
+        .where(and(eq(categories.siteId, siteId), eq(categories.id, category.parentId))).limit(1)
+      : []
+    const [author] = plan.authorId
+      ? await db.select({ id: authors.id, name: authors.name, slug: authors.slug }).from(authors)
+        .where(and(eq(authors.siteId, siteId), eq(authors.id, plan.authorId))).limit(1)
+      : []
+
+    const existingIds = [...plan.images.values()].flatMap((i) => (i.kind === 'existing' ? [i.mediaId] : []))
+    const existing = existingIds.length
+      ? await db.select({
+        id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height,
+        altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+      }).from(media).where(and(eq(media.siteId, siteId), inArray(media.id, existingIds)))
+      : []
+    const mediaRefs: MediaRef[] = [...existing]
+    const mediaIds = new Map<string, string>()
+    for (const [key, resolved] of plan.images) {
+      if (resolved.kind === 'existing') {
+        mediaIds.set(key, resolved.mediaId)
+        continue
+      }
+      const { image } = resolved
+      const ref: MediaRef = {
+        id: crypto.randomUUID(), storageKey: image.storageKey, mimeType: resolved.mimeType, width: resolved.width, height: resolved.height,
+        altText: image.altText, caption: image.caption ?? null, credit: image.credit ?? null, focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5,
+      }
+      mediaRefs.push(ref)
+      mediaIds.set(key, ref.id)
+    }
+
+    const now = ctx.now()
+    return {
+      article: {
+        id: crypto.randomUUID(),
+        title: payload.title,
+        slug: payload.slug ?? (slugify(payload.title) || 'tanpa-judul'),
+        excerpt: payload.excerpt ?? null,
+        format: payload.format,
+        isFeatured: false,
+        publishedAt: now,
+        updatedAt: now,
+        category: { id: category.id, name: category.name, slug: category.slug },
+        categoryParent: parent ?? null,
+        author: author ?? null,
+        featuredMedia: payload.cover ? (mediaRefs.find((m) => m.id === mediaIds.get(payload.cover as string)) ?? null) : null,
+        tags: plan.tags.map((t) => ({ id: t.id ?? crypto.randomUUID(), name: t.name, slug: t.slug })),
+        attributes: {},
+        body: toBody(payload, mediaIds),
+        bodyIssues: [],
+        seo: payload.seo,
+      },
+      media: mediaRefs,
+    }
+  }
+
   const api = {
     /** Antrian lintas site milik user, terbaru dulu. siteIds kosong = daftar kosong. */
     async list(siteIds: SiteId[], query: { status?: GeneratedStatus; page?: number; pageSize?: number } = {}): Promise<Page<GeneratedListItem>> {
@@ -332,6 +404,17 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     /** Pemeriksaan untuk layar approval. Tidak mengubah apa pun. */
     async review(siteId: SiteId, id: string, storage: ImageReader): Promise<GeneratedReview> {
       return reviewIn(db, await loadRecord(db, siteId, id), storage)
+    },
+
+    /** Pemeriksaan + artikel sintetis untuk pratinjau (null bila masih ada galat). */
+    async preview(siteId: SiteId, id: string, storage: ImageReader): Promise<{ review: GeneratedReview; preview: GeneratedPreview | null }> {
+      const review = await reviewIn(db, await loadRecord(db, siteId, id), storage)
+      // Hasil yang sudah diputuskan tetap bisa dipratinjau bila payload-nya sah.
+      const plan = review.plan ?? (await (async () => {
+        const parsed = parseGeneratedPayload(review.record.payload)
+        return parsed.ok ? (await resolvePlan(db, siteId, parsed.payload, storage)).plan : null
+      })())
+      return { review, preview: plan ? await previewOf(siteId, plan) : null }
     },
 
     /** Pindahkan hasil AI ke tabel konten dalam satu transaksi. Galat pemeriksaan = invalid. */

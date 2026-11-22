@@ -4543,6 +4543,7 @@ export * from './media/image-info'
 export * from './media/local-storage'
 export * from './generated/payload'
 export * from './generated/generated-repository'
+export * from './generated/preview-content'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -16378,6 +16379,8 @@ routeRules: {
 
 15. Tulis halaman admin minimal. Tampilan lengkap dibuat di bab "Membangun Layar Admin"; file di bawah sudah versi akhirnya (login bergaya admin, `/admin` mengarahkan ke site pertama, `adminApi` dan pembaca galat field di composable). Beri tipe hasil `$fetch` secara eksplisit; inferensi tipe route Nitro untuk semua route bisa melebihi batas kedalaman TypeScript:
 
+   Label status hasil AI dan `useQueueCount`/`refreshQueueCount` ditambahkan di bab "Membangun Antrian Terbit".
+
 `apps/web/app/composables/useAdmin.ts`
 
 ```ts
@@ -16477,6 +16480,8 @@ export const STATUS_LABELS: Record<string, string> = {
   REVIEW: 'Perlu ditinjau',
   PUBLISHED: 'Terbit',
   ARCHIVED: 'Arsip',
+  READY_TO_PUBLISH: 'Menunggu',
+  APPROVED: 'Disetujui',
   ACTIVE: 'Tampil',
   HIDDEN: 'Disembunyikan',
 }
@@ -16491,6 +16496,20 @@ export function displayStatus(status: string, publishedAt: string | null): { key
 export function formatSiteDate(iso: string | null, site: Pick<AdminSite, 'timezone' | 'defaultLocale'>): string {
   if (!iso) return '-'
   return new Intl.DateTimeFormat(site.defaultLocale, { timeZone: site.timezone, day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
+}
+
+/** Jumlah hasil AI yang menunggu keputusan di semua site (navigasi admin). */
+export function useQueueCount() {
+  return useState<number | null>('admin-queue-count', () => null)
+}
+
+export async function refreshQueueCount() {
+  try {
+    const res = await $fetch<{ ready: Record<string, number> }>('/api/admin/generated', { query: { pageSize: 1 } })
+    useQueueCount().value = Object.values(res.ready).reduce((a, b) => a + b, 0)
+  } catch {
+    useQueueCount().value = null
+  }
 }
 ```
 
@@ -18678,6 +18697,8 @@ export const editorErrorMap: z.core.$ZodErrorMap = (issue) => {
 
 4. Tulis pembungkus route API per site. Satu tempat untuk sesi, akses site, dan pemetaan galat:
 
+   `toHttpError` dipisahkan untuk route lintas site di bab "Membangun Antrian Terbit".
+
 `apps/web/server/utils/admin-api.ts`
 
 ```ts
@@ -18707,12 +18728,17 @@ export function defineAdminSiteHandler<T>(handler: (ctx: AdminSiteContext) => Pr
     try {
       return await handler({ event, admin, site, editor: useRepositories().editor })
     } catch (error) {
-      if (error instanceof EditorError) {
-        throw createError({ statusCode: STATUS[error.kind], statusMessage: error.message, data: { kind: error.kind, issues: error.issues } })
-      }
-      throw error
+      throw toHttpError(error)
     }
   })
+}
+
+/** EditorError -> galat HTTP (404/409/422 + issues); galat lain dikembalikan apa adanya. */
+export function toHttpError(error: unknown): unknown {
+  if (error instanceof EditorError) {
+    return createError({ statusCode: STATUS[error.kind], statusMessage: error.message, data: { kind: error.kind, issues: error.issues } })
+  }
+  return error
 }
 
 /** Parameter route wajib (mis. :id); kosong = 404. */
@@ -18908,6 +18934,8 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
 ```
 
 8. Tulis CSS admin di bawah `.adm`, agar tidak pernah bertabrakan dengan CSS template (`.tpl`) di aplikasi yang sama. Perhatikan dua hal: selector judul editor diperkuat (`.adm input[type='text'].adm-editor__title`) karena gaya umum `.adm input[type='text']` lebih spesifik, dan textarea memakai `field-sizing: content` agar tingginya mengikuti isi:
+
+   Gaya status hasil AI, penghitung antrian, dan daftar pemeriksaan ditambahkan di bab "Membangun Antrian Terbit".
 
 `apps/web/app/assets/admin.css`
 
@@ -19332,6 +19360,35 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
 .adm .status--archived { background: #f1f2f1; color: #8a8f93; }
 .adm .status--active { background: var(--accent-soft); color: var(--accent); }
 .adm .status--hidden { background: #f1f2f1; color: #8a8f93; }
+.adm .status--ready_to_publish { background: #fbf0d9; color: var(--warn); }
+.adm .status--approved { background: var(--accent-soft); color: var(--accent); }
+.adm .count {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 0.35rem;
+  padding: 0 0.4em;
+  border-radius: 999px;
+  background: var(--warn);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
+.adm .issues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.adm .issues li {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border-left: 4px solid;
+}
+.adm .issues__error { background: #fdecea; border-color: #b3261e; }
+.adm .issues__warning { background: #fbf0d9; border-color: var(--warn); }
 
 /* ---------- Editor: kolom utama + panel kanan ---------------------- */
 
@@ -19847,6 +19904,8 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
 
 9. Pakai layout Nuxt untuk kerangka admin. `app.vue` menjadi `<NuxtLayout><NuxtPage /></NuxtLayout>`; halaman publik tidak memakai layout, jadi tetap dirender apa adanya. Logout hanya pindah ke halaman login bila server benar-benar menghapus sesi, agar komputer bersama tidak tertinggal dalam keadaan login. Matikan `vue/multi-word-component-names` juga untuk `app/layouts/**`:
 
+   Menu "Antrian terbit" dengan jumlah yang menunggu ditambahkan di bab "Membangun Antrian Terbit".
+
 `apps/web/app/layouts/admin.vue`
 
 ```vue
@@ -19871,6 +19930,7 @@ await ensureAdminMe().catch((e) => {
 })
 
 const nav = [
+  { to: 'queue', label: 'Antrian terbit' },
   { to: 'articles', label: 'Artikel' },
   { to: 'pages', label: 'Halaman' },
   { to: 'categories', label: 'Kategori' },
@@ -19899,6 +19959,9 @@ async function logout() {
   await navigateTo('/admin/login')
 }
 
+const queueCount = useQueueCount()
+// Jumlah antrian diperbarui setiap pindah halaman (mis. setelah approve).
+watch(() => route.path, () => { if (me.value) void refreshQueueCount() }, { immediate: true })
 useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), htmlAttrs: { lang: 'id' } })
 </script>
 
@@ -19942,6 +20005,11 @@ useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), h
             :to="site ? `/admin/${site.code}/${item.to}` : '/admin'"
           >
             {{ item.label }}
+            <span
+              v-if="item.to === 'queue' && queueCount"
+              class="count"
+              :aria-label="`${queueCount} menunggu`"
+            >{{ queueCount }}</span>
           </NuxtLink>
         </nav>
         <div class="adm-rail__user">
@@ -20442,6 +20510,7 @@ watch([status, search, page], () => router.replace({ query: { ...(status.value &
   dibuka; versi berbeda (diubah di tab lain) -> 409 dan diminta muat ulang.
 -->
 <script setup lang="ts">
+import type { ReferenceRow } from '~/components/admin/ReferencesEditor.vue'
 import type { ArticleRecord, Block, CategoryRecord, RevisionItem, TagRecord } from '@framework/core'
 
 definePageMeta({ layout: 'admin' })
@@ -20464,13 +20533,14 @@ interface Form {
   isFeatured: boolean
   publishedLocal: string
   tagIds: string[]
+  references: ReferenceRow[]
   seo: { title: string; description: string; og_image_id: string | null; canonical: string; robots: string }
   changeNote: string
 }
 
 const emptyForm = (): Form => ({
   title: '', slug: '', excerpt: '', blocks: [{ type: 'paragraph', text: '' }], categoryId: '', authorId: '',
-  featuredMediaId: null, format: 'STANDARD', status: 'DRAFT', isFeatured: false, publishedLocal: '', tagIds: [],
+  featuredMediaId: null, format: 'STANDARD', status: 'DRAFT', isFeatured: false, publishedLocal: '', tagIds: [], references: [],
   seo: { title: '', description: '', og_image_id: null, canonical: '', robots: '' }, changeNote: '',
 })
 
@@ -20519,6 +20589,7 @@ function fill(a: Json<ArticleRecord>) {
     title: a.title, slug: a.slug, excerpt: a.excerpt ?? '', blocks: structuredClone(a.body.blocks), categoryId: a.categoryId,
     authorId: a.authorId ?? '', featuredMediaId: a.featuredMediaId, format: a.format, status: a.status, isFeatured: a.isFeatured,
     publishedLocal: isoToZonedInput(a.publishedAt, tz), tagIds: [...a.tagIds],
+    references: a.references.map((r) => ({ title: r.title, url: r.url, publisher: r.publisher ?? '', kind: r.kind })),
     seo: { title: a.seo.title ?? '', description: a.seo.description ?? '', og_image_id: a.seo.og_image_id ?? null, canonical: a.seo.canonical ?? '', robots: a.seo.robots ?? '' },
     changeNote: '',
   })
@@ -20574,8 +20645,7 @@ function payload() {
     tagIds: form.tagIds,
     seo: mergeSeo(article.value?.seo ?? {}, form.seo),
     attributes: article.value?.attributes ?? {},
-    // Form referensi menyusul (M5a 5a.3); sampai itu referensi tersimpan diteruskan utuh.
-    references: article.value?.references ?? [],
+    references: form.references.map((r) => ({ title: r.title, url: r.url.trim(), kind: r.kind, ...(r.publisher.trim() ? { publisher: r.publisher } : {}) })),
   }
 }
 
@@ -20757,6 +20827,10 @@ onBeforeRouteLeave(() => {
         >
           {{ err('body') }}
         </p>
+        <AdminReferencesEditor
+          v-model="form.references"
+          :errors="errors"
+        />
       </div>
 
       <aside>
@@ -22572,6 +22646,8 @@ export default defineAdminSiteHandler(async ({ event, site, admin }) => {
 
 6. Render pratinjau dengan pembangun halaman publik yang sama. Galat akses dijawab teks polos dengan status yang benar: di build produksi, galat yang dilempar di path `/admin/**` dirender sebagai halaman SPA berstatus 404 (gate admin menangkap ini; di dev statusnya benar). Media di pratinjau lewat route admin sendiri, karena `/media` hanya melayani domain site:
 
+   Mode pratinjau hasil AI (`?generated=<id>`) ditambahkan di bab "Membangun Antrian Terbit".
+
 `apps/web/server/utils/theme-preview.ts`
 
 ```ts
@@ -22582,12 +22658,18 @@ export default defineAdminSiteHandler(async ({ event, site, admin }) => {
 // Halaman Vue-nya pages/admin/preview/[...path].vue (segmen statis, jadi
 // tidak tertukar dengan pages/admin/[site]/* walau kode site = 'media').
 //
+// ?generated=<id> (M5a 5a.3): pratinjau hasil AI sebagai artikel site itu,
+// dengan theme aktif. Artikel sintetis disisipkan lewat withPreviewArticle,
+// jadi tidak ada yang ditulis ke database.
+//
 // Halaman dibangun oleh pembangun halaman publik yang sama (ADR-007), lalu
 // dirender pages/[...slug].vue seperti halaman biasa. noindex, tanpa cache,
 // hanya bisa dibingkai dari origin yang sama.
+import { createMediaUrlResolver, createPageBuilder, createUrlBuilder, EditorError, withPreviewArticle } from '@framework/core'
 import { getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
 import { requireAdmin, routedPath } from './admin'
 import { useRepositories } from './database'
+import { useMediaStorage } from './media'
 import { usePreviewPageBuilder } from './pages'
 import { getPreviewDraft } from './preview-drafts'
 import { resolveSiteTheme, templateManifests } from './templates'
@@ -22611,42 +22693,84 @@ export async function preparePreview(event: RequestEvent) {
   }
   const [code = '', ...parts] = routedPath(url.pathname).slice(PREVIEW_PREFIX.length).split('/')
   if (!admin.sites.some((s) => s.code === code)) return plain(event, 404, 'Site tidak ditemukan.')
-  const repos = useRepositories()
-  const site = await repos.sites.findByCode(code)
+  const site = await useRepositories().sites.findByCode(code)
   if (!site) return plain(event, 404, 'Site tidak ditemukan.')
 
+  const prefix = `${PREVIEW_PREFIX}${code}`
+  const generatedId = url.searchParams.get('generated')
+  const built = generatedId
+    ? await buildGenerated(site, generatedId, url, prefix)
+    : await buildThemeDraft(site, admin.user.id, url, parts, prefix)
+  if ('text' in built) return plain(event, built.status, built.text)
+  const { result, theme, draftId } = built
+  const headers = event.res.headers
+  headers.set('cache-control', 'no-store')
+  headers.set('x-robots-tag', 'noindex, nofollow')
+  headers.set('x-frame-options', 'SAMEORIGIN')
+  if (result.kind === 'redirect') {
+    // Redirect internal tetap di dalam pratinjau; tujuan luar dibiarkan.
+    const target = result.location.startsWith('/') ? new URL(`${prefix}${result.location}`, url.origin) : null
+    if (target && draftId) target.searchParams.set('draft', draftId)
+    return sendRedirect(event, target ? `${target.pathname}${target.search}` : result.location, result.status)
+  }
+  event.context.site = site
+  event.context.siteOrigin = `${url.origin}${prefix}`
+  event.context.theme = theme
+  event.context.page = { status: result.status, ...result.page }
+  event.context.themePreview = { draft: Boolean(draftId) }
+}
+
+type Site = NonNullable<Awaited<ReturnType<ReturnType<typeof useRepositories>['sites']['findByCode']>>>
+type Built = { result: Awaited<ReturnType<ReturnType<typeof usePreviewPageBuilder>['build']>>; theme: ReturnType<typeof resolveSiteTheme>; draftId: string | null } | { status: number; text: string }
+
+/** Halaman site dengan config tema draf (?draft=<id>) atau theme aktif. */
+async function buildThemeDraft(site: Site, userId: string, url: URL, parts: string[], prefix: string): Promise<Built> {
+  const repos = useRepositories()
   const draftId = url.searchParams.get('draft')
-  const draft = getPreviewDraft(draftId, admin.user.id, site.id)
+  const draft = getPreviewDraft(draftId, userId, site.id)
   // Parameter pratinjau bukan bagian halaman site (mis. tidak boleh ikut pencarian).
   url.searchParams.delete('draft')
   const stored = draft
     ? { templateKey: draft.templateKey, templateVersion: templateManifests.get(draft.templateKey).version, tokens: draft.tokens, options: draft.options, layouts: draft.layouts }
     : await repos.sites.getActiveTheme(site.id)
   const theme = resolveSiteTheme(site, stored)
-
-  const prefix = `${PREVIEW_PREFIX}${code}`
-  const built = await usePreviewPageBuilder().build({
+  const result = await usePreviewPageBuilder().build({
     site,
     pathname: `/${parts.join('/')}`,
     searchParams: url.searchParams,
     origin: `${url.origin}${prefix}`,
     layouts: theme.layouts,
   })
-  const headers = event.res.headers
-  headers.set('cache-control', 'no-store')
-  headers.set('x-robots-tag', 'noindex, nofollow')
-  headers.set('x-frame-options', 'SAMEORIGIN')
-  if (built.kind === 'redirect') {
-    // Redirect internal tetap di dalam pratinjau; tujuan luar dibiarkan.
-    const target = built.location.startsWith('/') ? new URL(`${prefix}${built.location}`, url.origin) : null
-    if (target && draftId) target.searchParams.set('draft', draftId)
-    return sendRedirect(event, target ? `${target.pathname}${target.search}` : built.location, built.status)
+  return { result, theme, draftId: draft ? draftId : null }
+}
+
+/** Hasil AI (?generated=<id>) sebagai artikel site itu, dengan theme aktif. */
+async function buildGenerated(site: Site, id: string, url: URL, prefix: string): Promise<Built> {
+  const repos = useRepositories()
+  url.searchParams.delete('generated')
+  let found
+  try {
+    found = await repos.generated.preview(site.id, id, useMediaStorage())
+  } catch (error) {
+    if (error instanceof EditorError && error.kind === 'not-found') return { status: 404, text: 'Hasil AI tidak ditemukan.' }
+    throw error
   }
-  event.context.site = site
-  event.context.siteOrigin = `${url.origin}${prefix}`
-  event.context.theme = theme
-  event.context.page = { status: built.status, ...built.page }
-  event.context.themePreview = { draft: Boolean(draft) }
+  if (!found.preview) return { status: 422, text: 'Hasil AI ini masih punya galat. Perbaiki dulu, lalu buka pratinjau lagi.' }
+  const theme = resolveSiteTheme(site, await repos.sites.getActiveTheme(site.id))
+  const builder = createPageBuilder(
+    { content: withPreviewArticle(repos.content, site.id, found.preview), menus: repos.menus },
+    { mediaUrl: createMediaUrlResolver({ baseUrl: '/admin/preview-media' }) },
+  )
+  const { article } = found.preview
+  const urls = createUrlBuilder({ permalink: site.settings.permalink, timeZone: site.timezone })
+  const result = await builder.build({
+    site,
+    pathname: urls.article({ slug: article.slug, categorySlug: article.category.slug, publishedAt: article.publishedAt }),
+    searchParams: url.searchParams,
+    origin: `${url.origin}${prefix}`,
+    layouts: theme.layouts,
+  })
+  return { result, theme, draftId: null }
 }
 
 function plain(event: RequestEvent, status: number, text: string) {
@@ -24277,6 +24401,8 @@ import {
 import type { Block } from '../content/blocks'
 import { embedSrc } from '../content/embed'
 import type { ArticleRecord, EditorRepository, Tx } from '../editor/editor-repository'
+import type { ArticleDetail } from '../repositories/content-repository'
+import type { MediaRef } from '../repositories/types'
 import { conflict, EditorError, invalid, notFound } from '../editor/errors'
 import { updatedAtSchema } from '../editor/inputs'
 import { isReservedFirstSegment, permalinkFirstToken, slugify } from '../editor/slug'
@@ -24349,6 +24475,13 @@ export interface ApproveInput {
   /** ISO 8601 dengan zona waktu; wajib untuk schedule dan harus di masa depan. */
   publishAt?: string
   note?: string
+}
+
+/** Artikel sintetis dari hasil AI untuk dirender pembangun halaman publik (pratinjau). */
+export interface GeneratedPreview {
+  article: ArticleDetail
+  /** Media untuk gambar di artikel itu; file baru memakai id sementara. */
+  media: MediaRef[]
 }
 
 export interface ApproveResult {
@@ -24550,6 +24683,69 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     }
   }
 
+  /** Artikel sintetis dari plan yang lolos pemeriksaan; id sementara untuk yang belum ada di database. */
+  async function previewOf(siteId: SiteId, plan: ResolvedPlan): Promise<GeneratedPreview> {
+    const { payload } = plan
+    const [category] = await db.select({ id: categories.id, name: categories.name, slug: categories.slug, parentId: categories.parentId })
+      .from(categories).where(and(eq(categories.siteId, siteId), eq(categories.id, plan.categoryId))).limit(1)
+    if (!category) throw notFound('Kategori')
+    const [parent] = category.parentId
+      ? await db.select({ id: categories.id, name: categories.name, slug: categories.slug }).from(categories)
+        .where(and(eq(categories.siteId, siteId), eq(categories.id, category.parentId))).limit(1)
+      : []
+    const [author] = plan.authorId
+      ? await db.select({ id: authors.id, name: authors.name, slug: authors.slug }).from(authors)
+        .where(and(eq(authors.siteId, siteId), eq(authors.id, plan.authorId))).limit(1)
+      : []
+
+    const existingIds = [...plan.images.values()].flatMap((i) => (i.kind === 'existing' ? [i.mediaId] : []))
+    const existing = existingIds.length
+      ? await db.select({
+        id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height,
+        altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+      }).from(media).where(and(eq(media.siteId, siteId), inArray(media.id, existingIds)))
+      : []
+    const mediaRefs: MediaRef[] = [...existing]
+    const mediaIds = new Map<string, string>()
+    for (const [key, resolved] of plan.images) {
+      if (resolved.kind === 'existing') {
+        mediaIds.set(key, resolved.mediaId)
+        continue
+      }
+      const { image } = resolved
+      const ref: MediaRef = {
+        id: crypto.randomUUID(), storageKey: image.storageKey, mimeType: resolved.mimeType, width: resolved.width, height: resolved.height,
+        altText: image.altText, caption: image.caption ?? null, credit: image.credit ?? null, focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5,
+      }
+      mediaRefs.push(ref)
+      mediaIds.set(key, ref.id)
+    }
+
+    const now = ctx.now()
+    return {
+      article: {
+        id: crypto.randomUUID(),
+        title: payload.title,
+        slug: payload.slug ?? (slugify(payload.title) || 'tanpa-judul'),
+        excerpt: payload.excerpt ?? null,
+        format: payload.format,
+        isFeatured: false,
+        publishedAt: now,
+        updatedAt: now,
+        category: { id: category.id, name: category.name, slug: category.slug },
+        categoryParent: parent ?? null,
+        author: author ?? null,
+        featuredMedia: payload.cover ? (mediaRefs.find((m) => m.id === mediaIds.get(payload.cover as string)) ?? null) : null,
+        tags: plan.tags.map((t) => ({ id: t.id ?? crypto.randomUUID(), name: t.name, slug: t.slug })),
+        attributes: {},
+        body: toBody(payload, mediaIds),
+        bodyIssues: [],
+        seo: payload.seo,
+      },
+      media: mediaRefs,
+    }
+  }
+
   const api = {
     /** Antrian lintas site milik user, terbaru dulu. siteIds kosong = daftar kosong. */
     async list(siteIds: SiteId[], query: { status?: GeneratedStatus; page?: number; pageSize?: number } = {}): Promise<Page<GeneratedListItem>> {
@@ -24578,6 +24774,17 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     /** Pemeriksaan untuk layar approval. Tidak mengubah apa pun. */
     async review(siteId: SiteId, id: string, storage: ImageReader): Promise<GeneratedReview> {
       return reviewIn(db, await loadRecord(db, siteId, id), storage)
+    },
+
+    /** Pemeriksaan + artikel sintetis untuk pratinjau (null bila masih ada galat). */
+    async preview(siteId: SiteId, id: string, storage: ImageReader): Promise<{ review: GeneratedReview; preview: GeneratedPreview | null }> {
+      const review = await reviewIn(db, await loadRecord(db, siteId, id), storage)
+      // Hasil yang sudah diputuskan tetap bisa dipratinjau bila payload-nya sah.
+      const plan = review.plan ?? (await (async () => {
+        const parsed = parseGeneratedPayload(review.record.payload)
+        return parsed.ok ? (await resolvePlan(db, siteId, parsed.payload, storage)).plan : null
+      })())
+      return { review, preview: plan ? await previewOf(siteId, plan) : null }
     },
 
     /** Pindahkan hasil AI ke tabel konten dalam satu transaksi. Galat pemeriksaan = invalid. */
@@ -24687,6 +24894,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { EditorError } from '../editor/errors'
 import { createRepositories } from '../repositories'
 import type { ImageReader } from './generated-repository'
+import { withPreviewArticle } from './preview-content'
 
 const OTHER = '01930000-0000-7000-8000-000000000102' // dapur-nusantara (seed, hanya dibaca)
 const OTHER_MEDIA_KEY = 'dapur-nusantara/2026/11/rendang.webp'
@@ -24943,6 +25151,36 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
     })
   })
 
+  describe('pratinjau', () => {
+    it('artikel sintetis dari payload; media baru id sementara; konten lain tidak terpengaruh', async () => {
+      files.set(`${code}/pratinjau.png`, png(640, 480))
+      const id = await ingest(payload({
+        slug: `pratinjau-${run}`,
+        cover: 'c',
+        images: [{ key: 'c', storageKey: `${code}/pratinjau.png`, altText: 'Sampul', credit: 'F' }],
+        body: { version: 1, blocks: [{ type: 'image', image: 'c' }] },
+      }))
+      const { review, preview } = await generated.preview(SITE, id, storage)
+      expect(review.canApprove).toBe(true)
+      expect(preview?.article).toMatchObject({ slug: `pratinjau-${run}`, category: { slug: 'resep' }, author: { slug: 'redaksi' } })
+      expect(preview?.article.tags.map((t) => t.slug)).toEqual(['pedas', `baru-${run}`])
+      const mediaId = preview?.article.featuredMedia?.id ?? ''
+      expect(preview?.article.body.blocks).toEqual([{ type: 'image', mediaId }])
+
+      const content = withPreviewArticle(repos.content, SITE, preview!)
+      expect(await content.getPublishedArticle(SITE, `pratinjau-${run}`)).toBe(preview!.article)
+      expect(await content.getPublishedArticle(OTHER, `pratinjau-${run}`)).toBeNull()
+      expect((await content.getMediaByIds(SITE, [mediaId])).map((m) => m.storageKey)).toEqual([`${code}/pratinjau.png`])
+      // Tidak ada yang ditulis ke database.
+      expect(await db.select({ id: media.id }).from(media).where(eq(media.storageKey, `${code}/pratinjau.png`))).toEqual([])
+    })
+
+    it('masih ada galat: tanpa pratinjau', async () => {
+      const { preview } = await generated.preview(SITE, await ingest(payload({ category: 'minuman' })), storage)
+      expect(preview).toBeNull()
+    })
+  })
+
   describe('versi yang dilihat admin', () => {
     it('agent memperbarui hasil setelah admin membukanya: approve dan tolak = conflict', async () => {
       const id = await ingest()
@@ -24976,3 +25214,982 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
 pnpm check
 #  Tests  571 passed | 1 skipped
 ```
+
+# Membangun Antrian Terbit
+
+Aturan keputusan sudah ada di core. Bab ini memberinya layar: daftar hasil AI dari semua site, halaman detail dengan pratinjau dan pemeriksaan, keputusan per hasil atau beberapa sekaligus, serta form referensi di editor artikel.
+
+1. Pratinjau memakai pembangun halaman publik yang sama. `createPageBuilder` hanya bergantung pada repository `content` dan `menus`, jadi pratinjau tidak butuh jalur render sendiri: bungkus `content` agar artikel sintetis dari hasil AI "terbit" di slug-nya dan media sementaranya bisa dibaca. Halaman lalu dirender dengan template dan theme aktif site itu, persis seperti nanti tampil, tanpa menulis apa pun ke database:
+
+`packages/core/src/generated/preview-content.ts`
+
+```ts
+// Repository konten untuk pratinjau hasil AI (ADR-010, M5a 5a.3): sama
+// dengan repository konten biasa, kecuali artikel sintetis dari hasil AI
+// ikut "terbit" di slug-nya, dan media sementaranya bisa dibaca. Dengan
+// begitu pratinjau dirender pembangun halaman dan template yang sama
+// persis dengan halaman publik, tanpa menulis apa pun ke database.
+import type { ContentRepository } from '../repositories/content-repository'
+import type { SiteId } from '../repositories/types'
+import type { GeneratedPreview } from './generated-repository'
+
+export function withPreviewArticle(content: ContentRepository, siteId: SiteId, preview: GeneratedPreview): ContentRepository {
+  const extra = new Map(preview.media.map((m) => [m.id, m]))
+  return {
+    ...content,
+    async getPublishedArticle(site, slug) {
+      if (site === siteId && slug === preview.article.slug) return preview.article
+      return content.getPublishedArticle(site, slug)
+    },
+    async getMediaByIds(site, ids) {
+      if (site !== siteId) return content.getMediaByIds(site, ids)
+      const known = ids.filter((id) => extra.has(id))
+      const rest = await content.getMediaByIds(site, ids.filter((id) => !extra.has(id)))
+      return [...known.map((id) => extra.get(id)!), ...rest]
+    },
+  }
+}
+```
+
+   Artikel sintetisnya dibuat `generated.preview(siteId, id, storage)` di repository hasil AI (bab sebelumnya): kategori, induk kategori, dan penulis dibaca dari database; tag dan gambar yang belum ada diberi id sementara. Hasil dengan galat tidak punya pratinjau.
+
+2. Tambahkan mode `?generated=<id>` di pratinjau. `preparePreview` kini memilih salah satu dari dua pembangun: draf tema (`buildThemeDraft`, perilaku lama) atau hasil AI (`buildGenerated`), yang menghitung URL artikel dengan `createUrlBuilder` lalu membangun halaman itu. Gambar baru dilayani `/admin/preview-media`, yang memang membaca file langsung dari storage dengan pemeriksaan sesi dan kode site.
+
+3. Tulis API:
+   - `GET /api/admin/generated?status=&siteId=&page=`: antrian dari semua site milik user, ditambah jumlah yang menunggu per site.
+   - `GET /api/admin/sites/:siteId/generated/:id`: hasil pemeriksaan dan alamat pratinjau.
+   - `POST .../approve` dan `POST .../reject`: keputusan, selalu dengan `expectedUpdatedAt`.
+   - `POST /api/admin/generated/approve-bulk`: terbitkan sekarang beberapa hasil. Setiap item satu transaksi sendiri, jadi hasil yang punya galat atau sudah diperbarui agent dilaporkan tanpa membatalkan yang lain.
+
+   Route lintas site tidak memakai `defineAdminSiteHandler`, jadi pemetaan galat editor ke HTTP dipisah menjadi `toHttpError`. Pemeriksaan Origin untuk POST tetap dijalankan middleware `admin-guard` untuk semua `/api/admin/*`.
+
+`apps/web/server/api/admin/generated/index.get.ts`
+
+```ts
+// GET ?status=READY_TO_PUBLISH|APPROVED|ARCHIVED&siteId=&page=
+// Antrian hasil AI dari semua site milik user (ADR-010, M5a 5a.3), terbaru
+// dulu, beserta jumlah yang menunggu per site untuk navigasi admin.
+import { GENERATED_STATUSES, type GeneratedStatus } from '@framework/core'
+import { createError, defineEventHandler, getQuery } from 'nuxt/server'
+import { requireAdmin } from '../../../utils/admin'
+import { useRepositories } from '../../../utils/database'
+
+export default defineEventHandler(async (event) => {
+  const admin = await requireAdmin(event)
+  const query = getQuery(event)
+  const status = String(query['status'] ?? 'READY_TO_PUBLISH') as GeneratedStatus
+  if (!GENERATED_STATUSES.includes(status)) throw createError({ statusCode: 422, statusMessage: 'status tidak dikenal' })
+  const allIds = admin.sites.map((s) => s.id)
+  const only = query['siteId'] ? String(query['siteId']) : null
+  if (only && !allIds.includes(only)) throw createError({ statusCode: 404, statusMessage: 'Site tidak ditemukan' })
+  const { generated } = useRepositories()
+  const [page, ready] = await Promise.all([
+    generated.list(only ? [only] : allIds, { status, page: Number(query['page']) || 1, pageSize: Math.min(50, Number(query['pageSize']) || 20) }),
+    generated.countReady(allIds),
+  ])
+  const sites = new Map(admin.sites.map((s) => [s.id, { id: s.id, code: s.code, name: s.name }]))
+  return { ...page, items: page.items.map((i) => ({ ...i, site: sites.get(i.siteId) })), ready }
+})
+```
+
+`apps/web/server/api/admin/generated/approve-bulk.post.ts`
+
+```ts
+// POST { items: [{ siteId, id, expectedUpdatedAt }] }: terbitkan sekarang
+// beberapa hasil AI sekaligus. Setiap item satu transaksi sendiri: yang
+// punya galat atau sudah diubah agent dilaporkan, yang lain tetap terbit.
+import { EditorError } from '@framework/core'
+import { createError, defineEventHandler, readBody } from 'nuxt/server'
+import { requireAdmin } from '../../../utils/admin'
+import { useRepositories } from '../../../utils/database'
+import { useMediaStorage } from '../../../utils/media'
+
+const MAX_ITEMS = 50
+
+export default defineEventHandler(async (event) => {
+  const admin = await requireAdmin(event)
+  const body = ((await readBody(event)) ?? {}) as { items?: unknown }
+  const items = Array.isArray(body.items) ? body.items : []
+  if (items.length === 0 || items.length > MAX_ITEMS) throw createError({ statusCode: 422, statusMessage: `pilih 1 sampai ${MAX_ITEMS} hasil AI` })
+  const { generated } = useRepositories()
+  const storage = useMediaStorage()
+  const results = []
+  for (const raw of items) {
+    const item = (raw ?? {}) as { siteId?: unknown; id?: unknown; expectedUpdatedAt?: unknown }
+    const siteId = String(item.siteId ?? '')
+    const id = String(item.id ?? '')
+    if (!admin.sites.some((s) => s.id === siteId)) {
+      results.push({ siteId, id, ok: false, message: 'Site tidak ditemukan' })
+      continue
+    }
+    try {
+      const { article } = await generated.approve(siteId, id, { mode: 'publish', expectedUpdatedAt: String(item.expectedUpdatedAt ?? '') }, admin.user.id, storage)
+      results.push({ siteId, id, ok: true, articleId: article.id, publicPath: article.publicPath })
+    } catch (error) {
+      if (!(error instanceof EditorError)) throw error
+      results.push({ siteId, id, ok: false, message: error.message })
+    }
+  }
+  return { results }
+})
+```
+
+`apps/web/server/api/admin/sites/[siteId]/generated/[id].get.ts`
+
+```ts
+// GET: satu hasil AI dengan hasil pemeriksaan (galat/peringatan) dan payload
+// mentah, untuk layar approval. Pratinjau: /admin/preview/<kode>/?generated=<id>.
+import { defineAdminSiteHandler, param } from '../../../../../utils/admin-api'
+import { useRepositories } from '../../../../../utils/database'
+import { useMediaStorage } from '../../../../../utils/media'
+
+export default defineAdminSiteHandler(async ({ site, event }) => {
+  const id = param(event, 'id')
+  const review = await useRepositories().generated.review(site.id, id, useMediaStorage())
+  return {
+    record: review.record,
+    issues: review.issues,
+    canApprove: review.canApprove,
+    previewPath: `/admin/preview/${site.code}/?generated=${encodeURIComponent(review.record.id)}`,
+  }
+})
+```
+
+`apps/web/server/api/admin/sites/[siteId]/generated/[id]/approve.post.ts`
+
+```ts
+// POST { mode: 'publish'|'schedule'|'draft', publishAt?, note?, expectedUpdatedAt }:
+// pindahkan hasil AI ke tabel konten (satu transaksi, ADR-010).
+import { readBody } from 'nuxt/server'
+import type { ApproveInput } from '@framework/core'
+import { defineAdminSiteHandler, param } from '../../../../../../utils/admin-api'
+import { useRepositories } from '../../../../../../utils/database'
+import { useMediaStorage } from '../../../../../../utils/media'
+
+export default defineAdminSiteHandler(async ({ site, admin, event }) => {
+  const body = ((await readBody(event)) ?? {}) as Partial<ApproveInput>
+  const input: ApproveInput = {
+    mode: body.mode as ApproveInput['mode'],
+    publishAt: typeof body.publishAt === 'string' ? body.publishAt : undefined,
+    note: typeof body.note === 'string' ? body.note : undefined,
+    expectedUpdatedAt: String(body.expectedUpdatedAt ?? ''),
+  }
+  return useRepositories().generated.approve(site.id, param(event, 'id'), input, admin.user.id, useMediaStorage())
+})
+```
+
+`apps/web/server/api/admin/sites/[siteId]/generated/[id]/reject.post.ts`
+
+```ts
+// POST { note, expectedUpdatedAt }: tolak hasil AI (ARCHIVED, alasan wajib).
+import { readBody } from 'nuxt/server'
+import { defineAdminSiteHandler, param } from '../../../../../../utils/admin-api'
+import { useRepositories } from '../../../../../../utils/database'
+
+export default defineAdminSiteHandler(async ({ site, admin, event }) => {
+  const body = ((await readBody(event)) ?? {}) as { note?: unknown; expectedUpdatedAt?: unknown }
+  return useRepositories().generated.reject(site.id, param(event, 'id'), String(body.note ?? ''), String(body.expectedUpdatedAt ?? ''), admin.user.id)
+})
+```
+
+4. Tulis halaman antrian. Filter site dan status, kotak centang untuk menerbitkan beberapa sekaligus, dan laporan per item bila ada yang gagal. Tautan setiap baris membuka detail di site hasil itu (`/admin/<kode-site>/queue/<id>`), jadi pemilih site di rail ikut berpindah:
+
+`apps/web/app/pages/admin/[site]/queue/index.vue`
+
+```vue
+<!--
+  Antrian terbit (ADR-010, M5a 5a.3): hasil AI dari SEMUA site milik user,
+  terbaru dulu. Pilih beberapa lalu "Terbitkan yang dipilih", atau buka satu
+  untuk pratinjau, pemeriksaan, dan keputusan lain (jadwalkan, draft, tolak).
+-->
+<script setup lang="ts">
+import type { GeneratedListItem, Page } from '@framework/core'
+
+definePageMeta({ layout: 'admin' })
+
+type Item = Json<GeneratedListItem> & { site?: { id: string; code: string; name: string } }
+type QueuePage = Json<Page<GeneratedListItem>> & { items: Item[]; ready: Record<string, number> }
+
+const me = useAdminMe()
+const route = useRoute()
+const router = useRouter()
+
+const siteFilter = ref(String(route.query['site'] ?? ''))
+const status = ref(String(route.query['status'] ?? 'READY_TO_PUBLISH'))
+const page = ref(Number(route.query['page']) || 1)
+const selected = ref<Set<string>>(new Set())
+const busy = ref(false)
+const report = ref<{ ok: number; failed: { title: string; message: string }[] } | null>(null)
+
+const { data, error, pending, refresh } = await useAsyncData(
+  () => `queue-${siteFilter.value}-${status.value}-${page.value}`,
+  () => $fetch<QueuePage>('/api/admin/generated', { query: { status: status.value, page: page.value, ...(siteFilter.value && { siteId: siteFilter.value }) } }),
+  { server: false },
+)
+
+watch([siteFilter, status, page], () => {
+  selected.value = new Set()
+  router.replace({ query: { ...(siteFilter.value && { site: siteFilter.value }), ...(status.value !== 'READY_TO_PUBLISH' && { status: status.value }), ...(page.value > 1 && { page: page.value }) } })
+})
+
+const ready = computed(() => status.value === 'READY_TO_PUBLISH')
+const allChecked = computed(() => Boolean(data.value?.items.length) && data.value!.items.every((i) => selected.value.has(i.id)))
+
+function toggle(id: string, on: boolean) {
+  const next = new Set(selected.value)
+  if (on) next.add(id)
+  else next.delete(id)
+  selected.value = next
+}
+function toggleAll(on: boolean) {
+  selected.value = new Set(on ? (data.value?.items ?? []).map((i) => i.id) : [])
+}
+
+function siteOf(item: Item) {
+  return me.value?.sites.find((s) => s.id === item.siteId) ?? null
+}
+
+async function publishSelected() {
+  const items = (data.value?.items ?? []).filter((i) => selected.value.has(i.id))
+  if (!items.length || !confirm(`Terbitkan ${items.length} hasil AI sekarang? Hasil yang punya galat tidak akan diterbitkan.`)) return
+  busy.value = true
+  report.value = null
+  try {
+    const res = await $fetch<{ results: { id: string; ok: boolean; message?: string }[] }>('/api/admin/generated/approve-bulk', {
+      method: 'POST',
+      body: { items: items.map((i) => ({ siteId: i.siteId, id: i.id, expectedUpdatedAt: i.updatedAt })) },
+    })
+    const titles = new Map(items.map((i) => [i.id, i.title ?? '(tanpa judul)']))
+    report.value = {
+      ok: res.results.filter((r) => r.ok).length,
+      failed: res.results.filter((r) => !r.ok).map((r) => ({ title: titles.get(r.id) ?? r.id, message: r.message ?? 'gagal' })),
+    }
+    selected.value = new Set()
+    await Promise.all([refresh(), refreshQueueCount()])
+  } catch (e) {
+    report.value = { ok: 0, failed: [{ title: 'Semua', message: apiErrorMessage(e) }] }
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Antrian terbit</h1>
+      <div class="adm-head__actions">
+        <button
+          v-if="ready"
+          type="button"
+          class="btn btn--primary"
+          :disabled="busy || selected.size === 0"
+          @click="publishSelected"
+        >
+          {{ busy ? 'Menerbitkan…' : `Terbitkan yang dipilih (${selected.size})` }}
+        </button>
+      </div>
+    </header>
+
+    <div class="filters">
+      <select
+        v-model="siteFilter"
+        aria-label="Site"
+        @change="page = 1"
+      >
+        <option value="">
+          Semua site
+        </option>
+        <option
+          v-for="s in me?.sites ?? []"
+          :key="s.id"
+          :value="s.id"
+        >
+          {{ s.name }}{{ data?.ready[s.id] ? ` (${data.ready[s.id]})` : '' }}
+        </option>
+      </select>
+      <select
+        v-model="status"
+        aria-label="Status"
+        @change="page = 1"
+      >
+        <option value="READY_TO_PUBLISH">
+          Menunggu keputusan
+        </option>
+        <option value="APPROVED">
+          Disetujui
+        </option>
+        <option value="ARCHIVED">
+          Ditolak
+        </option>
+      </select>
+    </div>
+
+    <div
+      v-if="report"
+      class="notice"
+      :class="{ 'notice--error': report.failed.length }"
+      role="status"
+    >
+      <p>{{ report.ok }} hasil AI diterbitkan.</p>
+      <template v-if="report.failed.length">
+        <p>{{ report.failed.length }} tidak diterbitkan. Buka satu per satu untuk melihat pemeriksaannya:</p>
+        <ul>
+          <li
+            v-for="f in report.failed"
+            :key="f.title"
+          >
+            <strong>{{ f.title }}</strong>: {{ f.message }}
+          </li>
+        </ul>
+      </template>
+    </div>
+
+    <p
+      v-if="error"
+      class="notice notice--error"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <p
+      v-else-if="pending && !data"
+      class="muted"
+    >
+      Memuat antrian…
+    </p>
+    <template v-else-if="data">
+      <div
+        v-if="data.items.length"
+        class="table-scroll"
+      >
+        <table class="table">
+          <thead>
+            <tr>
+              <th v-if="ready">
+                <input
+                  type="checkbox"
+                  aria-label="Pilih semua"
+                  :checked="allChecked"
+                  @change="toggleAll(($event.target as HTMLInputElement).checked)"
+                >
+              </th>
+              <th>Judul</th>
+              <th>Site</th>
+              <th class="hide-sm">
+                Catatan agent
+              </th>
+              <th>{{ ready ? 'Dibuat' : 'Diputuskan' }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in data.items"
+              :key="item.id"
+            >
+              <td v-if="ready">
+                <input
+                  type="checkbox"
+                  :aria-label="`Pilih ${item.title ?? 'hasil AI'}`"
+                  :checked="selected.has(item.id)"
+                  @change="toggle(item.id, ($event.target as HTMLInputElement).checked)"
+                >
+              </td>
+              <td>
+                <NuxtLink
+                  v-if="siteOf(item)"
+                  class="table__title"
+                  :to="`/admin/${siteOf(item)!.code}/queue/${item.id}`"
+                >
+                  {{ item.title ?? '(tanpa judul)' }}
+                </NuxtLink>
+                <div class="mono muted">
+                  {{ item.externalId }}
+                </div>
+              </td>
+              <td>{{ item.site?.name ?? '-' }}</td>
+              <td class="hide-sm muted">
+                {{ item.agentNote ? (item.agentNote.length > 90 ? `${item.agentNote.slice(0, 90)}…` : item.agentNote) : '-' }}
+              </td>
+              <td class="nowrap">
+                {{ siteOf(item) ? formatSiteDate(ready ? item.generatedAt : item.reviewedAt, siteOf(item)!) : '-' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p
+        v-else
+        class="muted"
+      >
+        {{ ready ? 'Tidak ada hasil AI yang menunggu.' : 'Belum ada.' }}
+      </p>
+      <nav
+        v-if="data.totalPages > 1"
+        class="pager"
+        aria-label="Halaman"
+      >
+        <button
+          type="button"
+          class="btn btn--small"
+          :disabled="page <= 1"
+          @click="page--"
+        >
+          Sebelumnya
+        </button>
+        <span>{{ data.page }} / {{ data.totalPages }}</span>
+        <button
+          type="button"
+          class="btn btn--small"
+          :disabled="page >= data.totalPages"
+          @click="page++"
+        >
+          Berikutnya
+        </button>
+      </nav>
+    </template>
+  </div>
+</template>
+```
+
+5. Tulis halaman detail. Galat dan peringatan tampil di atas, pratinjau dalam iframe (hanya bila tidak ada galat), dan panel keputusan di samping. Tombol terbit, jadwal, dan draft nonaktif selama ada galat; tolak selalu bisa dengan alasan wajib. Bila server menjawab 409 (agent memperbarui hasil itu sesudah halaman dibuka), muncul tombol "Muat ulang":
+
+`apps/web/app/pages/admin/[site]/queue/[id].vue`
+
+```vue
+<!--
+  Satu hasil AI (ADR-010, M5a 5a.3): pemeriksaan (galat memblokir,
+  peringatan hanya ditampilkan), pratinjau dengan template site, referensi,
+  lalu keputusan: terbitkan sekarang, jadwalkan, pindahkan sebagai draft,
+  atau tolak dengan alasan. Setiap keputusan membawa updatedAt yang sedang
+  ditampilkan; bila agent sudah memperbaruinya, server menolak (409).
+-->
+<script setup lang="ts">
+import type { ArticleRecord, GeneratedRecord, ReviewIssue } from '@framework/core'
+
+definePageMeta({ layout: 'admin' })
+
+interface Detail {
+  record: Json<GeneratedRecord>
+  issues: ReviewIssue[]
+  canApprove: boolean
+  previewPath: string
+}
+interface PayloadView {
+  excerpt: string | null
+  category: string | null
+  tags: string[]
+  references: { title: string; url: string; publisher?: string; kind?: string }[]
+}
+
+const site = useAdminSite()
+const route = useRoute()
+const id = computed(() => String(route.params['id']))
+
+const { data, error, pending, refresh } = await useAsyncData(
+  () => `generated-${site.value?.id}-${id.value}`,
+  () => (site.value ? adminApi<Detail>(site.value.id, `generated/${id.value}`) : Promise.resolve(null)),
+  { server: false },
+)
+
+const record = computed(() => data.value?.record ?? null)
+const ready = computed(() => record.value?.status === 'READY_TO_PUBLISH')
+const errorsList = computed(() => (data.value?.issues ?? []).filter((i) => i.level === 'error'))
+const warningsList = computed(() => (data.value?.issues ?? []).filter((i) => i.level === 'warning'))
+
+/** Bagian payload yang ditampilkan; dibaca longgar karena payload bisa rusak. */
+const payload = computed<PayloadView>(() => {
+  const p = (record.value?.payload ?? {}) as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === 'string' ? v : null)
+  const refs = Array.isArray(p['references']) ? p['references'] : []
+  return {
+    excerpt: str(p['excerpt']),
+    category: str(p['category']),
+    tags: Array.isArray(p['tags']) ? p['tags'].filter((t): t is string => typeof t === 'string') : [],
+    references: refs.filter((r): r is PayloadView['references'][number] => typeof r === 'object' && r !== null && typeof (r as { url?: unknown }).url === 'string'),
+  }
+})
+
+const scheduleLocal = ref('')
+const note = ref('')
+const rejectNote = ref('')
+const busy = ref(false)
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const result = ref<Json<ArticleRecord> | null>(null)
+const conflict = ref(false)
+
+async function decide(path: 'approve' | 'reject', body: Record<string, unknown>, done: string) {
+  if (!site.value || !record.value) return
+  busy.value = true
+  message.value = null
+  conflict.value = false
+  try {
+    const res = await adminApi<{ article?: Json<ArticleRecord> }>(site.value.id, `generated/${id.value}/${path}`, {
+      method: 'POST',
+      body: { ...body, expectedUpdatedAt: record.value.updatedAt },
+    })
+    result.value = res.article ?? null
+    message.value = { kind: 'ok', text: done }
+    await Promise.all([refresh(), refreshQueueCount()])
+  } catch (e) {
+    conflict.value = apiStatus(e) === 409
+    const fields = apiFieldErrors(e)
+    const detail = Object.entries(fields).map(([f, m]) => (f ? `${f}: ${m}` : m)).join('; ')
+    message.value = { kind: 'error', text: detail || apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+function publishNow() {
+  if (confirm('Terbitkan sekarang? Artikel langsung tampil di site.')) {
+    void decide('approve', { mode: 'publish', note: note.value || undefined }, 'Diterbitkan.')
+  }
+}
+function schedule() {
+  const iso = site.value ? zonedInputToIso(scheduleLocal.value, site.value.timezone) : null
+  if (!iso) {
+    message.value = { kind: 'error', text: 'Isi tanggal dan jam terbit.' }
+    return
+  }
+  void decide('approve', { mode: 'schedule', publishAt: iso, note: note.value || undefined }, 'Dijadwalkan.')
+}
+function toDraft() {
+  void decide('approve', { mode: 'draft', note: note.value || undefined }, 'Dipindahkan sebagai draft. Lanjutkan di editor artikel.')
+}
+function reject() {
+  if (!rejectNote.value.trim()) {
+    message.value = { kind: 'error', text: 'Alasan penolakan wajib diisi.' }
+    return
+  }
+  void decide('reject', { note: rejectNote.value }, 'Ditolak dan diarsipkan.')
+}
+</script>
+
+<template>
+  <div>
+    <p>
+      <NuxtLink
+        v-if="site"
+        :to="`/admin/${site.code}/queue`"
+      >
+        ← Antrian terbit
+      </NuxtLink>
+    </p>
+
+    <p
+      v-if="error"
+      class="notice notice--error"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <p
+      v-else-if="pending && !data"
+      class="muted"
+    >
+      Memuat hasil AI…
+    </p>
+
+    <template v-else-if="data && record && site">
+      <header class="adm-head">
+        <h1>{{ (record.payload as { title?: unknown })?.title ?? '(tanpa judul)' }}</h1>
+        <AdminStatusBadge :status="record.status" />
+      </header>
+      <p class="muted">
+        {{ site.name }} · <span class="mono">{{ record.externalId }}</span> · dibuat {{ formatSiteDate(record.generatedAt, site) }}
+      </p>
+
+      <div
+        v-if="message"
+        class="notice"
+        :class="{ 'notice--error': message.kind === 'error' }"
+        role="status"
+      >
+        {{ message.text }}
+        <button
+          v-if="conflict"
+          type="button"
+          class="btn btn--small"
+          @click="refresh()"
+        >
+          Muat ulang
+        </button>
+        <NuxtLink
+          v-if="result"
+          :to="`/admin/${site.code}/articles/${result.id}`"
+        >
+          Buka artikel
+        </NuxtLink>
+      </div>
+
+      <div class="adm-editor">
+        <div class="stack">
+          <section class="adm-panel">
+            <h2>Pemeriksaan</h2>
+            <p
+              v-if="!errorsList.length && !warningsList.length"
+              class="muted"
+            >
+              Tidak ada masalah.
+            </p>
+            <ul class="issues">
+              <li
+                v-for="(i, n) in errorsList"
+                :key="`e${n}`"
+                class="issues__error"
+              >
+                <strong>Galat</strong><span v-if="i.field"> · <span class="mono">{{ i.field }}</span></span>: {{ i.message }}
+              </li>
+              <li
+                v-for="(i, n) in warningsList"
+                :key="`w${n}`"
+                class="issues__warning"
+              >
+                <strong>Peringatan</strong><span v-if="i.field"> · <span class="mono">{{ i.field }}</span></span>: {{ i.message }}
+              </li>
+            </ul>
+          </section>
+
+          <section class="adm-panel">
+            <h2>Pratinjau</h2>
+            <iframe
+              v-if="errorsList.length === 0 || !ready"
+              :src="data.previewPath"
+              title="Pratinjau hasil AI dengan template site"
+              class="preview-frame"
+              loading="lazy"
+            />
+            <p
+              v-else
+              class="muted"
+            >
+              Pratinjau tersedia setelah galat diperbaiki.
+            </p>
+          </section>
+        </div>
+
+        <aside class="stack">
+          <section
+            v-if="ready"
+            class="adm-panel stack"
+          >
+            <h2>Keputusan</h2>
+            <label class="field">
+              <span>Catatan (opsional)</span>
+              <input
+                v-model="note"
+                type="text"
+              >
+            </label>
+            <button
+              type="button"
+              class="btn btn--primary"
+              :disabled="busy || !data.canApprove"
+              @click="publishNow"
+            >
+              Terbitkan sekarang
+            </button>
+            <div class="row">
+              <input
+                v-model="scheduleLocal"
+                type="datetime-local"
+                aria-label="Tanggal dan jam terbit"
+              >
+              <button
+                type="button"
+                class="btn"
+                :disabled="busy || !data.canApprove"
+                @click="schedule"
+              >
+                Jadwalkan
+              </button>
+            </div>
+            <span class="field__hint">Zona waktu {{ site.timezone }}</span>
+            <button
+              type="button"
+              class="btn"
+              :disabled="busy || !data.canApprove"
+              @click="toDraft"
+            >
+              Pindahkan sebagai draft
+            </button>
+            <p
+              v-if="!data.canApprove"
+              class="field__hint"
+            >
+              Masih ada galat: hasil ini hanya bisa ditolak.
+            </p>
+            <label class="field">
+              <span>Alasan penolakan</span>
+              <textarea
+                v-model="rejectNote"
+                rows="3"
+                maxlength="1000"
+              />
+            </label>
+            <button
+              type="button"
+              class="btn btn--danger"
+              :disabled="busy"
+              @click="reject"
+            >
+              Tolak
+            </button>
+          </section>
+          <section
+            v-else
+            class="adm-panel"
+          >
+            <h2>Keputusan</h2>
+            <p>
+              {{ record.status === 'APPROVED' ? 'Disetujui' : 'Ditolak' }}
+              {{ record.reviewedAt ? formatSiteDate(record.reviewedAt, site) : '' }}
+            </p>
+            <p v-if="record.reviewNote">
+              {{ record.reviewNote }}
+            </p>
+            <NuxtLink
+              v-if="record.articleId"
+              :to="`/admin/${site.code}/articles/${record.articleId}`"
+            >
+              Buka artikel
+            </NuxtLink>
+          </section>
+
+          <section
+            v-if="record.agentNote"
+            class="adm-panel"
+          >
+            <h2>Catatan agent</h2>
+            <p>{{ record.agentNote }}</p>
+          </section>
+
+          <section class="adm-panel">
+            <h2>Isi</h2>
+            <p v-if="payload.excerpt">
+              {{ payload.excerpt }}
+            </p>
+            <p class="muted">
+              Kategori: <span class="mono">{{ payload.category ?? '-' }}</span>
+            </p>
+            <p
+              v-if="payload.tags.length"
+              class="muted"
+            >
+              Tag: {{ payload.tags.join(', ') }}
+            </p>
+          </section>
+
+          <section class="adm-panel">
+            <h2>Referensi ({{ payload.references.length }})</h2>
+            <ol v-if="payload.references.length">
+              <li
+                v-for="r in payload.references"
+                :key="r.url"
+              >
+                <a
+                  :href="r.url"
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                >{{ r.title }}</a>
+                <span
+                  v-if="r.publisher"
+                  class="muted"
+                > · {{ r.publisher }}</span>
+              </li>
+            </ol>
+            <p
+              v-else
+              class="muted"
+            >
+              Tidak ada referensi.
+            </p>
+          </section>
+        </aside>
+      </div>
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.preview-frame {
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--line, #e3e5e3);
+  border-radius: 6px;
+  background: #fff;
+}
+</style>
+```
+
+6. Tambahkan form referensi di editor artikel, sebagai komponen sendiri: judul, URL, penerbit, jenis, urutan naik/turun, hapus. Form artikel kini mengisi `references` dari isian ini, bukan sekadar meneruskan referensi yang dimuat:
+
+`apps/web/app/components/admin/ReferencesEditor.vue`
+
+```vue
+<!--
+  Referensi artikel (ADR-010): sumber yang dipakai, tampil di halaman
+  sesuai urutan. Satu baris = judul, URL, penerbit, jenis.
+-->
+<script setup lang="ts">
+export interface ReferenceRow {
+  title: string
+  url: string
+  publisher: string
+  kind: string
+}
+
+const model = defineModel<ReferenceRow[]>({ required: true })
+const props = defineProps<{ errors: Record<string, string> }>()
+
+const KINDS = [
+  { value: 'ARTICLE', label: 'Artikel' },
+  { value: 'VIDEO', label: 'Video' },
+  { value: 'IMAGE', label: 'Gambar' },
+  { value: 'OTHER', label: 'Lainnya' },
+]
+
+const err = (i: number, field: string) => props.errors[`references.${i}.${field}`] ?? null
+
+function add() {
+  model.value = [...model.value, { title: '', url: '', publisher: '', kind: 'ARTICLE' }]
+}
+function remove(i: number) {
+  model.value = model.value.filter((_, j) => j !== i)
+}
+function move(i: number, by: -1 | 1) {
+  const next = [...model.value]
+  const [row] = next.splice(i, 1)
+  if (row) next.splice(i + by, 0, row)
+  model.value = next
+}
+</script>
+
+<template>
+  <section
+    class="adm-panel refs"
+    aria-labelledby="judul-referensi"
+  >
+    <h2 id="judul-referensi">
+      Sumber dan referensi
+    </h2>
+    <p class="field__hint">
+      Tampil di akhir artikel. Cantumkan setiap sumber yang dipakai.
+    </p>
+    <ol
+      v-if="model.length"
+      class="refs__list"
+    >
+      <li
+        v-for="(r, i) in model"
+        :key="i"
+        class="refs__row"
+      >
+        <label class="field">
+          <span>Judul</span>
+          <input
+            v-model="r.title"
+            type="text"
+            :aria-invalid="!!err(i, 'title') || undefined"
+          >
+          <span
+            v-if="err(i, 'title')"
+            class="field__error"
+          >{{ err(i, 'title') }}</span>
+        </label>
+        <label class="field">
+          <span>URL</span>
+          <input
+            v-model="r.url"
+            type="url"
+            placeholder="https://…"
+            :aria-invalid="!!err(i, 'url') || undefined"
+          >
+          <span
+            v-if="err(i, 'url')"
+            class="field__error"
+          >{{ err(i, 'url') }}</span>
+        </label>
+        <div class="row">
+          <label class="field">
+            <span>Penerbit</span>
+            <input
+              v-model="r.publisher"
+              type="text"
+            >
+          </label>
+          <label class="field">
+            <span>Jenis</span>
+            <select v-model="r.kind">
+              <option
+                v-for="k in KINDS"
+                :key="k.value"
+                :value="k.value"
+              >{{ k.label }}</option>
+            </select>
+          </label>
+        </div>
+        <div class="refs__actions">
+          <button
+            type="button"
+            class="btn btn--ghost btn--small"
+            :disabled="i === 0"
+            :aria-label="`Naikkan referensi ${i + 1}`"
+            @click="move(i, -1)"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            class="btn btn--ghost btn--small"
+            :disabled="i === model.length - 1"
+            :aria-label="`Turunkan referensi ${i + 1}`"
+            @click="move(i, 1)"
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            class="btn btn--ghost btn--small"
+            @click="remove(i)"
+          >
+            Hapus
+          </button>
+        </div>
+      </li>
+    </ol>
+    <button
+      type="button"
+      class="btn btn--small refs__add"
+      @click="add"
+    >
+      Tambah referensi
+    </button>
+  </section>
+</template>
+
+<style scoped>
+.refs__list {
+  list-style: decimal;
+  padding-left: 1.25rem;
+  margin: 0 0 0.75rem;
+  display: grid;
+  gap: 1rem;
+}
+.refs__row {
+  display: grid;
+  gap: 0.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line, #e3e5e3);
+}
+.refs__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.refs__add {
+  justify-self: start;
+  width: auto;
+}
+</style>
+```
+
+7. Uji di browser sungguhan. Selain test core untuk `preview` dan `withPreviewArticle`, jalankan alur ini dengan Playwright: login, buka antrian, buka hasil yang valid (pratinjau tampil dengan template site), buka hasil yang rusak (galat tampil, pratinjau tidak), lalu tambah referensi di editor; konsol browser harus bersih. Untuk menguji approve dan tolak lewat API, pakai baris hasil AI sementara, bukan baris seed: artikel yang terbit di site seed mengubah snapshot view model.

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { EditorError } from '../editor/errors'
 import { createRepositories } from '../repositories'
 import type { ImageReader } from './generated-repository'
+import { withPreviewArticle } from './preview-content'
 
 const OTHER = '01930000-0000-7000-8000-000000000102' // dapur-nusantara (seed, hanya dibaca)
 const OTHER_MEDIA_KEY = 'dapur-nusantara/2026/11/rendang.webp'
@@ -260,6 +261,36 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
       expect(((failed as PromiseRejectedResult).reason as EditorError).kind).toBe('conflict')
       const created = await db.select({ id: articles.id }).from(articles).where(eq(articles.slug, `balapan-${run}`))
       expect(created).toHaveLength(1)
+    })
+  })
+
+  describe('pratinjau', () => {
+    it('artikel sintetis dari payload; media baru id sementara; konten lain tidak terpengaruh', async () => {
+      files.set(`${code}/pratinjau.png`, png(640, 480))
+      const id = await ingest(payload({
+        slug: `pratinjau-${run}`,
+        cover: 'c',
+        images: [{ key: 'c', storageKey: `${code}/pratinjau.png`, altText: 'Sampul', credit: 'F' }],
+        body: { version: 1, blocks: [{ type: 'image', image: 'c' }] },
+      }))
+      const { review, preview } = await generated.preview(SITE, id, storage)
+      expect(review.canApprove).toBe(true)
+      expect(preview?.article).toMatchObject({ slug: `pratinjau-${run}`, category: { slug: 'resep' }, author: { slug: 'redaksi' } })
+      expect(preview?.article.tags.map((t) => t.slug)).toEqual(['pedas', `baru-${run}`])
+      const mediaId = preview?.article.featuredMedia?.id ?? ''
+      expect(preview?.article.body.blocks).toEqual([{ type: 'image', mediaId }])
+
+      const content = withPreviewArticle(repos.content, SITE, preview!)
+      expect(await content.getPublishedArticle(SITE, `pratinjau-${run}`)).toBe(preview!.article)
+      expect(await content.getPublishedArticle(OTHER, `pratinjau-${run}`)).toBeNull()
+      expect((await content.getMediaByIds(SITE, [mediaId])).map((m) => m.storageKey)).toEqual([`${code}/pratinjau.png`])
+      // Tidak ada yang ditulis ke database.
+      expect(await db.select({ id: media.id }).from(media).where(eq(media.storageKey, `${code}/pratinjau.png`))).toEqual([])
+    })
+
+    it('masih ada galat: tanpa pratinjau', async () => {
+      const { preview } = await generated.preview(SITE, await ingest(payload({ category: 'minuman' })), storage)
+      expect(preview).toBeNull()
     })
   })
 
