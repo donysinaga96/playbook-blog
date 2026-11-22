@@ -21,6 +21,7 @@ export const mediaColumns = {
   altText: media.altText,
   caption: media.caption,
   credit: media.credit,
+  sourceUrl: media.sourceUrl,
   focalX: media.focalX,
   focalY: media.focalY,
 }

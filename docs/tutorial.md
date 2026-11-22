@@ -3490,6 +3490,8 @@ describe.skipIf(!hasDb)('data seed di database dev', () => {
    - Menu tidak pernah memuat tautan mati. Repository mengembalikan tujuan (`target`), bukan URL; pola URL urusan lapisan view model.
 2. Tulis tipe bersama (batas nomor halaman `MAX_PAGE` ditambahkan di bab "Membangun Layar Admin"): `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
 
+   (`MediaRef.sourceUrl` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `packages/core/src/repositories/types.ts`
 
 ```ts
@@ -3559,6 +3561,7 @@ export interface MediaRef {
   altText: string | null
   caption: string | null
   credit: string | null
+  sourceUrl: string | null
   focalX: number
   focalY: number
 }
@@ -3592,6 +3595,7 @@ export const mediaColumns = {
   altText: media.altText,
   caption: media.caption,
   credit: media.credit,
+  sourceUrl: media.sourceUrl,
   focalX: media.focalX,
   focalY: media.focalY,
 }
@@ -3778,11 +3782,14 @@ export type SiteRepository = ReturnType<typeof createSiteRepository>
 
 5. Tulis repository konten: feed dan listing per kategori (termasuk sub-kategori), tag, dan penulis dengan paginasi; pencarian full-text per site; detail artikel dan halaman berdasarkan slug; pohon kategori; detail kategori, tag, dan penulis; serta pencarian redirect. Ringkasan artikel dimuat dalam dua query paralel (artikel + tag) agar tidak terjadi N+1. Fungsi `getMediaByIds` ditambahkan di bab "Membangun Halaman Publik dari View Model", dan `listSitemapEntries` di bab "Menambahkan Embed, SEO, dan Feed":
 
+   (`references` di `ArticleDetail` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `packages/core/src/repositories/content-repository.ts`
 
 ```ts
 import {
   and,
+  articleReferences,
   articleTags,
   articles,
   asc,
@@ -3854,6 +3861,15 @@ export interface ArticleDetail extends ArticleSummary {
   updatedAt: Date
   /** Induk kategori, untuk breadcrumb. */
   categoryParent: CategoryRef | null
+  /** Sumber dan referensi sesuai urutan (ADR-010). */
+  references: ReferenceRef[]
+}
+
+export interface ReferenceRef {
+  title: string
+  url: string
+  publisher: string | null
+  kind: 'ARTICLE' | 'VIDEO' | 'IMAGE' | 'OTHER'
 }
 
 export interface ArticleListQuery extends PageQuery {
@@ -4120,6 +4136,11 @@ export function createContentRepository(ctx: RepositoryContext) {
           .where(and(eq(categories.siteId, siteId), eq(categories.id, row.categoryParentId)))
         categoryParent = parent ?? null
       }
+      const references = await db
+        .select({ title: articleReferences.title, url: articleReferences.url, publisher: articleReferences.publisher, kind: articleReferences.kind })
+        .from(articleReferences)
+        .where(and(eq(articleReferences.siteId, siteId), eq(articleReferences.articleId, row.id)))
+        .orderBy(asc(articleReferences.position))
       const { body, skipped } = parseBodyLenient(row.body)
       return {
         ...summary,
@@ -4128,6 +4149,7 @@ export function createContentRepository(ctx: RepositoryContext) {
         seo: row.seo as Record<string, unknown>,
         updatedAt: row.updatedAt,
         categoryParent,
+        references: references.map((r) => ({ ...r, kind: r.kind as ReferenceRef['kind'] })),
       }
     },
 
@@ -6339,6 +6361,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
    - Tanggal sudah diformat (`DateView` berisi `iso` dan `label`).
    - Teks selalu polos, dan hanya tipe JSON agar bisa dikirim dari server ke browser.
 
+   (`ImageView.sourceUrl`, `ReferenceView`, dan `ArticleView.references` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `packages/template-kit/src/view-models.ts`
 
 ```ts
@@ -6367,6 +6391,16 @@ export interface ImageView {
   focalY: number
   caption: string | null
   credit: string | null
+  /** Halaman asal gambar bila diambil dari sumber lain (ADR-010). */
+  sourceUrl: string | null
+}
+
+/** Satu sumber yang dipakai artikel (ADR-010), tampil sesuai urutan. */
+export interface ReferenceView {
+  title: string
+  url: string
+  publisher: string | null
+  kind: 'ARTICLE' | 'VIDEO' | 'IMAGE' | 'OTHER'
 }
 
 export interface DateView {
@@ -6491,6 +6525,8 @@ export interface ArticleView {
   tags: LinkView[]
   blocks: BlockView[]
   format: string
+  /** Sumber dan referensi; kosong = bagian itu tidak ditampilkan. */
+  references: ReferenceView[]
 }
 
 export interface PageView {
@@ -7539,6 +7575,8 @@ describe('createTemplateRegistry', () => {
 
 9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`; sisi tulis ada di bab "Mengunggah Media"). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
 
+   (`sourceUrl` di `toImageView` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `packages/core/src/media/storage.ts`
 
 ```ts
@@ -7590,6 +7628,7 @@ export function toImageView(media: MediaRef, mediaUrl: MediaUrlResolver, fallbac
     focalY: media.focalY,
     caption: media.caption,
     credit: media.credit,
+    sourceUrl: media.sourceUrl,
   }
 }
 ```
@@ -7622,13 +7661,13 @@ describe('createMediaUrlResolver', () => {
 describe('toImageView', () => {
   const media: MediaRef = {
     id: 'm1', storageKey: 'kabar-tekno/2026/11/hp.webp', mimeType: 'image/webp', width: 1600, height: 900,
-    altText: null, caption: 'Foto: redaksi', credit: null, focalX: 0.62, focalY: 0.4,
+    altText: null, caption: 'Foto: redaksi', credit: null, sourceUrl: null, focalX: 0.62, focalY: 0.4,
   }
 
   it('memetakan semua field dan memakai alt cadangan', () => {
     expect(toImageView(media, createMediaUrlResolver(), 'Ponsel lipat')).toEqual({
       src: '/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat', width: 1600, height: 900,
-      focalX: 0.62, focalY: 0.4, caption: 'Foto: redaksi', credit: null,
+      focalX: 0.62, focalY: 0.4, caption: 'Foto: redaksi', credit: null, sourceUrl: null,
     })
   })
 })
@@ -8142,6 +8181,8 @@ defineProps<{ items: LinkView[] }>()
 </template>
 ```
 
+   (`ImageCredit` dan tautan "Tonton di sumber asli" ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `templates/base/src/components/BlockRenderer.vue`
 
 ```vue
@@ -8158,6 +8199,7 @@ defineProps<{ items: LinkView[] }>()
 -->
 <script setup lang="ts">
 import type { BlockView } from '@framework/template-kit'
+import ImageCredit from './ImageCredit.vue'
 import SmartImage from './SmartImage.vue'
 
 defineProps<{ blocks: BlockView[] }>()
@@ -8189,12 +8231,9 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
         class="prose__figure"
       >
         <SmartImage :image="block.image" />
-        <figcaption v-if="block.caption || block.image.credit">
+        <figcaption v-if="block.caption || block.image.credit || block.image.sourceUrl">
           {{ block.caption }}
-          <span
-            v-if="block.image.credit"
-            class="prose__credit"
-          >{{ block.image.credit }}</span>
+          <ImageCredit :image="block.image" />
         </figcaption>
       </figure>
       <blockquote v-else-if="block.type === 'quote'">
@@ -8232,6 +8271,13 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
           referrerpolicy="strict-origin-when-cross-origin"
           sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
         />
+        <figcaption>
+          <a
+            :href="block.url"
+            target="_blank"
+            rel="noopener noreferrer nofollow"
+          >Tonton di sumber asli ({{ PROVIDER_LABEL[block.provider] }})</a>
+        </figcaption>
       </figure>
       <p
         v-else-if="block.type === 'embed'"
@@ -8357,13 +8403,17 @@ function sectionComponent(type: string) {
 </template>
 ```
 
+   (Bagian referensi dan `ImageCredit` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `templates/base/src/views/ArticleView.vue`
 
 ```vue
 <script setup lang="ts">
 import type { ArticleView } from '@framework/template-kit'
 import BlockRenderer from '../components/BlockRenderer.vue'
+import ArticleReferences from '../components/ArticleReferences.vue'
 import BreadcrumbNav from '../components/BreadcrumbNav.vue'
+import ImageCredit from '../components/ImageCredit.vue'
 import SmartImage from '../components/SmartImage.vue'
 
 defineProps<{ vm: ArticleView }>()
@@ -8412,15 +8462,16 @@ defineProps<{ vm: ArticleView }>()
         ratio="16/9"
         loading="eager"
       />
-      <figcaption v-if="vm.image.caption || vm.image.credit">
+      <figcaption v-if="vm.image.caption || vm.image.credit || vm.image.sourceUrl">
         {{ vm.image.caption }}
-        <span
-          v-if="vm.image.credit"
-          class="prose__credit"
-        >{{ vm.image.credit }}</span>
+        <ImageCredit :image="vm.image" />
       </figcaption>
     </figure>
     <BlockRenderer :blocks="vm.blocks" />
+    <ArticleReferences
+      v-if="vm.references.length > 0"
+      :items="vm.references"
+    />
     <footer
       v-if="vm.tags.length > 0"
       class="article__tags"
@@ -8665,6 +8716,8 @@ defineProps<{ vm: NotFoundView }>()
 ```
 
 16. Tulis CSS dasar. Semua aturan di bawah `.tpl` (wrapper halaman), dan semua nilai visual dari variabel token. Warna sekunder diturunkan dengan `color-mix`, jadi token warna cukup tiga:
+
+   (Gaya referensi dan tautan sumber ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 `templates/base/src/styles/base.css`
 
@@ -9099,6 +9152,45 @@ defineProps<{ vm: NotFoundView }>()
 
 .tpl .prose__figure img {
   border-radius: var(--radius-card);
+}
+
+.tpl .prose__credit a,
+.tpl .prose__embed--frame figcaption a {
+  color: inherit;
+}
+
+.tpl .prose__embed--frame figcaption {
+  margin-top: 0.5rem;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .article__references {
+  margin-block: 2rem 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--c-border);
+  font-size: 0.9375rem;
+}
+
+.tpl .article__references h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.0625rem;
+}
+
+.tpl .article__references ol {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.tpl .article__references a {
+  overflow-wrap: anywhere;
+}
+
+.tpl .article__reference-meta {
+  margin-left: 0.4rem;
+  color: var(--c-muted);
 }
 
 .tpl .article__tags ul {
@@ -9546,6 +9638,8 @@ export default defineConfig({
 
 22. Uji render SSR semua view base dengan view model contoh. Test ini memastikan manifest menunjuk ke file yang benar, setiap view menampilkan datanya, dan teks konten selalu di-escape:
 
+   (Referensi di fixture artikel ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `templates/base/src/test-fixtures.ts`
 
 ```ts
@@ -9571,6 +9665,7 @@ export const image: ImageView = {
   focalY: 0.4,
   caption: 'Ponsel lipat generasi ketiga',
   credit: 'Redaksi',
+  sourceUrl: null,
 }
 
 const date = { iso: '2026-11-17T03:00:00.000Z', label: '17 November 2026' }
@@ -9632,6 +9727,10 @@ export const views: { [V in ViewName]: ViewModelOf<V> } = {
     image,
     tags: [{ label: 'Android', href: '/tag/android' }],
     format: 'review',
+    references: [
+      { title: 'Sumber uji', url: 'https://contoh.test/sumber', publisher: 'Contoh', kind: 'ARTICLE' },
+      { title: 'Video uji', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', publisher: null, kind: 'VIDEO' },
+    ],
     blocks: [
       { type: 'paragraph', text: 'Paragraf <b>polos</b>.' },
       { type: 'heading', level: 3, text: 'Subjudul' },
@@ -9753,6 +9852,20 @@ describe('template base: view', () => {
     expect(html).toContain('Lihat di X')
     expect(html).toContain('rel="tag"')
     expect(html).toContain('article--review')
+  })
+
+  it('artikel: referensi berurutan, sumber gambar, dan tautan sumber video (ADR-010)', async () => {
+    const withSource = { ...views.article, image: views.article.image && { ...views.article.image, sourceUrl: 'https://contoh.test/foto' } }
+    const html = await render(await load(base.views.article), { vm: withSource })
+    expect(html).toContain('Sumber dan referensi')
+    expect(html).toMatch(/<a href="https:\/\/contoh\.test\/sumber" target="_blank" rel="noopener noreferrer nofollow">Sumber uji<\/a>/)
+    expect(html.indexOf('Sumber uji')).toBeLessThan(html.indexOf('Video uji'))
+    expect(html).toContain('Contoh')
+    expect(html).toMatch(/href="https:\/\/contoh\.test\/foto"[^>]*>Redaksi<\/a>/)
+    expect(html).toContain('Tonton di sumber asli (YouTube)')
+
+    const none = await render(await load(base.views.article), { vm: { ...views.article, references: [] } })
+    expect(none).not.toContain('Sumber dan referensi')
   })
 
   it('tipe block tidak dikenal tidak merender apa-apa dan tidak crash', async () => {
@@ -10585,6 +10698,8 @@ describe('createDateFormatter', () => {
    - Artikel featured tampil di atas home halaman 1 dan tidak diulang di daftar terbaru.
    - Block yang dilewati dan block gambar yang medianya tidak ada dikumpulkan di `issues` untuk log, tidak membuat halaman gagal.
 
+   (`references` dan bahan JSON-LD artikel ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `packages/core/src/views/build-page.ts`
 
 ```ts
@@ -10999,6 +11114,7 @@ export function createPageBuilder(
       tags: found.tags.map((t) => ({ label: t.name, href: ctx.urls.tag(t.slug) })),
       blocks: await blocks(ctx, found.body.blocks, found.bodyIssues, `artikel ${found.slug}`),
       format: found.format,
+      references: found.references.map((r) => ({ title: r.title, url: r.url, publisher: r.publisher, kind: r.kind })),
     }
     return {
       vm,
@@ -11014,6 +11130,8 @@ export function createPageBuilder(
           modifiedTime: found.updatedAt.toISOString(),
           section: found.category.name,
           tags: found.tags.map((t) => t.name),
+          author: found.author?.name ?? null,
+          citations: found.references.map((r) => ({ name: r.title, url: r.url })),
         },
       },
     }
@@ -11476,7 +11594,14 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
         siteName: 'Kabar Tekno',
         locale: 'id_ID',
       },
-      article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'] },
+      article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'], author: 'Budi Santoso', citations: [] },
+      jsonLd: expect.objectContaining({
+        '@type': 'Article',
+        headline: 'Ponsel lipat makin murah: layak dibeli?',
+        datePublished: '2026-11-10T01:00:00.000Z',
+        author: { '@type': 'Person', name: 'Budi Santoso' },
+        publisher: { '@type': 'Organization', name: 'Kabar Tekno' },
+      }),
       feedUrl: 'https://tekno.localhost/rss.xml',
       favicon: null,
     })
@@ -11523,7 +11648,7 @@ describe('body rusak dan embed', () => {
     id: 'a1', title: 'Judul', slug: 'judul', excerpt: null, format: 'standard', isFeatured: false,
     publishedAt: new Date('2026-11-10T01:00:00Z'), updatedAt: new Date('2026-11-10T01:00:00Z'),
     category: { id: 'c1', name: 'Umum', slug: 'umum' }, categoryParent: null, author: null,
-    featuredMedia: null, tags: [], attributes: {}, seo: { title: 123 }, body, bodyIssues: skipped,
+    featuredMedia: null, tags: [], attributes: {}, seo: { title: 123 }, body, bodyIssues: skipped, references: [],
   }
   const content = {
     getPublishedArticle: async (_siteId: string, slug: string) => (slug === 'judul' ? article : null),
@@ -11789,6 +11914,8 @@ export function usePageState() {
 
 14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` dan `app.vue` tinggal `<NuxtPage />`; di bab "Mengatur Tema dari Admin" isinya pindah lagi ke komponen `app/components/PublicPage.vue` (dipakai juga pratinjau tema). File di bawah adalah lokasi terakhirnya:
 
+   (Pemasangan JSON-LD di `<head>` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `apps/web/app/components/PublicPage.vue`
 
 ```vue
@@ -11850,9 +11977,13 @@ const links = computed(() => {
 // Pratinjau tema di admin: tautan dan form dimatikan agar iframe tidak
 // berpindah ke alamat site di host admin; halaman dipilih dari panel pratinjau.
 const preview = useThemePreview()
+// JSON-LD artikel dari core (judul, penulis, citation dari referensi). '<' di-escape
+// agar teks konten (mis. judul referensi berisi tag penutup script) tidak bisa menutup tag.
+const jsonLd = computed(() => (seo.value?.jsonLd ? JSON.stringify(seo.value.jsonLd).replace(/</g, '\\u003c') : null))
 useHead(() => ({
   htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
   link: links.value,
+  script: jsonLd.value ? [{ key: 'json-ld', type: 'application/ld+json', textContent: jsonLd.value }] : [],
   style: [
     ...(theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : []),
     ...(preview.value ? [{ key: 'theme-preview', textContent: '.tpl a,.tpl form{pointer-events:none;cursor:default}' }] : []),
@@ -12013,6 +12144,7 @@ describe('embedSrc', () => {
 -->
 <script setup lang="ts">
 import type { BlockView } from '@framework/template-kit'
+import ImageCredit from './ImageCredit.vue'
 import SmartImage from './SmartImage.vue'
 
 defineProps<{ blocks: BlockView[] }>()
@@ -12044,12 +12176,9 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
         class="prose__figure"
       >
         <SmartImage :image="block.image" />
-        <figcaption v-if="block.caption || block.image.credit">
+        <figcaption v-if="block.caption || block.image.credit || block.image.sourceUrl">
           {{ block.caption }}
-          <span
-            v-if="block.image.credit"
-            class="prose__credit"
-          >{{ block.image.credit }}</span>
+          <ImageCredit :image="block.image" />
         </figcaption>
       </figure>
       <blockquote v-else-if="block.type === 'quote'">
@@ -12087,6 +12216,13 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
           referrerpolicy="strict-origin-when-cross-origin"
           sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
         />
+        <figcaption>
+          <a
+            :href="block.url"
+            target="_blank"
+            rel="noopener noreferrer nofollow"
+          >Tonton di sumber asli ({{ PROVIDER_LABEL[block.provider] }})</a>
+        </figcaption>
       </figure>
       <p
         v-else-if="block.type === 'embed'"
@@ -12187,6 +12323,8 @@ describe('parseContentSeo', () => {
    - Pencarian dan 404 `noindex, follow`.
    - `og:image`: `seo.og_image_id` konten, lalu gambar konten, lalu `settings.seo.defaultOgImageId`.
 
+   (JSON-LD artikel (`jsonLd`, `ArticleSeo`) ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 `packages/core/src/views/seo.ts`
 
 ```ts
@@ -12224,10 +12362,27 @@ export interface SeoMeta {
     locale: string
   }
   /** Hanya untuk artikel. */
-  article: { publishedTime: string; modifiedTime: string; section: string; tags: string[] } | null
+  article: ArticleSeo | null
+  /**
+   * JSON-LD schema.org (artikel saja): headline, tanggal, penulis, penerbit,
+   * dan citation dari referensi (ADR-010). Dipasang sebagai
+   * <script type="application/ld+json">; null = tidak ada.
+   */
+  jsonLd: Record<string, unknown> | null
   /** URL absolut RSS site, untuk <link rel="alternate">. */
   feedUrl: string
   favicon: string | null
+}
+
+export interface ArticleSeo {
+  publishedTime: string
+  modifiedTime: string
+  section: string
+  tags: string[]
+  /** Nama penulis untuk JSON-LD; null = tanpa penulis. */
+  author: string | null
+  /** Sumber yang dipakai artikel, untuk JSON-LD citation. */
+  citations: { name: string; url: string }[]
 }
 
 /** Bahan SEO dari tiap jenis halaman. */
@@ -12243,7 +12398,7 @@ export interface SeoInput {
   /** Nomor halaman listing (>1 memberi akhiran judul). */
   page?: number
   contentSeo?: ContentSeo
-  article?: SeoMeta['article']
+  article?: ArticleSeo
 }
 
 export interface SeoContext {
@@ -12306,6 +12461,7 @@ export function buildSeo(ctx: SeoContext, input: SeoInput): SeoMeta {
       locale: ogLocale(site.defaultLocale),
     },
     article: input.article ?? null,
+    jsonLd: input.article ? articleJsonLd(site.name, baseTitle ?? site.name, description, canonical, image ? absoluteUrl(origin, image.src) : null, input.article) : null,
     feedUrl: absoluteUrl(origin, '/rss.xml'),
     favicon: ctx.favicon?.src ?? null,
   }
@@ -12314,6 +12470,24 @@ export function buildSeo(ctx: SeoContext, input: SeoInput): SeoMeta {
 /** Id media yang perlu dimuat untuk og:image (kolom seo konten dan default site). */
 export function seoMediaIds(site: SiteInfo, contentSeo: ContentSeo | undefined): string[] {
   return [contentSeo?.og_image_id, site.settings.seo.defaultOgImageId].filter((id): id is string => Boolean(id))
+}
+
+function articleJsonLd(siteName: string, headline: string, description: string | null, url: string | null, image: string | null, a: ArticleSeo): Record<string, unknown> {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline,
+    ...(description && { description }),
+    ...(url && { mainEntityOfPage: url, url }),
+    ...(image && { image: [image] }),
+    datePublished: a.publishedTime,
+    dateModified: a.modifiedTime,
+    articleSection: a.section,
+    ...(a.tags.length > 0 && { keywords: a.tags.join(', ') }),
+    ...(a.author && { author: { '@type': 'Person', name: a.author } }),
+    publisher: { '@type': 'Organization', name: siteName },
+    ...(a.citations.length > 0 && { citation: a.citations.map((c) => ({ '@type': 'CreativeWork', name: c.name, url: c.url })) }),
+  }
 }
 ```
 
@@ -12847,9 +13021,13 @@ const links = computed(() => {
 // Pratinjau tema di admin: tautan dan form dimatikan agar iframe tidak
 // berpindah ke alamat site di host admin; halaman dipilih dari panel pratinjau.
 const preview = useThemePreview()
+// JSON-LD artikel dari core (judul, penulis, citation dari referensi). '<' di-escape
+// agar teks konten (mis. judul referensi berisi tag penutup script) tidak bisa menutup tag.
+const jsonLd = computed(() => (seo.value?.jsonLd ? JSON.stringify(seo.value.jsonLd).replace(/</g, '\\u003c') : null))
 useHead(() => ({
   htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
   link: links.value,
+  script: jsonLd.value ? [{ key: 'json-ld', type: 'application/ld+json', textContent: jsonLd.value }] : [],
   style: [
     ...(theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : []),
     ...(preview.value ? [{ key: 'theme-preview', textContent: '.tpl a,.tpl form{pointer-events:none;cursor:default}' }] : []),
@@ -24702,7 +24880,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     const existing = existingIds.length
       ? await db.select({
         id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height,
-        altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+        altText: media.altText, caption: media.caption, credit: media.credit, sourceUrl: media.sourceUrl, focalX: media.focalX, focalY: media.focalY,
       }).from(media).where(and(eq(media.siteId, siteId), inArray(media.id, existingIds)))
       : []
     const mediaRefs: MediaRef[] = [...existing]
@@ -24715,7 +24893,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
       const { image } = resolved
       const ref: MediaRef = {
         id: crypto.randomUUID(), storageKey: image.storageKey, mimeType: resolved.mimeType, width: resolved.width, height: resolved.height,
-        altText: image.altText, caption: image.caption ?? null, credit: image.credit ?? null, focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5,
+        altText: image.altText, caption: image.caption ?? null, credit: image.credit ?? null, sourceUrl: image.sourceUrl ?? null, focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5,
       }
       mediaRefs.push(ref)
       mediaIds.set(key, ref.id)
@@ -24741,6 +24919,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
         body: toBody(payload, mediaIds),
         bodyIssues: [],
         seo: payload.seo,
+        references: payload.references.map((r) => ({ title: r.title, url: r.url, publisher: r.publisher ?? null, kind: r.kind })),
       },
       media: mediaRefs,
     }
@@ -26193,3 +26372,100 @@ function move(i: number, by: -1 | 1) {
 ```
 
 7. Uji di browser sungguhan. Selain test core untuk `preview` dan `withPreviewArticle`, jalankan alur ini dengan Playwright: login, buka antrian, buka hasil yang valid (pratinjau tampil dengan template site), buka hasil yang rusak (galat tampil, pratinjau tidak), lalu tambah referensi di editor; konsol browser harus bersih. Untuk menguji approve dan tolak lewat API, pakai baris hasil AI sementara, bukan baris seed: artikel yang terbit di site seed mengubah snapshot view model.
+
+# Menampilkan Sumber dan Referensi
+
+Referensi sudah tersimpan di `article_references` dan sumber gambar di `media.source_url`. Bab ini menampilkannya di halaman artikel publik, di ketiga template, tanpa override komponen: pembaca selalu melihat dari mana isi, gambar, dan video berasal.
+
+1. Perluas kontrak view model di `template-kit`: `ImageView.sourceUrl`, tipe `ReferenceView` (judul, URL, penerbit, jenis), dan `ArticleView.references`. Kontrak ini dipakai semua template, jadi perubahan cukup di satu tempat.
+
+2. Isi dari core. `MediaRef` membawa `sourceUrl` (dibaca `loadMedia` dan diteruskan `toImageView`), `getPublishedArticle` membaca referensi berurutan, dan pembangun halaman memetakannya ke view model. Artikel sintetis pratinjau hasil AI mengambil referensi dari payload, sehingga layar antrian sudah memperlihatkan bagian ini sebelum terbit.
+
+3. Tambahkan JSON-LD `Article` ke metadata SEO: judul, deskripsi, URL kanonik, gambar, tanggal, kategori, tag, penulis, penerbit (nama site), dan `citation` dari referensi. Bahannya dikumpulkan pembangun halaman (`ArticleSeo`), lalu `buildSeo` menyusunnya dengan URL absolut. Halaman lain tidak punya JSON-LD (`jsonLd: null`).
+
+4. Pasang di `<head>` lewat `useHead` sebagai `<script type="application/ld+json">`. Isinya berasal dari konten (judul referensi bisa berisi teks apa saja), jadi setiap `<` diganti `<`; JSON tetap sah, tetapi teks konten tidak bisa menutup tag script. Hati-hati juga di dalam blok `<script setup>` file `.vue`: komentar yang memuat tag penutup script ikut menutup blok itu dan membuat parser SFC gagal.
+
+5. Tulis dua komponen kecil di base dan pakai di view artikel dan `BlockRenderer`:
+
+`templates/base/src/components/ImageCredit.vue`
+
+```vue
+<!--
+  Kredit gambar (ADR-010): pemilik hak dan, bila diambil dari sumber lain,
+  tautan ke halaman asalnya. Tanpa kredit tetapi ada sumber: "Sumber gambar".
+-->
+<script setup lang="ts">
+import type { ImageView } from '@framework/template-kit'
+
+defineProps<{ image: ImageView }>()
+</script>
+
+<template>
+  <span
+    v-if="image.credit || image.sourceUrl"
+    class="prose__credit"
+  >
+    <a
+      v-if="image.sourceUrl"
+      :href="image.sourceUrl"
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+    >{{ image.credit ?? 'Sumber gambar' }}</a>
+    <template v-else>{{ image.credit }}</template>
+  </span>
+</template>
+```
+
+`templates/base/src/components/ArticleReferences.vue`
+
+```vue
+<!--
+  Sumber dan referensi artikel (ADR-010), sesuai urutan. Tautan keluar
+  dibuka di tab baru dan tidak meneruskan peringkat (nofollow).
+-->
+<script setup lang="ts">
+import type { ReferenceView } from '@framework/template-kit'
+
+defineProps<{ items: ReferenceView[] }>()
+
+const KIND_LABEL: Record<ReferenceView['kind'], string | null> = { ARTICLE: null, VIDEO: 'Video', IMAGE: 'Gambar', OTHER: null }
+</script>
+
+<template>
+  <section
+    class="article__references"
+    aria-labelledby="sumber-referensi"
+  >
+    <h2 id="sumber-referensi">
+      Sumber dan referensi
+    </h2>
+    <ol>
+      <li
+        v-for="(r, i) in items"
+        :key="i"
+      >
+        <a
+          :href="r.url"
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+        >{{ r.title }}</a>
+        <span
+          v-if="r.publisher || KIND_LABEL[r.kind]"
+          class="article__reference-meta"
+        >
+          {{ [r.publisher, KIND_LABEL[r.kind]].filter(Boolean).join(' · ') }}
+        </span>
+      </li>
+    </ol>
+  </section>
+</template>
+```
+
+   Embed yang diputar di iframe kini diberi tautan "Tonton di sumber asli" di bawahnya; embed tanpa iframe (X) sudah berupa tautan ke sumbernya. Semua tautan keluar memakai `target="_blank" rel="noopener noreferrer nofollow"`.
+
+6. Uji. Test render base memeriksa urutan referensi, tautan sumber gambar, tautan sumber video, dan tidak adanya bagian referensi bila kosong. Snapshot view model berubah karena setiap gambar kini punya `sourceUrl` dan setiap halaman punya `jsonLd`; periksa dulu bahwa perubahannya hanya field baru, baru perbarui snapshot (`vitest run -u`). Cek hidrasi dengan server dev yang baru dinyalakan ulang: setelah komponen workspace berubah, server dev yang sudah lama berjalan bisa merender versi lama di SSR. Jangan arahkan pemeriksaan ini ke build produksi dengan data seed: file media seed tidak ada di disk, dan build produksi menjawabnya 404 (server dev menampilkan placeholder).
+
+```bash
+BASE_URL='http://{host}:3000' pnpm --filter @framework/web browser-check
+# [browser] OK: 26 halaman ter-hydrate tanpa mismatch atau error
+```

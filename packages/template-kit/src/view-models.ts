@@ -23,6 +23,16 @@ export interface ImageView {
   focalY: number
   caption: string | null
   credit: string | null
+  /** Halaman asal gambar bila diambil dari sumber lain (ADR-010). */
+  sourceUrl: string | null
+}
+
+/** Satu sumber yang dipakai artikel (ADR-010), tampil sesuai urutan. */
+export interface ReferenceView {
+  title: string
+  url: string
+  publisher: string | null
+  kind: 'ARTICLE' | 'VIDEO' | 'IMAGE' | 'OTHER'
 }
 
 export interface DateView {
@@ -147,6 +157,8 @@ export interface ArticleView {
   tags: LinkView[]
   blocks: BlockView[]
   format: string
+  /** Sumber dan referensi; kosong = bagian itu tidak ditampilkan. */
+  references: ReferenceView[]
 }
 
 export interface PageView {

@@ -402,6 +402,8 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
    - Menu tidak pernah memuat tautan mati. Repository mengembalikan tujuan (`target`), bukan URL; pola URL urusan lapisan view model.
 2. Tulis tipe bersama (batas nomor halaman `MAX_PAGE` ditambahkan di bab "Membangun Layar Admin"): `SiteId`, konteks repository (koneksi + jam), bentuk wajib fungsi ber-`siteId`, paginasi, dan referensi media untuk komponen gambar:
 
+   (`MediaRef.sourceUrl` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 @@include packages/core/src/repositories/types.ts ts@@
 
 3. Tulis helper bersama: aturan "tampil publik" dan pemuat media yang hanya mengambil media milik site tersebut:
@@ -413,6 +415,8 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 @@include packages/core/src/repositories/site-repository.ts ts@@
 
 5. Tulis repository konten: feed dan listing per kategori (termasuk sub-kategori), tag, dan penulis dengan paginasi; pencarian full-text per site; detail artikel dan halaman berdasarkan slug; pohon kategori; detail kategori, tag, dan penulis; serta pencarian redirect. Ringkasan artikel dimuat dalam dua query paralel (artikel + tag) agar tidak terjadi N+1. Fungsi `getMediaByIds` ditambahkan di bab "Membangun Halaman Publik dari View Model", dan `listSitemapEntries` di bab "Menambahkan Embed, SEO, dan Feed":
+
+   (`references` di `ArticleDetail` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include packages/core/src/repositories/content-repository.ts ts@@
 
@@ -795,6 +799,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
    - Tanggal sudah diformat (`DateView` berisi `iso` dan `label`).
    - Teks selalu polos, dan hanya tipe JSON agar bisa dikirim dari server ke browser.
 
+   (`ImageView.sourceUrl`, `ReferenceView`, dan `ArticleView.references` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 @@include packages/template-kit/src/view-models.ts ts@@
 
 3. Tulis util token → CSS variable di `tokens.ts`. Hasilnya disisipkan ke `<style>` di `<head>`, jadi nilainya dijaga ketat walau sudah divalidasi skema:
@@ -834,6 +840,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 @@include packages/template-kit/src/theme.test.ts ts@@
 
 9. Tambahkan sisi baca storage media di core (`packages/core/src/media/storage.ts`; sisi tulis ada di bab "Mengunggah Media"). `storage_key` diubah menjadi URL publik (default `/media/...`, bisa diganti URL CDN lewat `MEDIA_BASE_URL`), dan `MediaRef` dari repository diubah menjadi `ImageView` untuk SmartImage. `splitStorageKey` menolak key yang bisa keluar dari folder media (`..`, slash ganda, karakter aneh):
+
+   (`sourceUrl` di `toImageView` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include packages/core/src/media/storage.ts ts@@
 
@@ -878,6 +886,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
 @@include templates/base/src/components/BreadcrumbNav.vue vue@@
 
+   (`ImageCredit` dan tautan "Tonton di sumber asli" ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 @@include templates/base/src/components/BlockRenderer.vue vue@@
 
 15. Tulis layout dan delapan view, satu per jenis halaman. Setiap view menerima satu prop `vm` dengan tipe view model halamannya:
@@ -885,6 +895,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 @@include templates/base/src/TemplateLayout.vue vue@@
 
 @@include templates/base/src/views/HomeView.vue vue@@
+
+   (Bagian referensi dan `ImageCredit` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include templates/base/src/views/ArticleView.vue vue@@
 
@@ -901,6 +913,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 @@include templates/base/src/views/NotFoundView.vue vue@@
 
 16. Tulis CSS dasar. Semua aturan di bawah `.tpl` (wrapper halaman), dan semua nilai visual dari variabel token. Warna sekunder diturunkan dengan `color-mix`, jadi token warna cukup tiga:
+
+   (Gaya referensi dan tautan sumber ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include templates/base/src/styles/base.css css@@
 
@@ -940,6 +954,8 @@ pnpm add -Dw @vitejs/plugin-vue@6.0.11 vue@^3.5.45 vue-tsc@^3.3.14
 @@include vitest.config.ts ts@@
 
 22. Uji render SSR semua view base dengan view model contoh. Test ini memastikan manifest menunjuk ke file yang benar, setiap view menampilkan datanya, dan teks konten selalu di-escape:
+
+   (Referensi di fixture artikel ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include templates/base/src/test-fixtures.ts ts@@
 
@@ -1078,6 +1094,8 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
    - Artikel featured tampil di atas home halaman 1 dan tidak diulang di daftar terbaru.
    - Block yang dilewati dan block gambar yang medianya tidak ada dikumpulkan di `issues` untuk log, tidak membuat halaman gagal.
 
+   (`references` dan bahan JSON-LD artikel ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
 @@include packages/core/src/views/build-page.ts ts@@
 
 9. Ekspor modul `views` dari `packages/core/src/index.ts` (lihat bab repository).
@@ -1103,6 +1121,8 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
 @@include apps/web/app/composables/useSiteTheme.ts ts@@
 
 14. Render view di `app.vue`. Komponen view dipilih dari registry template lewat `vm.view`, lalu dibungkus layout. Bagian `useSeoMeta` dan `link` dijelaskan di bab "Menambahkan Embed, SEO, dan Feed". Di bab "Membangun Login Admin", isi `app.vue` ini pindah ke `app/pages/[...slug].vue` dan `app.vue` tinggal `<NuxtPage />`; di bab "Mengatur Tema dari Admin" isinya pindah lagi ke komponen `app/components/PublicPage.vue` (dipakai juga pratinjau tema). File di bawah adalah lokasi terakhirnya:
+
+   (Pemasangan JSON-LD di `<head>` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include apps/web/app/components/PublicPage.vue vue@@
 
@@ -1150,6 +1170,8 @@ done
    - Canonical dan `og:url` absolut di domain **primary**; 404 tanpa canonical.
    - Pencarian dan 404 `noindex, follow`.
    - `og:image`: `seo.og_image_id` konten, lalu gambar konten, lalu `settings.seo.defaultOgImageId`.
+
+   (JSON-LD artikel (`jsonLd`, `ArticleSeo`) ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
 @@include packages/core/src/views/seo.ts ts@@
 
@@ -2052,3 +2074,30 @@ Aturan keputusan sudah ada di core. Bab ini memberinya layar: daftar hasil AI da
 @@include apps/web/app/components/admin/ReferencesEditor.vue vue@@
 
 7. Uji di browser sungguhan. Selain test core untuk `preview` dan `withPreviewArticle`, jalankan alur ini dengan Playwright: login, buka antrian, buka hasil yang valid (pratinjau tampil dengan template site), buka hasil yang rusak (galat tampil, pratinjau tidak), lalu tambah referensi di editor; konsol browser harus bersih. Untuk menguji approve dan tolak lewat API, pakai baris hasil AI sementara, bukan baris seed: artikel yang terbit di site seed mengubah snapshot view model.
+
+# Menampilkan Sumber dan Referensi
+
+Referensi sudah tersimpan di `article_references` dan sumber gambar di `media.source_url`. Bab ini menampilkannya di halaman artikel publik, di ketiga template, tanpa override komponen: pembaca selalu melihat dari mana isi, gambar, dan video berasal.
+
+1. Perluas kontrak view model di `template-kit`: `ImageView.sourceUrl`, tipe `ReferenceView` (judul, URL, penerbit, jenis), dan `ArticleView.references`. Kontrak ini dipakai semua template, jadi perubahan cukup di satu tempat.
+
+2. Isi dari core. `MediaRef` membawa `sourceUrl` (dibaca `loadMedia` dan diteruskan `toImageView`), `getPublishedArticle` membaca referensi berurutan, dan pembangun halaman memetakannya ke view model. Artikel sintetis pratinjau hasil AI mengambil referensi dari payload, sehingga layar antrian sudah memperlihatkan bagian ini sebelum terbit.
+
+3. Tambahkan JSON-LD `Article` ke metadata SEO: judul, deskripsi, URL kanonik, gambar, tanggal, kategori, tag, penulis, penerbit (nama site), dan `citation` dari referensi. Bahannya dikumpulkan pembangun halaman (`ArticleSeo`), lalu `buildSeo` menyusunnya dengan URL absolut. Halaman lain tidak punya JSON-LD (`jsonLd: null`).
+
+4. Pasang di `<head>` lewat `useHead` sebagai `<script type="application/ld+json">`. Isinya berasal dari konten (judul referensi bisa berisi teks apa saja), jadi setiap `<` diganti `<`; JSON tetap sah, tetapi teks konten tidak bisa menutup tag script. Hati-hati juga di dalam blok `<script setup>` file `.vue`: komentar yang memuat tag penutup script ikut menutup blok itu dan membuat parser SFC gagal.
+
+5. Tulis dua komponen kecil di base dan pakai di view artikel dan `BlockRenderer`:
+
+@@include templates/base/src/components/ImageCredit.vue vue@@
+
+@@include templates/base/src/components/ArticleReferences.vue vue@@
+
+   Embed yang diputar di iframe kini diberi tautan "Tonton di sumber asli" di bawahnya; embed tanpa iframe (X) sudah berupa tautan ke sumbernya. Semua tautan keluar memakai `target="_blank" rel="noopener noreferrer nofollow"`.
+
+6. Uji. Test render base memeriksa urutan referensi, tautan sumber gambar, tautan sumber video, dan tidak adanya bagian referensi bila kosong. Snapshot view model berubah karena setiap gambar kini punya `sourceUrl` dan setiap halaman punya `jsonLd`; periksa dulu bahwa perubahannya hanya field baru, baru perbarui snapshot (`vitest run -u`). Cek hidrasi dengan server dev yang baru dinyalakan ulang: setelah komponen workspace berubah, server dev yang sudah lama berjalan bisa merender versi lama di SSR. Jangan arahkan pemeriksaan ini ke build produksi dengan data seed: file media seed tidak ada di disk, dan build produksi menjawabnya 404 (server dev menampilkan placeholder).
+
+```bash
+BASE_URL='http://{host}:3000' pnpm --filter @framework/web browser-check
+# [browser] OK: 26 halaman ter-hydrate tanpa mismatch atau error
+```

@@ -64,6 +64,7 @@ export interface MediaRef {
   altText: string | null
   caption: string | null
   credit: string | null
+  sourceUrl: string | null
   focalX: number
   focalY: number
 }

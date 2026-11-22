@@ -46,5 +46,6 @@ export function toImageView(media: MediaRef, mediaUrl: MediaUrlResolver, fallbac
     focalY: media.focalY,
     caption: media.caption,
     credit: media.credit,
+    sourceUrl: media.sourceUrl,
   }
 }

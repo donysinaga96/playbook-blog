@@ -56,9 +56,13 @@ const links = computed(() => {
 // Pratinjau tema di admin: tautan dan form dimatikan agar iframe tidak
 // berpindah ke alamat site di host admin; halaman dipilih dari panel pratinjau.
 const preview = useThemePreview()
+// JSON-LD artikel dari core (judul, penulis, citation dari referensi). '<' di-escape
+// agar teks konten (mis. judul referensi berisi tag penutup script) tidak bisa menutup tag.
+const jsonLd = computed(() => (seo.value?.jsonLd ? JSON.stringify(seo.value.jsonLd).replace(/</g, '\\u003c') : null))
 useHead(() => ({
   htmlAttrs: { lang: page.value?.chrome.site.locale ?? 'id' },
   link: links.value,
+  script: jsonLd.value ? [{ key: 'json-ld', type: 'application/ld+json', textContent: jsonLd.value }] : [],
   style: [
     ...(theme.value ? [{ key: 'theme-tokens', textContent: theme.value.css }] : []),
     ...(preview.value ? [{ key: 'theme-preview', textContent: '.tpl a,.tpl form{pointer-events:none;cursor:default}' }] : []),

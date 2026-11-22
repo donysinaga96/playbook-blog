@@ -71,6 +71,20 @@ describe('template base: view', () => {
     expect(html).toContain('article--review')
   })
 
+  it('artikel: referensi berurutan, sumber gambar, dan tautan sumber video (ADR-010)', async () => {
+    const withSource = { ...views.article, image: views.article.image && { ...views.article.image, sourceUrl: 'https://contoh.test/foto' } }
+    const html = await render(await load(base.views.article), { vm: withSource })
+    expect(html).toContain('Sumber dan referensi')
+    expect(html).toMatch(/<a href="https:\/\/contoh\.test\/sumber" target="_blank" rel="noopener noreferrer nofollow">Sumber uji<\/a>/)
+    expect(html.indexOf('Sumber uji')).toBeLessThan(html.indexOf('Video uji'))
+    expect(html).toContain('Contoh')
+    expect(html).toMatch(/href="https:\/\/contoh\.test\/foto"[^>]*>Redaksi<\/a>/)
+    expect(html).toContain('Tonton di sumber asli (YouTube)')
+
+    const none = await render(await load(base.views.article), { vm: { ...views.article, references: [] } })
+    expect(none).not.toContain('Sumber dan referensi')
+  })
+
   it('tipe block tidak dikenal tidak merender apa-apa dan tidak crash', async () => {
     const BlockRenderer = (await import('./components/BlockRenderer.vue')).default
     const html = await render(BlockRenderer, { blocks: [{ type: 'carousel', items: [] }, { type: 'paragraph', text: 'Tetap ada' }] })

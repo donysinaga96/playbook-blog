@@ -332,7 +332,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     const existing = existingIds.length
       ? await db.select({
         id: media.id, storageKey: media.storageKey, mimeType: media.mimeType, width: media.width, height: media.height,
-        altText: media.altText, caption: media.caption, credit: media.credit, focalX: media.focalX, focalY: media.focalY,
+        altText: media.altText, caption: media.caption, credit: media.credit, sourceUrl: media.sourceUrl, focalX: media.focalX, focalY: media.focalY,
       }).from(media).where(and(eq(media.siteId, siteId), inArray(media.id, existingIds)))
       : []
     const mediaRefs: MediaRef[] = [...existing]
@@ -345,7 +345,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
       const { image } = resolved
       const ref: MediaRef = {
         id: crypto.randomUUID(), storageKey: image.storageKey, mimeType: resolved.mimeType, width: resolved.width, height: resolved.height,
-        altText: image.altText, caption: image.caption ?? null, credit: image.credit ?? null, focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5,
+        altText: image.altText, caption: image.caption ?? null, credit: image.credit ?? null, sourceUrl: image.sourceUrl ?? null, focalX: image.focalX ?? 0.5, focalY: image.focalY ?? 0.5,
       }
       mediaRefs.push(ref)
       mediaIds.set(key, ref.id)
@@ -371,6 +371,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
         body: toBody(payload, mediaIds),
         bodyIssues: [],
         seo: payload.seo,
+        references: payload.references.map((r) => ({ title: r.title, url: r.url, publisher: r.publisher ?? null, kind: r.kind })),
       },
       media: mediaRefs,
     }

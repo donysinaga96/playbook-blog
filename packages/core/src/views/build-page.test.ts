@@ -272,7 +272,14 @@ describe.skipIf(!process.env['DATABASE_URL'])('createPageBuilder (database dev, 
         siteName: 'Kabar Tekno',
         locale: 'id_ID',
       },
-      article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'] },
+      article: { publishedTime: '2026-11-10T01:00:00.000Z', modifiedTime: expect.any(String), section: 'Review', tags: ['Android'], author: 'Budi Santoso', citations: [] },
+      jsonLd: expect.objectContaining({
+        '@type': 'Article',
+        headline: 'Ponsel lipat makin murah: layak dibeli?',
+        datePublished: '2026-11-10T01:00:00.000Z',
+        author: { '@type': 'Person', name: 'Budi Santoso' },
+        publisher: { '@type': 'Organization', name: 'Kabar Tekno' },
+      }),
       feedUrl: 'https://tekno.localhost/rss.xml',
       favicon: null,
     })
@@ -319,7 +326,7 @@ describe('body rusak dan embed', () => {
     id: 'a1', title: 'Judul', slug: 'judul', excerpt: null, format: 'standard', isFeatured: false,
     publishedAt: new Date('2026-11-10T01:00:00Z'), updatedAt: new Date('2026-11-10T01:00:00Z'),
     category: { id: 'c1', name: 'Umum', slug: 'umum' }, categoryParent: null, author: null,
-    featuredMedia: null, tags: [], attributes: {}, seo: { title: 123 }, body, bodyIssues: skipped,
+    featuredMedia: null, tags: [], attributes: {}, seo: { title: 123 }, body, bodyIssues: skipped, references: [],
   }
   const content = {
     getPublishedArticle: async (_siteId: string, slug: string) => (slug === 'judul' ? article : null),

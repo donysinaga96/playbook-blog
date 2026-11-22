@@ -1,5 +1,6 @@
 import {
   and,
+  articleReferences,
   articleTags,
   articles,
   asc,
@@ -71,6 +72,15 @@ export interface ArticleDetail extends ArticleSummary {
   updatedAt: Date
   /** Induk kategori, untuk breadcrumb. */
   categoryParent: CategoryRef | null
+  /** Sumber dan referensi sesuai urutan (ADR-010). */
+  references: ReferenceRef[]
+}
+
+export interface ReferenceRef {
+  title: string
+  url: string
+  publisher: string | null
+  kind: 'ARTICLE' | 'VIDEO' | 'IMAGE' | 'OTHER'
 }
 
 export interface ArticleListQuery extends PageQuery {
@@ -337,6 +347,11 @@ export function createContentRepository(ctx: RepositoryContext) {
           .where(and(eq(categories.siteId, siteId), eq(categories.id, row.categoryParentId)))
         categoryParent = parent ?? null
       }
+      const references = await db
+        .select({ title: articleReferences.title, url: articleReferences.url, publisher: articleReferences.publisher, kind: articleReferences.kind })
+        .from(articleReferences)
+        .where(and(eq(articleReferences.siteId, siteId), eq(articleReferences.articleId, row.id)))
+        .orderBy(asc(articleReferences.position))
       const { body, skipped } = parseBodyLenient(row.body)
       return {
         ...summary,
@@ -345,6 +360,7 @@ export function createContentRepository(ctx: RepositoryContext) {
         seo: row.seo as Record<string, unknown>,
         updatedAt: row.updatedAt,
         categoryParent,
+        references: references.map((r) => ({ ...r, kind: r.kind as ReferenceRef['kind'] })),
       }
     },
 

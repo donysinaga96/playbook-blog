@@ -12,7 +12,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
-| M5a — Alur konten AI dan approval | 17 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5a — Alur konten AI dan approval | 20 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
 **Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
@@ -329,9 +329,9 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 - Catatan 22 Nov 2026: `frontend-design` tidak dipakai; halaman antrian mengikuti bahasa visual admin yang sudah ada (kelas `.adm-*`) agar konsisten. Alur diperiksa dengan skrip Playwright (antrian, detail valid + pratinjau, detail bergalat, form referensi; konsol bersih) dan curl (approve terjadwal, token lama 409, tolak tanpa alasan 422, tanpa Origin 403, approve massal) memakai baris uji sementara yang dihapus sesudahnya.
 
 **5a.4 Referensi di halaman konten [K6]**
-- [ ] View model artikel: `references` + sumber gambar (`credit`, `source_url`) + URL asli embed
-- [ ] Komponen base "Sumber dan referensi" di akhir artikel untuk semua template tanpa override; kredit dan tautan sumber di bawah gambar; tautan "Tonton di sumber asli" di bawah embed
-- [ ] JSON-LD artikel: `citation`; snapshot view model diperbarui; cek browser 3.4 untuk tiga template
+- [x] View model artikel: `references` + sumber gambar (`credit`, `source_url`) + URL asli embed — `ReferenceView`, `ArticleView.references`, `ImageView.sourceUrl` (semua gambar, juga logo); URL asli embed sudah ada di `BlockView`
+- [x] Komponen base "Sumber dan referensi" di akhir artikel untuk semua template tanpa override; kredit dan tautan sumber di bawah gambar; tautan "Tonton di sumber asli" di bawah embed — `ArticleReferences.vue`, `ImageCredit.vue`; tautan keluar `noopener noreferrer nofollow`
+- [x] JSON-LD artikel: `citation`; snapshot view model diperbarui; cek browser 3.4 untuk tiga template — JSON-LD belum ada sebelumnya, jadi dibuat minimal: `Article` (headline, tanggal, gambar, penulis, penerbit, kategori, tag, citation) hanya untuk artikel; `<` di-escape. browser-check: 26 halaman OK (di server dev; build produksi + seed memberi 404 untuk file media seed yang memang tidak ada)
 
 **5a.5 Gate dan penutup [K5]**
 - [ ] Skrip `gate-content.mjs` di CI: INSERT hasil AI sebagai `blog_agent` → tidak ada yang tampil di web → agent tidak bisa menulis `articles` → hasil rusak tidak bisa di-approve → tolak = `ARCHIVED` → approve lewat API admin → artikel tampil dengan referensinya, juga di home, sitemap, RSS

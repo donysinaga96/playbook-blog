@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import type { ArticleView } from '@framework/template-kit'
 import BlockRenderer from '../components/BlockRenderer.vue'
+import ArticleReferences from '../components/ArticleReferences.vue'
 import BreadcrumbNav from '../components/BreadcrumbNav.vue'
+import ImageCredit from '../components/ImageCredit.vue'
 import SmartImage from '../components/SmartImage.vue'
 
 defineProps<{ vm: ArticleView }>()
@@ -50,15 +52,16 @@ defineProps<{ vm: ArticleView }>()
         ratio="16/9"
         loading="eager"
       />
-      <figcaption v-if="vm.image.caption || vm.image.credit">
+      <figcaption v-if="vm.image.caption || vm.image.credit || vm.image.sourceUrl">
         {{ vm.image.caption }}
-        <span
-          v-if="vm.image.credit"
-          class="prose__credit"
-        >{{ vm.image.credit }}</span>
+        <ImageCredit :image="vm.image" />
       </figcaption>
     </figure>
     <BlockRenderer :blocks="vm.blocks" />
+    <ArticleReferences
+      v-if="vm.references.length > 0"
+      :items="vm.references"
+    />
     <footer
       v-if="vm.tags.length > 0"
       class="article__tags"

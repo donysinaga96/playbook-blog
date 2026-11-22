@@ -32,10 +32,27 @@ export interface SeoMeta {
     locale: string
   }
   /** Hanya untuk artikel. */
-  article: { publishedTime: string; modifiedTime: string; section: string; tags: string[] } | null
+  article: ArticleSeo | null
+  /**
+   * JSON-LD schema.org (artikel saja): headline, tanggal, penulis, penerbit,
+   * dan citation dari referensi (ADR-010). Dipasang sebagai
+   * <script type="application/ld+json">; null = tidak ada.
+   */
+  jsonLd: Record<string, unknown> | null
   /** URL absolut RSS site, untuk <link rel="alternate">. */
   feedUrl: string
   favicon: string | null
+}
+
+export interface ArticleSeo {
+  publishedTime: string
+  modifiedTime: string
+  section: string
+  tags: string[]
+  /** Nama penulis untuk JSON-LD; null = tanpa penulis. */
+  author: string | null
+  /** Sumber yang dipakai artikel, untuk JSON-LD citation. */
+  citations: { name: string; url: string }[]
 }
 
 /** Bahan SEO dari tiap jenis halaman. */
@@ -51,7 +68,7 @@ export interface SeoInput {
   /** Nomor halaman listing (>1 memberi akhiran judul). */
   page?: number
   contentSeo?: ContentSeo
-  article?: SeoMeta['article']
+  article?: ArticleSeo
 }
 
 export interface SeoContext {
@@ -114,6 +131,7 @@ export function buildSeo(ctx: SeoContext, input: SeoInput): SeoMeta {
       locale: ogLocale(site.defaultLocale),
     },
     article: input.article ?? null,
+    jsonLd: input.article ? articleJsonLd(site.name, baseTitle ?? site.name, description, canonical, image ? absoluteUrl(origin, image.src) : null, input.article) : null,
     feedUrl: absoluteUrl(origin, '/rss.xml'),
     favicon: ctx.favicon?.src ?? null,
   }
@@ -122,4 +140,22 @@ export function buildSeo(ctx: SeoContext, input: SeoInput): SeoMeta {
 /** Id media yang perlu dimuat untuk og:image (kolom seo konten dan default site). */
 export function seoMediaIds(site: SiteInfo, contentSeo: ContentSeo | undefined): string[] {
   return [contentSeo?.og_image_id, site.settings.seo.defaultOgImageId].filter((id): id is string => Boolean(id))
+}
+
+function articleJsonLd(siteName: string, headline: string, description: string | null, url: string | null, image: string | null, a: ArticleSeo): Record<string, unknown> {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline,
+    ...(description && { description }),
+    ...(url && { mainEntityOfPage: url, url }),
+    ...(image && { image: [image] }),
+    datePublished: a.publishedTime,
+    dateModified: a.modifiedTime,
+    articleSection: a.section,
+    ...(a.tags.length > 0 && { keywords: a.tags.join(', ') }),
+    ...(a.author && { author: { '@type': 'Person', name: a.author } }),
+    publisher: { '@type': 'Organization', name: siteName },
+    ...(a.citations.length > 0 && { citation: a.citations.map((c) => ({ '@type': 'CreativeWork', name: c.name, url: c.url })) }),
+  }
 }

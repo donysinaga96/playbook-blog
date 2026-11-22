@@ -6,6 +6,17 @@ exports[`snapshot view model per jenis halaman > article (site kedua): dapur-nus
   "kind": "render",
   "seo": {
     "article": {
+      "author": "Redaksi Dapur",
+      "citations": [
+        {
+          "name": "Rendang, warisan kuliner Minangkabau",
+          "url": "https://contoh.test/rendang-minangkabau",
+        },
+        {
+          "name": "Video: memasak rendang 4 jam",
+          "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        },
+      ],
       "modifiedTime": "<updated_at seed>",
       "publishedTime": "2026-11-11T00:00:00.000Z",
       "section": "Sumatera",
@@ -18,6 +29,41 @@ exports[`snapshot view model per jenis halaman > article (site kedua): dapur-nus
     "description": "Kunci rendang empuk: api kecil dan sabar.",
     "favicon": null,
     "feedUrl": "https://kuliner.localhost/rss.xml",
+    "jsonLd": {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "articleSection": "Sumatera",
+      "author": {
+        "@type": "Person",
+        "name": "Redaksi Dapur",
+      },
+      "citation": [
+        {
+          "@type": "CreativeWork",
+          "name": "Rendang, warisan kuliner Minangkabau",
+          "url": "https://contoh.test/rendang-minangkabau",
+        },
+        {
+          "@type": "CreativeWork",
+          "name": "Video: memasak rendang 4 jam",
+          "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        },
+      ],
+      "dateModified": "2026-11-20T09:57:06.590Z",
+      "datePublished": "2026-11-11T00:00:00.000Z",
+      "description": "Kunci rendang empuk: api kecil dan sabar.",
+      "headline": "Rendang Padang yang empuk dalam 4 jam",
+      "image": [
+        "https://kuliner.localhost/media/dapur-nusantara/2026/11/rendang.webp",
+      ],
+      "keywords": "Pedas, Tradisional",
+      "mainEntityOfPage": "https://kuliner.localhost/sumatera/rendang-padang-empuk",
+      "publisher": {
+        "@type": "Organization",
+        "name": "Dapur Nusantara",
+      },
+      "url": "https://kuliner.localhost/sumatera/rendang-padang-empuk",
+    },
     "og": {
       "description": "Kunci rendang empuk: api kecil dan sabar.",
       "image": {
@@ -92,6 +138,7 @@ exports[`snapshot view model per jenis halaman > article (site kedua): dapur-nus
       "focalX": 0.45,
       "focalY": 0.55,
       "height": 1067,
+      "sourceUrl": "https://contoh.test/galeri/rendang",
       "src": "/media/dapur-nusantara/2026/11/rendang.webp",
       "width": 1600,
     },
@@ -99,6 +146,20 @@ exports[`snapshot view model per jenis halaman > article (site kedua): dapur-nus
       "iso": "2026-11-11T00:00:00.000Z",
       "label": "11 November 2026",
     },
+    "references": [
+      {
+        "kind": "ARTICLE",
+        "publisher": "Contoh Ensiklopedia",
+        "title": "Rendang, warisan kuliner Minangkabau",
+        "url": "https://contoh.test/rendang-minangkabau",
+      },
+      {
+        "kind": "VIDEO",
+        "publisher": "YouTube",
+        "title": "Video: memasak rendang 4 jam",
+        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      },
+    ],
     "tags": [
       {
         "href": "/tag/pedas",
@@ -122,6 +183,8 @@ exports[`snapshot view model per jenis halaman > article: kabar-tekno /review/po
   "kind": "render",
   "seo": {
     "article": {
+      "author": "Budi Santoso",
+      "citations": [],
       "modifiedTime": "<updated_at seed>",
       "publishedTime": "2026-11-10T01:00:00.000Z",
       "section": "Review",
@@ -133,6 +196,29 @@ exports[`snapshot view model per jenis halaman > article: kabar-tekno /review/po
     "description": "Checklist sebelum membeli ponsel lipat.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "articleSection": "Review",
+      "author": {
+        "@type": "Person",
+        "name": "Budi Santoso",
+      },
+      "dateModified": "2026-11-20T09:57:06.590Z",
+      "datePublished": "2026-11-10T01:00:00.000Z",
+      "description": "Checklist sebelum membeli ponsel lipat.",
+      "headline": "Ponsel lipat makin murah: layak dibeli?",
+      "image": [
+        "https://tekno.localhost/media/kabar-tekno/2026/11/hp.webp",
+      ],
+      "keywords": "Android",
+      "mainEntityOfPage": "https://tekno.localhost/review/ponsel-lipat-makin-murah",
+      "publisher": {
+        "@type": "Organization",
+        "name": "Kabar Tekno",
+      },
+      "url": "https://tekno.localhost/review/ponsel-lipat-makin-murah",
+    },
     "og": {
       "description": "Checklist sebelum membeli ponsel lipat.",
       "image": {
@@ -184,6 +270,7 @@ exports[`snapshot view model per jenis halaman > article: kabar-tekno /review/po
           "focalX": 0.62,
           "focalY": 0.4,
           "height": 900,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/2026/11/hp.webp",
           "width": 1600,
         },
@@ -221,6 +308,7 @@ exports[`snapshot view model per jenis halaman > article: kabar-tekno /review/po
       "focalX": 0.62,
       "focalY": 0.4,
       "height": 900,
+      "sourceUrl": null,
       "src": "/media/kabar-tekno/2026/11/hp.webp",
       "width": 1600,
     },
@@ -228,6 +316,7 @@ exports[`snapshot view model per jenis halaman > article: kabar-tekno /review/po
       "iso": "2026-11-10T01:00:00.000Z",
       "label": "10 November 2026",
     },
+    "references": [],
     "tags": [
       {
         "href": "/tag/android",
@@ -251,6 +340,7 @@ exports[`snapshot view model per jenis halaman > author: kabar-tekno /author/bud
     "description": "Menulis soal gawai sejak 2015.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Menulis soal gawai sejak 2015.",
       "image": null,
@@ -285,6 +375,7 @@ exports[`snapshot view model per jenis halaman > author: kabar-tekno /author/bud
           "focalX": 0.62,
           "focalY": 0.4,
           "height": 900,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/2026/11/hp.webp",
           "width": 1600,
         },
@@ -321,6 +412,7 @@ exports[`snapshot view model per jenis halaman > category: kabar-tekno /category
     "description": "Berita dan ulasan teknologi.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Berita dan ulasan teknologi.",
       "image": null,
@@ -355,6 +447,7 @@ exports[`snapshot view model per jenis halaman > category: kabar-tekno /category
           "focalX": 0.62,
           "focalY": 0.4,
           "height": 900,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/2026/11/hp.webp",
           "width": 1600,
         },
@@ -454,6 +547,7 @@ exports[`snapshot view model per jenis halaman > chrome dapur-nusantara 1`] = `
           "focalX": 0.5,
           "focalY": 0.5,
           "height": 64,
+          "sourceUrl": null,
           "src": "/media/dapur-nusantara/logo.svg",
           "width": 200,
         },
@@ -535,6 +629,7 @@ exports[`snapshot view model per jenis halaman > chrome kabar-tekno 1`] = `
           "focalX": 0.5,
           "focalY": 0.5,
           "height": 64,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/logo.svg",
           "width": 240,
         },
@@ -561,6 +656,7 @@ exports[`snapshot view model per jenis halaman > home dengan section: dapur-nusa
     "description": "Resep dan cerita kuliner Nusantara.",
     "favicon": null,
     "feedUrl": "https://kuliner.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Resep dan cerita kuliner Nusantara.",
       "image": null,
@@ -637,6 +733,7 @@ exports[`snapshot view model per jenis halaman > home dengan section: dapur-nusa
               "focalX": 0.45,
               "focalY": 0.55,
               "height": 1067,
+              "sourceUrl": "https://contoh.test/galeri/rendang",
               "src": "/media/dapur-nusantara/2026/11/rendang.webp",
               "width": 1600,
             },
@@ -683,6 +780,7 @@ exports[`snapshot view model per jenis halaman > home dengan section: kabar-tekn
     "description": "Berita dan ulasan teknologi.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Berita dan ulasan teknologi.",
       "image": null,
@@ -739,6 +837,7 @@ exports[`snapshot view model per jenis halaman > home dengan section: kabar-tekn
               "focalX": 0.62,
               "focalY": 0.4,
               "height": 900,
+              "sourceUrl": null,
               "src": "/media/kabar-tekno/2026/11/hp.webp",
               "width": 1600,
             },
@@ -778,6 +877,7 @@ exports[`snapshot view model per jenis halaman > home dengan section: kabar-tekn
               "focalX": 0.5,
               "focalY": 0.5,
               "height": 900,
+              "sourceUrl": null,
               "src": "/media/kabar-tekno/2026/11/ai.webp",
               "width": 1600,
             },
@@ -823,6 +923,7 @@ exports[`snapshot view model per jenis halaman > home: kabar-tekno / 1`] = `
     "description": "Berita dan ulasan teknologi.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Berita dan ulasan teknologi.",
       "image": null,
@@ -857,6 +958,7 @@ exports[`snapshot view model per jenis halaman > home: kabar-tekno / 1`] = `
           "focalX": 0.62,
           "focalY": 0.4,
           "height": 900,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/2026/11/hp.webp",
           "width": 1600,
         },
@@ -888,6 +990,7 @@ exports[`snapshot view model per jenis halaman > home: kabar-tekno / 1`] = `
           "focalX": 0.5,
           "focalY": 0.5,
           "height": 900,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/2026/11/ai.webp",
           "width": 1600,
         },
@@ -922,6 +1025,7 @@ exports[`snapshot view model per jenis halaman > not-found: kabar-tekno /tidak/a
     "description": "Berita dan ulasan teknologi.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Berita dan ulasan teknologi.",
       "image": null,
@@ -952,6 +1056,7 @@ exports[`snapshot view model per jenis halaman > page: dapur-nusantara /p/kontak
     "description": "Resep dan cerita kuliner Nusantara.",
     "favicon": null,
     "feedUrl": "https://kuliner.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Resep dan cerita kuliner Nusantara.",
       "image": null,
@@ -992,6 +1097,7 @@ exports[`snapshot view model per jenis halaman > search: kabar-tekno /search?q=p
     "description": "Berita dan ulasan teknologi.",
     "favicon": null,
     "feedUrl": "https://tekno.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Berita dan ulasan teknologi.",
       "image": null,
@@ -1027,6 +1133,7 @@ exports[`snapshot view model per jenis halaman > search: kabar-tekno /search?q=p
           "focalX": 0.62,
           "focalY": 0.4,
           "height": 900,
+          "sourceUrl": null,
           "src": "/media/kabar-tekno/2026/11/hp.webp",
           "width": 1600,
         },
@@ -1061,6 +1168,7 @@ exports[`snapshot view model per jenis halaman > tag: dapur-nusantara /tag/pedas
     "description": "Resep dan cerita kuliner Nusantara.",
     "favicon": null,
     "feedUrl": "https://kuliner.localhost/rss.xml",
+    "jsonLd": null,
     "og": {
       "description": "Resep dan cerita kuliner Nusantara.",
       "image": null,
@@ -1095,6 +1203,7 @@ exports[`snapshot view model per jenis halaman > tag: dapur-nusantara /tag/pedas
           "focalX": 0.45,
           "focalY": 0.55,
           "height": 1067,
+          "sourceUrl": "https://contoh.test/galeri/rendang",
           "src": "/media/dapur-nusantara/2026/11/rendang.webp",
           "width": 1600,
         },

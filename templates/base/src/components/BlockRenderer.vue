@@ -11,6 +11,7 @@
 -->
 <script setup lang="ts">
 import type { BlockView } from '@framework/template-kit'
+import ImageCredit from './ImageCredit.vue'
 import SmartImage from './SmartImage.vue'
 
 defineProps<{ blocks: BlockView[] }>()
@@ -42,12 +43,9 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
         class="prose__figure"
       >
         <SmartImage :image="block.image" />
-        <figcaption v-if="block.caption || block.image.credit">
+        <figcaption v-if="block.caption || block.image.credit || block.image.sourceUrl">
           {{ block.caption }}
-          <span
-            v-if="block.image.credit"
-            class="prose__credit"
-          >{{ block.image.credit }}</span>
+          <ImageCredit :image="block.image" />
         </figcaption>
       </figure>
       <blockquote v-else-if="block.type === 'quote'">
@@ -85,6 +83,13 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
           referrerpolicy="strict-origin-when-cross-origin"
           sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
         />
+        <figcaption>
+          <a
+            :href="block.url"
+            target="_blank"
+            rel="noopener noreferrer nofollow"
+          >Tonton di sumber asli ({{ PROVIDER_LABEL[block.provider] }})</a>
+        </figcaption>
       </figure>
       <p
         v-else-if="block.type === 'embed'"

@@ -20,6 +20,7 @@ export const image: ImageView = {
   focalY: 0.4,
   caption: 'Ponsel lipat generasi ketiga',
   credit: 'Redaksi',
+  sourceUrl: null,
 }
 
 const date = { iso: '2026-11-17T03:00:00.000Z', label: '17 November 2026' }
@@ -81,6 +82,10 @@ export const views: { [V in ViewName]: ViewModelOf<V> } = {
     image,
     tags: [{ label: 'Android', href: '/tag/android' }],
     format: 'review',
+    references: [
+      { title: 'Sumber uji', url: 'https://contoh.test/sumber', publisher: 'Contoh', kind: 'ARTICLE' },
+      { title: 'Video uji', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', publisher: null, kind: 'VIDEO' },
+    ],
     blocks: [
       { type: 'paragraph', text: 'Paragraf <b>polos</b>.' },
       { type: 'heading', level: 3, text: 'Subjudul' },

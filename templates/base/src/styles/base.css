@@ -430,6 +430,45 @@
   border-radius: var(--radius-card);
 }
 
+.tpl .prose__credit a,
+.tpl .prose__embed--frame figcaption a {
+  color: inherit;
+}
+
+.tpl .prose__embed--frame figcaption {
+  margin-top: 0.5rem;
+  color: var(--c-muted);
+  font-size: 0.875rem;
+}
+
+.tpl .article__references {
+  margin-block: 2rem 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--c-border);
+  font-size: 0.9375rem;
+}
+
+.tpl .article__references h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.0625rem;
+}
+
+.tpl .article__references ol {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.tpl .article__references a {
+  overflow-wrap: anywhere;
+}
+
+.tpl .article__reference-meta {
+  margin-left: 0.4rem;
+  color: var(--c-muted);
+}
+
 .tpl .article__tags ul {
   display: flex;
   flex-wrap: wrap;

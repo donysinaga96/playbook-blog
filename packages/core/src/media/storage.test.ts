@@ -23,13 +23,13 @@ describe('createMediaUrlResolver', () => {
 describe('toImageView', () => {
   const media: MediaRef = {
     id: 'm1', storageKey: 'kabar-tekno/2026/11/hp.webp', mimeType: 'image/webp', width: 1600, height: 900,
-    altText: null, caption: 'Foto: redaksi', credit: null, focalX: 0.62, focalY: 0.4,
+    altText: null, caption: 'Foto: redaksi', credit: null, sourceUrl: null, focalX: 0.62, focalY: 0.4,
   }
 
   it('memetakan semua field dan memakai alt cadangan', () => {
     expect(toImageView(media, createMediaUrlResolver(), 'Ponsel lipat')).toEqual({
       src: '/media/kabar-tekno/2026/11/hp.webp', alt: 'Ponsel lipat', width: 1600, height: 900,
-      focalX: 0.62, focalY: 0.4, caption: 'Foto: redaksi', credit: null,
+      focalX: 0.62, focalY: 0.4, caption: 'Foto: redaksi', credit: null, sourceUrl: null,
     })
   })
 })

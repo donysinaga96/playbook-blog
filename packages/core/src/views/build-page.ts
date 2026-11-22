@@ -409,6 +409,7 @@ export function createPageBuilder(
       tags: found.tags.map((t) => ({ label: t.name, href: ctx.urls.tag(t.slug) })),
       blocks: await blocks(ctx, found.body.blocks, found.bodyIssues, `artikel ${found.slug}`),
       format: found.format,
+      references: found.references.map((r) => ({ title: r.title, url: r.url, publisher: r.publisher, kind: r.kind })),
     }
     return {
       vm,
@@ -424,6 +425,8 @@ export function createPageBuilder(
           modifiedTime: found.updatedAt.toISOString(),
           section: found.category.name,
           tags: found.tags.map((t) => t.name),
+          author: found.author?.name ?? null,
+          citations: found.references.map((r) => ({ name: r.title, url: r.url })),
         },
       },
     }
