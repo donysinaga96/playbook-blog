@@ -8,7 +8,8 @@
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed
 #           (health 200 + halaman tekno/kuliner dirender), lalu gate M2:
-#           request SSR paralel ke dua domain tidak saling tertukar
+#           request SSR paralel ke dua domain tidak saling tertukar; gate admin
+#           (M4) dan gate konten AI (M5a)
 # =====================================================================
 
 stages:
@@ -124,6 +125,9 @@ build:
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email admin@local.test --reset-password
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate:admin
+    # 5. Gate M5a: hasil AI ditulis sebagai role agent (login langsung), tidak tampil
+    #    sampai di-approve lewat admin, lalu tampil dengan referensinya.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" AGENT_DATABASE_URL="postgres://blog_agent:ci_agent_password@db:5432/blog_dev" pnpm --filter @framework/web gate:content
   artifacts:
     paths:
       - apps/web/.output/

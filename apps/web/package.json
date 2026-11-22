@@ -15,6 +15,7 @@
     "browser-check": "node scripts/browser-check.mjs",
     "admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts",
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
+    "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
   "dependencies": {
