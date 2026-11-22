@@ -15,7 +15,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M5a — Alur konten AI dan approval | 22 / 22 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit e7a7cdb) |
 | M5 — Produksi pertama (titik evaluasi) | 6 / 28 | — task lokal selesai, pipeline hijau 9d18074; task deploy ditahan sejak 22 Nov 2026 |
 
-**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5 selesai dan pipeline hijau pada 9d18074 (22 Nov 2026): 5.1b `site:create`, header cache di aplikasi, log JSON, backup/restore; sisa M5 adalah deploy (ditahan). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5 selesai dan pipeline hijau pada 9d18074 (22 Nov 2026): 5.1b `site:create`, header cache di aplikasi, log JSON, backup/restore; sisa M5 adalah deploy (ditahan). Daftar task berikutnya: [Antrian task berikutnya](#antrian-task-berikutnya). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -346,6 +346,34 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 - Lebih lama dari dugaan: menyepakati model datanya. Rencana pertama (status baru di `articles`, lalu API ingest) dua kali diganti sebelum ada kode; tabel hasil AI terpisah ternyata yang paling sederhana dan paling aman. Detail yang hanya ketahuan saat dikerjakan: `uq_media_storage_key` unik global, konten menang atas redirect (pemeriksaan slug vs redirect tidak perlu), dan agent bisa memperbarui hasil yang sedang dibaca admin (butuh token versi). Kesalahan URL ditemukan review, bukan test: skema Zod dan CHECK database harus memakai aturan yang sama persis.
 - Ternyata tidak perlu: API ingest, queue, dan jumlah galat di daftar antrian. Role database dengan hak per kolom + trigger cukup membatasi agent; pratinjau tidak butuh jalur render sendiri karena pembangun halaman cukup diberi repository konten yang dibungkus.
 - Perlu diubah di roadmap: lanjutkan task lokal M5 (5.1b `site:create`, header cache di aplikasi, log JSON, skrip backup/restore) sebelum deploy. Adapter object storage menunggu provider dipilih; agent bisa mulai dibangun memakai `docs/kontrak-agent.md` dan storage lokal. Payload apa pun dari agent tetap dianggap tidak tepercaya, juga di layar admin.
+
+---
+
+## Antrian task berikutnya
+
+Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesai. Urutan bukan prioritas; prioritas ditentukan pemilik proyek saat mengambil task.
+
+**Lokal (bisa dikerjakan sekarang)**
+- [ ] Site nyata pertama **Berita Konoha** (`beritakonoha`, domain beritakonoha.id dibeli pemilik proyek nanti; dev `beritakonoha.localhost`): portal informasi independen tentang berita politik pusat/daerah, bantuan sosial, tata cara surat pribadi dan perizinan, CPNS
+  - [x] 22 Nov 2026: site dibuat dengan `site:create` (template news); 8 kategori, halaman Tentang Kami, Latihan Ujian CPNS (panduan SKD + sumber resmi), Kontak; menu header/footer; tema biru tua + beranda per rubrik — semua lewat CLI dan API admin, tanpa SQL. Domain dicek tersedia via RDAP (beritakonoha.id dan .com)
+  - [x] 6 hasil AI contoh ("[Contoh]", panduan umum, dengan referensi resmi) ditulis sebagai `blog_agent` ke Antrian terbit; semuanya lolos pemeriksaan (peringatan: tag baru)
+  - [ ] Pemilik proyek meninjau dan meng-approve/menolak contoh di Antrian terbit; hapus atau arsipkan contoh setelah agent menghasilkan konten asli
+  - [ ] Domain asli: `pnpm site:domain --site beritakonoha --add beritakonoha.id --primary` setelah dibeli (bersama deploy)
+  - [ ] Logo dan favicon site (upload media; belum ada layar admin untuk memasangnya, lihat di bawah)
+- [ ] Usulan dari penyiapan Berita Konoha (22 Nov 2026), menunggu keputusan:
+  - Tautan di halaman statis: block body v1 tidak punya tautan, sehingga "Sumber resmi" di halaman Latihan CPNS hanya teks. Pilihan: block `link`/`button` di body v2, atau referensi untuk halaman seperti artikel.
+  - Pengaturan site dari admin: tagline, deskripsi SEO bawaan, tautan media sosial, logo dan favicon saat ini hanya bisa diisi saat `site:create` (sebagian) atau lewat SQL.
+- [ ] Coba alur penuh dengan AI agent milik pemilik proyek: agent menulis ke `generated_articles` sesuai [docs/kontrak-agent.md](docs/kontrak-agent.md) (isi `AGENT_DB_PASSWORD`, `pnpm db:migrate`), hasil masuk Antrian terbit, approve, tayang dengan referensi; catat masalah kontrak yang ditemukan
+- [ ] Adapter object storage (S3-compatible, uji lokal dengan MinIO) setelah pemilik proyek memilih provider
+
+**Deploy (M5, ditahan sampai pemilik proyek memutuskan)**
+- [ ] 5.0 Riset VPS, reverse proxy (TLS otomatis per domain), tujuan backup, alat monitoring → ADR-011
+- [ ] 5.1 Dockerfile multi-stage + stage `tools`, `compose.prod.yml`, env produksi, image di CI
+- [ ] 5.2 VPS dasar, TLS per domain + `ADMIN_HOST`, kontrak proxy (usulan H) teruji di CI, deploy dari CI dengan rollback
+- [ ] 5.3 Backup terjadwal dan dikirim ke luar server
+- [ ] 5.4 Cache di reverse proxy (kunci Host), gate paralel melewati cache
+- [ ] 5.5 Notifikasi galat, uptime check eksternal, laporan ukuran database harian
+- [ ] 5.6 Go-live site nyata, runbook `docs/operasional.md`, retro M5
 
 ---
 
