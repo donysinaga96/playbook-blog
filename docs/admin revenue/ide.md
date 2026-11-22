@@ -1,0 +1,1 @@
+- sumber pemasukan harus disetup dari awal pada halaman admin, yaitu pendaftaran sumber pemasukan (nama dan metode insert data yang digunakan)
