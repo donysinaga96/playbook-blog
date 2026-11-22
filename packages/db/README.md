@@ -11,9 +11,12 @@ scripts/migrate.sh          runner migration: urut, satu transaksi per file, che
 scripts/app_role.sql/.sh    role aplikasi (DML saja, tanpa DDL, tanpa BYPASSRLS)
 scripts/agent_role.sql/.sh  role AI agent: tulis kolom isi generated_articles saja (ADR-010)
 scripts/seed.sh             menjalankan seed/*.sql
+scripts/backup.sh           backup database (pg_dump custom) + media + jumlah baris + checksum, retensi
+scripts/restore.sh          restore ke database BARU, cek checksum, role, jumlah baris, media
+scripts/size.sql            ukuran database dan tabel terbesar (pnpm db:size)
 scripts/setup.sh            migrate -> app_role -> agent_role -> seed (entry point service db-migrate)
 scripts/pull-schema.mjs     drizzle-kit pull -> src/schema/ (buang migration hasil drizzle-kit)
-run_all.sh                  uji lengkap: 81 pemeriksaan pada database baru
+run_all.sh                  uji lengkap: 84 pemeriksaan pada database baru
 src/client.ts               createDatabase(): pool pg + Drizzle; databaseUrlFromEnv()
 src/schema/                 schema.ts + relations.ts HASIL GENERATE (jangan diedit tangan)
 drizzle.config.ts           konfigurasi drizzle-kit, hanya untuk pull

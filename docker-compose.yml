@@ -2,7 +2,7 @@
 # Development stack - framework web artikel multi-site / multi-template
 #
 #   docker compose up -d                              # db + migration + role app + seed
-#   docker compose --profile test  run --rm db-test   # 81 pemeriksaan packages/db
+#   docker compose --profile test  run --rm db-test   # 84 pemeriksaan packages/db
 #   docker compose --profile tools up -d adminer      # UI database di http://localhost:8080
 #
 # Aplikasi Nuxt TIDAK jalan di sini saat development: jalankan `pnpm dev`
@@ -84,6 +84,47 @@ services:
       AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
     volumes:
       - ./packages/db:/db:ro
+
+  # Backup database + media (M5 5.3): pnpm db:backup. Hasil di BACKUP_DIR
+  # (bawaan ./.data/backups); user host agar file tidak milik root.
+  db-backup:
+    profiles: ["tools"]
+    image: *pg-image
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
+    entrypoint: ["sh", "/db/scripts/backup.sh"]
+    environment:
+      <<: *pg-owner-env
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - ./packages/db:/db:ro
+      - ${BACKUP_DIR:-./.data/backups}:/backups
+      - ${MEDIA_DIR:-./.data/media}:/media:ro
+
+  # Restore satu set backup ke database BARU lalu periksa (M5 5.3):
+  #   pnpm db:restore <nama-set> <database-tujuan>
+  # Media diekstrak ke ./.data/media-restore (harus kosong).
+  db-restore:
+    profiles: ["tools"]
+    image: *pg-image
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
+    entrypoint: ["sh", "/db/scripts/restore.sh"]
+    environment:
+      <<: *pg-owner-env
+      APP_DB_USER: ${APP_DB_USER:-blog_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+      AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
+    volumes:
+      - ./packages/db:/db:ro
+      - ${BACKUP_DIR:-./.data/backups}:/backups:ro
+      - ./.data/media-restore:/media-restore
 
   # UI database opsional. Login: System PostgreSQL, server db.
   adminer:

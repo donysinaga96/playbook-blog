@@ -13,9 +13,9 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
 | M5a — Alur konten AI dan approval | 22 / 22 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit e7a7cdb) |
-| M5 — Produksi pertama (titik evaluasi) | 4 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
+| M5 — Produksi pertama (titik evaluasi) | 6 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
-**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5: 5.1b `site:create`, header cache di aplikasi, dan log JSON selesai; berikutnya skrip backup/restore. Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5 selesai (5.1b `site:create`, header cache di aplikasi, log JSON, backup/restore); sisa M5 adalah deploy (ditahan). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -407,9 +407,9 @@ Usulan A–I untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--pro
 - › Skill: `/security-review` pada Dockerfile, compose, konfigurasi proxy, dan job deploy
 
 **5.3 Backup dan restore [C]**
-- [ ] `pg_dump` terjadwal (format custom) + retensi, dikirim ke luar VPS; `MEDIA_DIR` ikut dibackup
-- [ ] Skrip restore ke database kosong, lalu `integrity_test.sql` + smoke
-- [ ] Uji restore sekali; catat tanggal, durasi, dan ukuran di TASKS.md
+- [ ] `pg_dump` terjadwal (format custom) + retensi, dikirim ke luar VPS; `MEDIA_DIR` ikut dibackup — bagian lokal selesai: `packages/db/scripts/backup.sh` (`pnpm db:backup`: dump + media + jumlah baris + SHA-256, retensi `BACKUP_KEEP`); penjadwalan dan pengiriman ke luar server menunggu deploy
+- [x] Skrip restore ke database kosong, lalu `integrity_test.sql` + smoke — `restore.sh` (`pnpm db:restore`): hanya ke database baru, checksum, role, jumlah baris per tabel dibanding saat backup (bukan `integrity_test.sql`, yang bergantung pada data seed), jumlah file media; smoke aplikasi terhadap database hasil restore; bagian 8 `run_all.sh` di CI (84 pemeriksaan)
+- [x] Uji restore sekali; catat tanggal, durasi, dan ukuran di TASKS.md — 22 Nov 2026, database dev (10 MB): dump 91.648 byte, media 5.843 byte (7 file), restore 4 detik (19 tabel, jumlah baris sama), smoke OK; restore ke database yang sudah ada dan backup yang diubah ditolak
 
 **5.4 Cache publik [D]**
 - [x] Header cache HTML publik dengan TTL pendek, hanya untuk respons tanpa cookie sesi (`blog_admin`); admin dan preview `no-store` — `apps/web/server/utils/cache-control.ts`: 200 = `public, max-age=0, s-maxage=<PUBLIC_CACHE_TTL>` (bawaan 60 detik), status lain `no-store`, cookie sesi `private, no-store`; RSS/sitemap memakai TTL yang sama (sebelumnya `max-age=300`); diperiksa di build produksi dan di gate admin (57 pemeriksaan)

@@ -124,7 +124,7 @@ tests/              test lintas paket (arsitektur, CI)
    - `db-test` (profile `test`): uji lengkap database di database terpisah.
    - `adminer` (profile `tools`): UI database opsional.
 
-   Variabel `AGENT_DB_*` di `db-migrate` dan `db-test` ditambahkan di bab "Menyiapkan Database untuk Konten AI".
+   Variabel `AGENT_DB_*` di `db-migrate` dan `db-test` ditambahkan di bab "Menyiapkan Database untuk Konten AI"; service `db-backup` dan `db-restore` di bab "Backup dan Restore".
 
 @@include docker-compose.yml yaml@@
 
@@ -241,7 +241,7 @@ docker compose logs db-migrate     # harus berakhir dengan "database blog_dev si
 
 @@include packages/db/tests/integrity_test.sql sql@@
 
-5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan (bab "Menyiapkan Database untuk Konten AI" menambah 19 test integritas dan 12 pemeriksaan role AI agent, menjadi 81):
+5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan (bab "Menyiapkan Database untuk Konten AI" menambah 19 test integritas dan 12 pemeriksaan role AI agent, menjadi 81; bab "Backup dan Restore" menambah 3 pemeriksaan backup dan restore, menjadi 84):
    - migration dijalankan dua kali (run kedua harus melewati semua file),
    - runner harus menolak migration yang diubah,
    - role aplikasi dibuat,
@@ -448,7 +448,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 1. Buat `.gitlab-ci.yml` dengan dua job yang berjalan paralel:
    - `check`: Node 24 + pnpm dari corepack. Menyalakan PostgreSQL 18.7 sebagai service, menjalankan migration dan seed, lalu `pnpm lint`, `pnpm typecheck`, `pnpm test`. Test berjalan sebagai role aplikasi `blog_app`, bukan pemilik schema.
-   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan; 81 setelah bab "Menyiapkan Database untuk Konten AI") di container PostgreSQL 18.7.
+   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan; 81 setelah bab "Menyiapkan Database untuk Konten AI", 84 setelah bab "Backup dan Restore") di container PostgreSQL 18.7.
    - Job ketiga, `build`, ditambahkan di bab "Mem-build Aplikasi Web di CI" setelah aplikasi Nuxt ada.
 2. Aturan `workflow` mencegah pipeline ganda saat branch punya merge request terbuka. Store pnpm di-cache berdasarkan `pnpm-lock.yaml`.
 
@@ -2268,3 +2268,35 @@ pnpm --filter @framework/web log:report server.log
 @@include packages/db/scripts/size.sql sql@@
 
    Menjalankannya setiap hari dan mengirim galat ke pemilik proyek butuh layanan di luar mesin ini, jadi dikerjakan bersama deploy.
+
+# Backup dan Restore
+
+Backup baru berguna bila restore-nya pernah dicoba. Bab ini menulis keduanya sebagai skrip yang berjalan di container PostgreSQL (seperti `db-migrate`, karena host tidak perlu punya `pg_dump`), lalu membuktikan restore di CI.
+
+1. Backup satu set: `pg_dump` format custom, arsip isi `MEDIA_DIR` (file media tidak ada di database), jumlah baris per tabel saat backup, dan checksum SHA-256 ketiganya. Setiap file ditulis sebagai `.tmp` lalu di-rename, dan checksum ditulis paling akhir, jadi set yang gagal di tengah tidak pernah terlihat lengkap. Retensi menghapus set terlama melebihi `BACKUP_KEEP`.
+
+   Jumlah baris dihitung dengan `query_to_xml` dalam satu query untuk semua tabel. Perhatikan path XPath-nya: dengan `tableforest = false`, hasilnya dibungkus elemen `<table>`, jadi path yang benar `/table/row/n/text()`. Path tanpa `/table` menghasilkan NULL tanpa galat, dan file jumlah baris berisi baris kosong saja.
+
+@@include packages/db/scripts/backup.sh sh@@
+
+2. Restore hanya ke database **baru**: skrip menolak bila database tujuan sudah ada, sehingga tidak pernah menimpa database yang sedang dipakai. Urutannya: cek checksum, buat database, `pg_restore --no-owner --no-privileges` (role di server tujuan bisa berbeda), pasang ulang role aplikasi dan agent, bandingkan jumlah baris per tabel dengan catatan saat backup, lalu ekstrak media ke folder kosong dan bandingkan jumlah filenya. `integrity_test.sql` tidak dipakai di sini karena bergantung pada data seed, sedangkan restore yang sesungguhnya memulihkan data produksi.
+
+@@include packages/db/scripts/restore.sh sh@@
+
+3. Tambahkan service `db-backup` dan `db-restore` (profile `tools`) di `docker-compose.yml`, dengan user host (`BACKUP_UID`, bawaan 1000) agar file backup tidak menjadi milik root, serta perintah `pnpm db:backup` dan `pnpm db:restore <set> <database-baru>`.
+
+4. Uji restore sekali secara manual, lalu buktikan aplikasi berjalan di atas database hasil restore:
+
+```bash
+pnpm db:backup
+pnpm db:restore blog-blog_dev-<waktu> blog_restore_uji
+# PASS  19 tabel, jumlah baris sama
+# PASS  7 file media
+DATABASE_URL=postgres://blog_app:<password>@localhost:5432/blog_restore_uji \
+  SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
+# [smoke] OK
+```
+
+   Coba juga dua kasus yang harus gagal: restore ke database yang sudah ada, dan restore dari file `.dump` yang diubah satu byte (checksum `FAILED`).
+
+5. Buktikan di CI: bagian 8 `run_all.sh` mem-backup database test, me-restore-nya ke database baru, memeriksa jumlah baris, lalu memastikan restore menolak database yang sudah ada dan backup yang checksum-nya berbeda. Total pemeriksaan menjadi 84.

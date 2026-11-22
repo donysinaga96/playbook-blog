@@ -22,6 +22,8 @@
     "db:test": "docker compose --profile test run --rm db-test",
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
+    "db:backup": "docker compose --profile tools run --rm db-backup",
+    "db:restore": "docker compose --profile tools run --rm db-restore",
     "db:size": "docker compose exec -T db sh -c 'psql -X -q -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"' < packages/db/scripts/size.sql",
     "db:adminer": "docker compose --profile tools up -d adminer",
     "tutorial": "node docs/tutorial/build.mjs",

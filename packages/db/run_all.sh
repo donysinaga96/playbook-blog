@@ -8,6 +8,7 @@
 #   5. 61 test integritas
 #   6. hak akses role aplikasi
 #   7. hak akses role AI agent (ADR-010)
+#   8. backup lalu restore ke database baru (M5 5.3)
 #
 # Pemakaian:  APP_DB_PASSWORD=... ./run_all.sh [nama_db]
 # Koneksi lewat PGHOST, PGPORT, PGUSER, PGPASSWORD (pemilik schema).
@@ -160,5 +161,23 @@ agent_denied "agent tidak bisa membaca users" "SELECT 1 FROM users" "permission 
 agent_denied "agent tidak bisa membaca sites.settings" "SELECT settings FROM sites" "permission denied"
 agent_denied "agent tidak bisa menulis media" \
   "UPDATE media SET source_url = 'https://x.test'" "permission denied"
+
+echo "== 8. Backup dan restore ($DB -> ${DB}_restore)"
+BK="$(mktemp -d)"
+dropdb --if-exists "${DB}_restore"
+BACKUP_DIR="$BK" MEDIA_SRC="$BK/tanpa-media" BACKUP_KEEP=1 sh "$DIR/scripts/backup.sh" >/dev/null
+SET="$(basename "$(ls "$BK"/*.dump)")"
+if ! APP_DB_USER="$APP_USER" APP_DB_PASSWORD="$APP_PASS" AGENT_DB_USER="$AGENT_USER" BACKUP_DIR="$BK" \
+     sh "$DIR/scripts/restore.sh" "$SET" "${DB}_restore" > "$BK/restore.log" 2>&1; then
+  cat "$BK/restore.log"; rm -rf "$BK"; fail "restore gagal"
+fi
+grep -q "^PASS  .* jumlah baris sama" "$BK/restore.log" || { cat "$BK/restore.log"; fail "jumlah baris tidak dicek"; }
+pass "backup dipulihkan ke database baru, jumlah baris per tabel sama"
+if BACKUP_DIR="$BK" sh "$DIR/scripts/restore.sh" "$SET" "${DB}_restore" >/dev/null 2>&1; then fail "restore menimpa database yang sudah ada"; fi
+pass "restore menolak database tujuan yang sudah ada"
+printf 'x' >> "$BK/$SET"
+if BACKUP_DIR="$BK" sh "$DIR/scripts/restore.sh" "$SET" "${DB}_restore2" >/dev/null 2>&1; then fail "restore menerima backup yang diubah"; fi
+pass "restore menolak backup yang checksum-nya berbeda"
+dropdb --if-exists "${DB}_restore"; dropdb --if-exists "${DB}_restore2"; rm -rf "$BK"
 
 echo "== SELESAI: semua pemeriksaan lulus"

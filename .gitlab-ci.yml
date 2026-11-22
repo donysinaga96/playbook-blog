@@ -3,7 +3,7 @@
 #   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack),
 #           termasuk test repository yang membaca PostgreSQL 18 yang sudah
 #           di-migrate dan di-seed, sebagai role aplikasi blog_app
-#   db    : uji lengkap packages/db (run_all.sh, 81 pemeriksaan) di
+#   db    : uji lengkap packages/db (run_all.sh, 84 pemeriksaan) di
 #           PostgreSQL 18 sebagai service
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed

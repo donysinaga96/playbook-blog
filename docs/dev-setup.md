@@ -11,7 +11,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 2. `docker compose up -d`
 3. `docker compose logs db-migrate` harus berakhir dengan `database blog_dev siap`.
 4. `docker compose --profile test run --rm db-test` harus berakhir dengan
-   `SELESAI: semua pemeriksaan lulus` (81 pemeriksaan).
+   `SELESAI: semua pemeriksaan lulus` (84 pemeriksaan).
 
 ## Perintah sehari-hari
 
@@ -30,6 +30,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
 | Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
 | Ukuran database dan tabel terbesar | `pnpm db:size` |
+| Backup database + media / uji restore | `pnpm db:backup`, `pnpm db:restore <set> <db-baru>` (lihat "Backup dan restore") |
 | Ringkasan log request per site (p50, p95, 4xx, 5xx) | `pnpm --filter @framework/web log:report <file-log>` (log JSON; `LOG_FORMAT=text` untuk dev) |
 | Membuat site baru / mengelola domainnya | `pnpm site:create ...`, `pnpm site:domain ...` (lihat "Site baru") |
 | Gate konten AI (hasil agent → approval → tampil) | `pnpm build`, lalu `ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content` |
@@ -141,6 +142,25 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 - Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Backup dan restore
+
+```bash
+pnpm db:backup
+# backup blog-blog_dev-20261122T125511Z selesai dalam 0 detik:
+#   .dump (pg_dump format custom), .media.tar.gz (isi MEDIA_DIR), .counts, .sha256
+pnpm db:restore blog-blog_dev-20261122T125511Z blog_restore_uji
+# 1. checksum  2. database BARU + pg_restore  3. role aplikasi & agent
+# 4. jumlah baris per tabel sama dengan saat backup  5. jumlah file media
+```
+
+- Hasil backup di `.data/backups` (ganti dengan `BACKUP_DIR`); set terlama dihapus bila lebih dari
+  `BACKUP_KEEP` (bawaan 14). File ditulis sebagai user host (`BACKUP_UID`/`BACKUP_GID`, bawaan 1000).
+- Restore hanya ke database yang **belum ada**, jadi tidak pernah menimpa database yang dipakai.
+  Media diekstrak ke `.data/media-restore` (harus kosong). Database hasil restore tidak dihapus
+  otomatis, agar bisa diperiksa; uji aplikasi terhadapnya dengan `DATABASE_URL` yang menunjuk
+  database itu, lalu `pnpm --filter @framework/web smoke`. Hapus dengan `DROP DATABASE`.
+- Di produksi, backup wajib dikirim ke luar server dan dijadwalkan; itu dikerjakan bersama deploy.
 
 ## Site baru
 
