@@ -18,6 +18,7 @@ const OTHER_TAG = '01930000-0000-7000-8000-000000000511'
 const USER = '01930000-0000-7000-8000-000000000001'
 
 const run = `t${process.pid}x${Date.now().toString(36)}`
+const randomUUIDish = () => '01930000-0000-7000-8000-00000000ffff'
 const body = (text = 'Isi artikel uji.') => ({ version: 1, blocks: [{ type: 'paragraph', text }, { type: 'heading', level: 2, text: 'Bagian' }] })
 
 /** EditorError dengan jenis tertentu (dan, bila diberi, field tertentu). */
@@ -334,6 +335,44 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       await editor.deleteMenuItem(SITE, 'footer', item.id, renamed.updatedAt.toISOString())
       // Sub-item ikut terhapus (CASCADE).
       expect((await editor.getMenu(SITE, 'footer')).items.some((i) => i.id === sub.id)).toBe(false)
+    })
+  })
+
+  describe('pengaturan site', () => {
+    it('ubah nama, tagline, logo, favicon, SEO bawaan; permalink dan key lain dipertahankan', async () => {
+      await db.update(sites).set({ settings: { permalink: '/:year/:slug', social: { x: 'https://x.com/uji' } } }).where(eq(sites.id, SITE))
+      const before = await editor.getSiteSettings(SITE)
+      expect(before).toMatchObject({ tagline: null, logoMediaId: null, permalink: '/:year/:slug' })
+      const after = await editor.updateSiteSettings(SITE, {
+        name: ' Site Uji Baru ', tagline: 'Tagline uji', logoMediaId: MEDIA, faviconMediaId: MEDIA,
+        seo: { titleTemplate: '%s · Uji', defaultDescription: 'Deskripsi bawaan', defaultOgImageId: MEDIA },
+      }, before.updatedAt.toISOString())
+      expect(after).toMatchObject({ name: 'Site Uji Baru', tagline: 'Tagline uji', logoMediaId: MEDIA, faviconMediaId: MEDIA, permalink: '/:year/:slug' })
+      expect(after.seo).toEqual({ titleTemplate: '%s · Uji', defaultDescription: 'Deskripsi bawaan', defaultOgImageId: MEDIA })
+      const [row] = await db.select({ settings: sites.settings }).from(sites).where(eq(sites.id, SITE))
+      expect(row?.settings).toMatchObject({ permalink: '/:year/:slug', social: { x: 'https://x.com/uji' } })
+
+      // Dikosongkan: key dibuang, bukan null.
+      const cleared = await editor.updateSiteSettings(SITE, { name: 'Site Uji', tagline: '', logoMediaId: null, faviconMediaId: null, seo: {} }, after.updatedAt.toISOString())
+      expect(cleared).toMatchObject({ tagline: null, logoMediaId: null, seo: { titleTemplate: null, defaultDescription: null, defaultOgImageId: null } })
+      const [row2] = await db.select({ settings: sites.settings }).from(sites).where(eq(sites.id, SITE))
+      expect(row2?.settings).not.toHaveProperty('tagline')
+      await rejects(editor.updateSiteSettings(SITE, { name: 'x', seo: {} }, after.updatedAt.toISOString()), 'conflict')
+    })
+
+    it.each([
+      ['logo milik site lain', { logoMediaId: OTHER_MEDIA }, 'logoMediaId'],
+      ['favicon milik site lain', { faviconMediaId: OTHER_MEDIA }, 'faviconMediaId'],
+      ['template judul tanpa %s', { seo: { titleTemplate: 'Judul tetap' } }, 'seo.titleTemplate'],
+      ['nama kosong', { name: ' ' }, 'name'],
+      ['key tak dikenal (permalink)', { permalink: '/:slug' }, ''],
+    ])('ditolak: %s', async (_name, override, field) => {
+      const current = await editor.getSiteSettings(SITE)
+      await rejects(editor.updateSiteSettings(SITE, { name: 'Site Uji', seo: {}, ...override }, current.updatedAt.toISOString()), 'invalid', field)
+    })
+
+    it('site lain: tidak ditemukan', async () => {
+      await rejects(editor.updateSiteSettings(randomUUIDish(), { name: 'x', seo: {} }, new Date().toISOString()), 'not-found')
     })
   })
 

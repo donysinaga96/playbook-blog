@@ -120,6 +120,25 @@ export const menuItemInputSchema = z
   })
 export type MenuItemInput = z.output<typeof menuItemInputSchema>
 
+/**
+ * Pengaturan site yang bisa diubah admin: identitas, logo, favicon, dan SEO
+ * bawaan. Permalink sengaja tidak ada di sini: mengubahnya mengganti URL
+ * semua artikel. Media sosial dan analytics belum dirender template.
+ */
+export const siteSettingsInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  tagline: optionalText(160),
+  logoMediaId: id.nullish().transform((v) => v ?? null),
+  faviconMediaId: id.nullish().transform((v) => v ?? null),
+  seo: z.strictObject({
+    /** Pola judul halaman; %s diganti judul konten, mis. "%s | Berita Konoha". */
+    titleTemplate: optionalText(120).refine((t) => t === null || t.includes('%s'), 'harus memuat %s'),
+    defaultDescription: optionalText(320),
+    defaultOgImageId: id.nullish().transform((v) => v ?? null),
+  }),
+})
+export type SiteSettingsInput = z.output<typeof siteSettingsInputSchema>
+
 /** Keterangan media yang bisa diubah admin (file-nya sendiri tidak bisa diganti). */
 export const mediaMetaSchema = z.strictObject({
   /** Wajib: dibacakan pembaca layar dan tampil bila gambar gagal dimuat. */

@@ -1689,6 +1689,8 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review). Field `references` artikel dan `sourceUrl` media ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI":
 
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+
 @@include packages/core/src/editor/inputs.ts ts@@
 
 6. Tulis repository editor. Hal-hal yang mudah terlewat:
@@ -1699,11 +1701,15 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
    - Arsip hanya mengubah status, versi, dan revisi, tanpa memvalidasi ulang isi, agar artikel lama dengan data yang tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
    - Referensi artikel, `createArticleIn` (buat artikel di dalam transaksi pemanggil), dan bagian `tx` di nilai kembalian ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+
 @@include packages/core/src/editor/editor-repository.ts ts@@
 
 7. Daftarkan sebagai `editor` di `createRepositories` dan ekspor modul `editor/*` dari `packages/core/src/index.ts`. Tipe daftar artikel admin bernama `AdminArticleQuery` karena `ArticleListQuery` sudah dipakai repository baca.
 
 8. Uji terhadap database dev, tetapi jangan menulis ke site seed. File test lain membaca data seed secara paralel: artikel uji yang terbit di site kuliner sempat membuat test RSS, daftar penulis, dan snapshot home gagal secara acak. Test ini membuat site uji sendiri berstatus `ARCHIVED` (tidak ditemukan resolver dan tidak muncul di daftar site admin) dan menghapusnya di akhir; seluruh isinya ikut terhapus lewat CASCADE:
+
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
 
 @@include packages/core/src/editor/editor-repository.test.ts ts@@
 
@@ -1760,6 +1766,8 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 9. Pakai layout Nuxt untuk kerangka admin. `app.vue` menjadi `<NuxtLayout><NuxtPage /></NuxtLayout>`; halaman publik tidak memakai layout, jadi tetap dirender apa adanya. Logout hanya pindah ke halaman login bila server benar-benar menghapus sesi, agar komputer bersama tidak tertinggal dalam keadaan login. Matikan `vue/multi-word-component-names` juga untuk `app/layouts/**`:
 
    Menu "Antrian terbit" dengan jumlah yang menunggu ditambahkan di bab "Membangun Antrian Terbit".
+
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
 
 @@include apps/web/app/layouts/admin.vue vue@@
 
@@ -2331,3 +2339,27 @@ Saat menyiapkan site pertama, halaman "Latihan Ujian CPNS" perlu mengarahkan pem
    - Payload AI agent: body versi 1 atau 2, dengan aturan yang sama. Kontrak agent dan contoh payload-nya (yang diuji otomatis) diperbarui ke versi 2.
 
 3. Uji: skema (link di v1 ditolak, `javascript:`, huruf besar, mailto tanpa domain, label kosong), ekstraksi teks, pembersih editor, payload agent, dan render template (atribut tab baru hanya untuk tautan web).
+
+# Pengaturan Site dari Admin
+
+Nama, tagline, logo, favicon, dan SEO bawaan site sejauh ini hanya bisa diisi lewat `site:create` (sebagian) atau SQL. Bab ini membuka layar "Pengaturan" di admin untuk bagian yang memang dirender template.
+
+1. Tentukan isinya dari apa yang tampil. Template merender nama, tagline, logo, favicon, serta judul, deskripsi, dan gambar bagikan bawaan. Media sosial dan analytics ada di skema settings tetapi belum dirender, jadi tidak dibuka di form: isian yang tidak terlihat hasilnya hanya membingungkan. Permalink ditampilkan baca-saja, karena mengubahnya mengganti URL semua artikel.
+
+2. Tulis skema input dan fungsinya di repository editor. Settings disimpan sebagai JSON: key yang tidak ada di form (permalink, social, analytics) dipertahankan, nilai yang dikosongkan dibuang dari JSON (bukan disimpan sebagai `null`), lalu hasil gabungannya divalidasi ulang dengan `siteSettingsSchema` yang dipakai halaman publik. Logo, favicon, dan gambar bagikan harus media milik site itu. Simpan membawa `updatedAt` sebagai token konkurensi:
+
+```ts
+async updateSiteSettings(siteId: SiteId, raw: unknown, expectedUpdatedAt: string): Promise<SiteSettingsRecord>
+```
+
+3. Tambahkan API `GET/PUT /api/admin/sites/:siteId/settings`:
+
+@@include apps/web/server/api/admin/sites/[siteId]/settings.get.ts ts@@
+
+@@include apps/web/server/api/admin/sites/[siteId]/settings.put.ts ts@@
+
+4. Tulis halaman "Pengaturan" dengan pemilih media yang sama dengan editor artikel, dan tambahkan ke navigasi admin. Setelah simpan, nama di pemilih site ikut berubah tanpa memuat ulang:
+
+@@include apps/web/app/pages/admin/[site]/settings.vue vue@@
+
+5. Data site tidak di-cache di memori, jadi perubahan langsung terlihat di request berikutnya: judul tab mengikuti pola baru, dan `<meta name="description">` memakai deskripsi bawaan untuk halaman tanpa ringkasan.

@@ -27,6 +27,7 @@ const nav = [
   { to: 'menus', label: 'Menu' },
   { to: 'media', label: 'Media' },
   { to: 'theme', label: 'Tema' },
+  { to: 'settings', label: 'Pengaturan' },
 ]
 
 /** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */

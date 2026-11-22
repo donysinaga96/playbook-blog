@@ -360,9 +360,10 @@ Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesa
   - [ ] Pemilik proyek meninjau dan meng-approve/menolak contoh di Antrian terbit; hapus atau arsipkan contoh setelah agent menghasilkan konten asli
   - [ ] Domain asli: `pnpm site:domain --site beritakonoha --add beritakonoha.id --primary` setelah dibeli (bersama deploy)
   - [ ] Logo dan favicon site (upload media; belum ada layar admin untuk memasangnya, lihat di bawah)
-- [ ] Usulan dari penyiapan Berita Konoha (22 Nov 2026), menunggu keputusan:
-  - Tautan di halaman statis: block body v1 tidak punya tautan, sehingga "Sumber resmi" di halaman Latihan CPNS hanya teks. Pilihan: block `link`/`button` di body v2, atau referensi untuk halaman seperti artikel.
-  - Pengaturan site dari admin: tagline, deskripsi SEO bawaan, tautan media sosial, logo dan favicon saat ini hanya bisa diisi saat `site:create` (sebagian) atau lewat SQL.
+- [x] Celah dari penyiapan Berita Konoha (dikerjakan 22 Nov 2026):
+  - [x] Tautan di halaman dan artikel: block `link` (http(s) dan `mailto:`) di body versi 2; v1 tetap sah tanpa migrasi; editor admin, template base, kontrak agent diperbarui. Halaman Latihan CPNS dan Kontak Berita Konoha kini memakai tautan
+  - [x] Pengaturan site dari admin: nama, tagline, logo, favicon, pola judul, deskripsi dan gambar bagikan bawaan (`/admin/<site>/settings`); permalink baca-saja
+  - [ ] Media sosial dan analytics: ada di skema settings tetapi belum dirender template; buka di form bila template menampilkannya
 - [ ] Coba alur penuh dengan AI agent milik pemilik proyek: agent menulis ke `generated_articles` sesuai [docs/kontrak-agent.md](docs/kontrak-agent.md) (isi `AGENT_DB_PASSWORD`, `pnpm db:migrate`), hasil masuk Antrian terbit, approve, tayang dengan referensi; catat masalah kontrak yang ditemukan
 - [ ] Adapter object storage (S3-compatible, uji lokal dengan MinIO) setelah pemilik proyek memilih provider
 

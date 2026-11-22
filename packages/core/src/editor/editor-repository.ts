@@ -44,7 +44,7 @@ import type { z } from 'zod'
 import type { Body } from '../content/blocks'
 import { extractBodyText } from '../content/extract-body-text'
 import type { ContentSeo } from '../content/seo'
-import { parseSiteSettings } from '../site/settings'
+import { parseSiteSettings, siteSettingsSchema } from '../site/settings'
 import { createUrlBuilder } from '../views/urls'
 import type { Page, RepositoryContext, SiteId, SiteScoped } from '../repositories/types'
 import { normalizePaging, toPage } from '../repositories/types'
@@ -55,6 +55,7 @@ import {
   menuItemInputSchema,
   pageInputSchema,
   mediaMetaSchema,
+  siteSettingsInputSchema,
   tagInputSchema,
   updatedAtSchema,
   versionSchema,
@@ -143,6 +144,17 @@ export interface NewMediaFile {
   sizeBytes: number
   width: number
   height: number
+}
+
+export interface SiteSettingsRecord {
+  name: string
+  tagline: string | null
+  logoMediaId: string | null
+  faviconMediaId: string | null
+  seo: { titleTemplate: string | null; defaultDescription: string | null; defaultOgImageId: string | null }
+  /** Hanya dibaca: diubah lewat CLI/ADR karena mengganti semua URL artikel. */
+  permalink: string
+  updatedAt: Date
 }
 
 export interface ThemeRecord {
@@ -517,6 +529,22 @@ export function createEditorRepository(ctx: RepositoryContext) {
     return menu
   }
 
+  async function siteSettingsOf(tx: Db, siteId: SiteId): Promise<SiteSettingsRecord> {
+    const [row] = await tx.select({ name: sites.name, settings: sites.settings, logoMediaId: sites.logoMediaId, faviconMediaId: sites.faviconMediaId, updatedAt: sites.updatedAt })
+      .from(sites).where(eq(sites.id, siteId)).limit(1)
+    if (!row) throw notFound('Site')
+    const settings = parseSiteSettings(row.settings)
+    return {
+      name: row.name,
+      tagline: settings.tagline ?? null,
+      logoMediaId: row.logoMediaId,
+      faviconMediaId: row.faviconMediaId,
+      seo: { titleTemplate: settings.seo.titleTemplate ?? null, defaultDescription: settings.seo.defaultDescription ?? null, defaultOgImageId: settings.seo.defaultOgImageId ?? null },
+      permalink: settings.permalink,
+      updatedAt: row.updatedAt,
+    }
+  }
+
   async function themesOf(tx: Db, siteId: SiteId): Promise<ThemeRecord[]> {
     const rows = await tx
       .select({ templateKey: siteThemes.templateKey, templateVersion: siteThemes.templateVersion, tokens: siteThemes.tokens, options: siteThemes.options, layouts: siteThemes.layouts, isActive: siteThemes.isActive, updatedAt: siteThemes.updatedAt })
@@ -551,6 +579,48 @@ export function createEditorRepository(ctx: RepositoryContext) {
         .limit(paging.pageSize)
         .offset(paging.offset)
       return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    // ======================= Pengaturan site =======================
+
+    async getSiteSettings(siteId: SiteId): Promise<SiteSettingsRecord> {
+      return siteSettingsOf(db, siteId)
+    },
+
+    /**
+     * Simpan identitas, logo, favicon, dan SEO bawaan. Key settings lain
+     * (permalink, social, analytics) dipertahankan. Logo, favicon, dan
+     * gambar OG harus media milik site ini. expectedUpdatedAt = updatedAt
+     * saat form dibuka.
+     */
+    async updateSiteSettings(siteId: SiteId, raw: unknown, expectedUpdatedAt: string): Promise<SiteSettingsRecord> {
+      const input = parse(siteSettingsInputSchema, raw)
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      return db.transaction(async (tx) => {
+        await ensureOwned(tx, media, siteId, [input.logoMediaId], 'logoMediaId', 'media')
+        await ensureOwned(tx, media, siteId, [input.faviconMediaId], 'faviconMediaId', 'media')
+        await ensureOwned(tx, media, siteId, [input.seo.defaultOgImageId], 'seo.defaultOgImageId', 'media')
+        const [row] = await tx.select({ settings: sites.settings }).from(sites).where(eq(sites.id, siteId)).limit(1)
+        if (!row) throw notFound('Site')
+        const current = (row.settings ?? {}) as Record<string, unknown>
+        const currentSeo = (typeof current['seo'] === 'object' && current['seo'] !== null ? current['seo'] : {}) as Record<string, unknown>
+        const drop = <T extends Record<string, unknown>>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null))
+        // null = dikosongkan: key dibuang, bukan disimpan sebagai null.
+        const next = drop({
+          ...current,
+          tagline: input.tagline,
+          seo: drop({ ...currentSeo, titleTemplate: input.seo.titleTemplate, defaultDescription: input.seo.defaultDescription, defaultOgImageId: input.seo.defaultOgImageId }),
+        })
+        // Pastikan hasil gabungan tetap lolos skema settings yang dibaca halaman publik.
+        const check = siteSettingsSchema.safeParse(next, { error: editorErrorMap })
+        if (!check.success) throw invalid(check.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })))
+        const [updated] = await tx.update(sites)
+          .set({ name: input.name, settings: next, logoMediaId: input.logoMediaId, faviconMediaId: input.faviconMediaId, updatedAt: sql`now()` })
+          .where(and(eq(sites.id, siteId), sameMillis(sites.updatedAt, token)))
+          .returning({ id: sites.id })
+        if (!updated) throw conflict('Pengaturan site')
+        return siteSettingsOf(tx, siteId)
+      })
     },
 
     // ======================= Tema =======================

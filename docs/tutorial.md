@@ -17628,6 +17628,8 @@ describe('pesan validasi form admin', async () => {
 
 5. Tulis skema input. Perhatikan `publishedAt`: field yang tidak dikirim berarti tanggal tersimpan dipertahankan, sedangkan `null` berarti dikosongkan. Versi pertama menyamakan keduanya, sehingga tanggal terbit tidak pernah bisa dikosongkan (temuan code review). Field `references` artikel dan `sourceUrl` media ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI":
 
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+
 `packages/core/src/editor/inputs.ts`
 
 ```ts
@@ -17753,6 +17755,25 @@ export const menuItemInputSchema = z
   })
 export type MenuItemInput = z.output<typeof menuItemInputSchema>
 
+/**
+ * Pengaturan site yang bisa diubah admin: identitas, logo, favicon, dan SEO
+ * bawaan. Permalink sengaja tidak ada di sini: mengubahnya mengganti URL
+ * semua artikel. Media sosial dan analytics belum dirender template.
+ */
+export const siteSettingsInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  tagline: optionalText(160),
+  logoMediaId: id.nullish().transform((v) => v ?? null),
+  faviconMediaId: id.nullish().transform((v) => v ?? null),
+  seo: z.strictObject({
+    /** Pola judul halaman; %s diganti judul konten, mis. "%s | Berita Konoha". */
+    titleTemplate: optionalText(120).refine((t) => t === null || t.includes('%s'), 'harus memuat %s'),
+    defaultDescription: optionalText(320),
+    defaultOgImageId: id.nullish().transform((v) => v ?? null),
+  }),
+})
+export type SiteSettingsInput = z.output<typeof siteSettingsInputSchema>
+
 /** Keterangan media yang bisa diubah admin (file-nya sendiri tidak bisa diganti). */
 export const mediaMetaSchema = z.strictObject({
   /** Wajib: dibacakan pembaca layar dan tampil bila gambar gagal dimuat. */
@@ -17785,6 +17806,8 @@ export const updatedAtSchema = z.iso.datetime({ offset: true })
    - Pengecekan slug terjadi sebelum INSERT, jadi dua simpan bersamaan bisa memilih slug yang sama. Pelanggaran unique constraint (kode 23505) diubah menjadi galat field `slug`.
    - Arsip hanya mengubah status, versi, dan revisi, tanpa memvalidasi ulang isi, agar artikel lama dengan data yang tidak lolos aturan tulis terbaru tetap bisa disembunyikan.
    - Referensi artikel, `createArticleIn` (buat artikel di dalam transaksi pemanggil), dan bagian `tx` di nilai kembalian ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
+
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
 
 `packages/core/src/editor/editor-repository.ts`
 
@@ -17835,7 +17858,7 @@ import type { z } from 'zod'
 import type { Body } from '../content/blocks'
 import { extractBodyText } from '../content/extract-body-text'
 import type { ContentSeo } from '../content/seo'
-import { parseSiteSettings } from '../site/settings'
+import { parseSiteSettings, siteSettingsSchema } from '../site/settings'
 import { createUrlBuilder } from '../views/urls'
 import type { Page, RepositoryContext, SiteId, SiteScoped } from '../repositories/types'
 import { normalizePaging, toPage } from '../repositories/types'
@@ -17846,6 +17869,7 @@ import {
   menuItemInputSchema,
   pageInputSchema,
   mediaMetaSchema,
+  siteSettingsInputSchema,
   tagInputSchema,
   updatedAtSchema,
   versionSchema,
@@ -17934,6 +17958,17 @@ export interface NewMediaFile {
   sizeBytes: number
   width: number
   height: number
+}
+
+export interface SiteSettingsRecord {
+  name: string
+  tagline: string | null
+  logoMediaId: string | null
+  faviconMediaId: string | null
+  seo: { titleTemplate: string | null; defaultDescription: string | null; defaultOgImageId: string | null }
+  /** Hanya dibaca: diubah lewat CLI/ADR karena mengganti semua URL artikel. */
+  permalink: string
+  updatedAt: Date
 }
 
 export interface ThemeRecord {
@@ -18308,6 +18343,22 @@ export function createEditorRepository(ctx: RepositoryContext) {
     return menu
   }
 
+  async function siteSettingsOf(tx: Db, siteId: SiteId): Promise<SiteSettingsRecord> {
+    const [row] = await tx.select({ name: sites.name, settings: sites.settings, logoMediaId: sites.logoMediaId, faviconMediaId: sites.faviconMediaId, updatedAt: sites.updatedAt })
+      .from(sites).where(eq(sites.id, siteId)).limit(1)
+    if (!row) throw notFound('Site')
+    const settings = parseSiteSettings(row.settings)
+    return {
+      name: row.name,
+      tagline: settings.tagline ?? null,
+      logoMediaId: row.logoMediaId,
+      faviconMediaId: row.faviconMediaId,
+      seo: { titleTemplate: settings.seo.titleTemplate ?? null, defaultDescription: settings.seo.defaultDescription ?? null, defaultOgImageId: settings.seo.defaultOgImageId ?? null },
+      permalink: settings.permalink,
+      updatedAt: row.updatedAt,
+    }
+  }
+
   async function themesOf(tx: Db, siteId: SiteId): Promise<ThemeRecord[]> {
     const rows = await tx
       .select({ templateKey: siteThemes.templateKey, templateVersion: siteThemes.templateVersion, tokens: siteThemes.tokens, options: siteThemes.options, layouts: siteThemes.layouts, isActive: siteThemes.isActive, updatedAt: siteThemes.updatedAt })
@@ -18342,6 +18393,48 @@ export function createEditorRepository(ctx: RepositoryContext) {
         .limit(paging.pageSize)
         .offset(paging.offset)
       return toPage(rows, total?.n ?? 0, paging.page, paging.pageSize)
+    },
+
+    // ======================= Pengaturan site =======================
+
+    async getSiteSettings(siteId: SiteId): Promise<SiteSettingsRecord> {
+      return siteSettingsOf(db, siteId)
+    },
+
+    /**
+     * Simpan identitas, logo, favicon, dan SEO bawaan. Key settings lain
+     * (permalink, social, analytics) dipertahankan. Logo, favicon, dan
+     * gambar OG harus media milik site ini. expectedUpdatedAt = updatedAt
+     * saat form dibuka.
+     */
+    async updateSiteSettings(siteId: SiteId, raw: unknown, expectedUpdatedAt: string): Promise<SiteSettingsRecord> {
+      const input = parse(siteSettingsInputSchema, raw)
+      const token = parse(updatedAtSchema, expectedUpdatedAt)
+      return db.transaction(async (tx) => {
+        await ensureOwned(tx, media, siteId, [input.logoMediaId], 'logoMediaId', 'media')
+        await ensureOwned(tx, media, siteId, [input.faviconMediaId], 'faviconMediaId', 'media')
+        await ensureOwned(tx, media, siteId, [input.seo.defaultOgImageId], 'seo.defaultOgImageId', 'media')
+        const [row] = await tx.select({ settings: sites.settings }).from(sites).where(eq(sites.id, siteId)).limit(1)
+        if (!row) throw notFound('Site')
+        const current = (row.settings ?? {}) as Record<string, unknown>
+        const currentSeo = (typeof current['seo'] === 'object' && current['seo'] !== null ? current['seo'] : {}) as Record<string, unknown>
+        const drop = <T extends Record<string, unknown>>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null))
+        // null = dikosongkan: key dibuang, bukan disimpan sebagai null.
+        const next = drop({
+          ...current,
+          tagline: input.tagline,
+          seo: drop({ ...currentSeo, titleTemplate: input.seo.titleTemplate, defaultDescription: input.seo.defaultDescription, defaultOgImageId: input.seo.defaultOgImageId }),
+        })
+        // Pastikan hasil gabungan tetap lolos skema settings yang dibaca halaman publik.
+        const check = siteSettingsSchema.safeParse(next, { error: editorErrorMap })
+        if (!check.success) throw invalid(check.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })))
+        const [updated] = await tx.update(sites)
+          .set({ name: input.name, settings: next, logoMediaId: input.logoMediaId, faviconMediaId: input.faviconMediaId, updatedAt: sql`now()` })
+          .where(and(eq(sites.id, siteId), sameMillis(sites.updatedAt, token)))
+          .returning({ id: sites.id })
+        if (!updated) throw conflict('Pengaturan site')
+        return siteSettingsOf(tx, siteId)
+      })
     },
 
     // ======================= Tema =======================
@@ -18797,6 +18890,8 @@ export { EditorError, type FieldIssue }
 
 8. Uji terhadap database dev, tetapi jangan menulis ke site seed. File test lain membaca data seed secara paralel: artikel uji yang terbit di site kuliner sempat membuat test RSS, daftar penulis, dan snapshot home gagal secara acak. Test ini membuat site uji sendiri berstatus `ARCHIVED` (tidak ditemukan resolver dan tidak muncul di daftar site admin) dan menghapusnya di akhir; seluruh isinya ikut terhapus lewat CASCADE:
 
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+
 `packages/core/src/editor/editor-repository.test.ts`
 
 ```ts
@@ -18820,6 +18915,7 @@ const OTHER_TAG = '01930000-0000-7000-8000-000000000511'
 const USER = '01930000-0000-7000-8000-000000000001'
 
 const run = `t${process.pid}x${Date.now().toString(36)}`
+const randomUUIDish = () => '01930000-0000-7000-8000-00000000ffff'
 const body = (text = 'Isi artikel uji.') => ({ version: 1, blocks: [{ type: 'paragraph', text }, { type: 'heading', level: 2, text: 'Bagian' }] })
 
 /** EditorError dengan jenis tertentu (dan, bila diberi, field tertentu). */
@@ -19136,6 +19232,44 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository editor (database dev, 
       await editor.deleteMenuItem(SITE, 'footer', item.id, renamed.updatedAt.toISOString())
       // Sub-item ikut terhapus (CASCADE).
       expect((await editor.getMenu(SITE, 'footer')).items.some((i) => i.id === sub.id)).toBe(false)
+    })
+  })
+
+  describe('pengaturan site', () => {
+    it('ubah nama, tagline, logo, favicon, SEO bawaan; permalink dan key lain dipertahankan', async () => {
+      await db.update(sites).set({ settings: { permalink: '/:year/:slug', social: { x: 'https://x.com/uji' } } }).where(eq(sites.id, SITE))
+      const before = await editor.getSiteSettings(SITE)
+      expect(before).toMatchObject({ tagline: null, logoMediaId: null, permalink: '/:year/:slug' })
+      const after = await editor.updateSiteSettings(SITE, {
+        name: ' Site Uji Baru ', tagline: 'Tagline uji', logoMediaId: MEDIA, faviconMediaId: MEDIA,
+        seo: { titleTemplate: '%s · Uji', defaultDescription: 'Deskripsi bawaan', defaultOgImageId: MEDIA },
+      }, before.updatedAt.toISOString())
+      expect(after).toMatchObject({ name: 'Site Uji Baru', tagline: 'Tagline uji', logoMediaId: MEDIA, faviconMediaId: MEDIA, permalink: '/:year/:slug' })
+      expect(after.seo).toEqual({ titleTemplate: '%s · Uji', defaultDescription: 'Deskripsi bawaan', defaultOgImageId: MEDIA })
+      const [row] = await db.select({ settings: sites.settings }).from(sites).where(eq(sites.id, SITE))
+      expect(row?.settings).toMatchObject({ permalink: '/:year/:slug', social: { x: 'https://x.com/uji' } })
+
+      // Dikosongkan: key dibuang, bukan null.
+      const cleared = await editor.updateSiteSettings(SITE, { name: 'Site Uji', tagline: '', logoMediaId: null, faviconMediaId: null, seo: {} }, after.updatedAt.toISOString())
+      expect(cleared).toMatchObject({ tagline: null, logoMediaId: null, seo: { titleTemplate: null, defaultDescription: null, defaultOgImageId: null } })
+      const [row2] = await db.select({ settings: sites.settings }).from(sites).where(eq(sites.id, SITE))
+      expect(row2?.settings).not.toHaveProperty('tagline')
+      await rejects(editor.updateSiteSettings(SITE, { name: 'x', seo: {} }, after.updatedAt.toISOString()), 'conflict')
+    })
+
+    it.each([
+      ['logo milik site lain', { logoMediaId: OTHER_MEDIA }, 'logoMediaId'],
+      ['favicon milik site lain', { faviconMediaId: OTHER_MEDIA }, 'faviconMediaId'],
+      ['template judul tanpa %s', { seo: { titleTemplate: 'Judul tetap' } }, 'seo.titleTemplate'],
+      ['nama kosong', { name: ' ' }, 'name'],
+      ['key tak dikenal (permalink)', { permalink: '/:slug' }, ''],
+    ])('ditolak: %s', async (_name, override, field) => {
+      const current = await editor.getSiteSettings(SITE)
+      await rejects(editor.updateSiteSettings(SITE, { name: 'Site Uji', seo: {}, ...override }, current.updatedAt.toISOString()), 'invalid', field)
+    })
+
+    it('site lain: tidak ditemukan', async () => {
+      await rejects(editor.updateSiteSettings(randomUUIDish(), { name: 'x', seo: {} }, new Date().toISOString()), 'not-found')
     })
   })
 
@@ -20459,6 +20593,8 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
 
    Menu "Antrian terbit" dengan jumlah yang menunggu ditambahkan di bab "Membangun Antrian Terbit".
 
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+
 `apps/web/app/layouts/admin.vue`
 
 ```vue
@@ -20491,6 +20627,7 @@ const nav = [
   { to: 'menus', label: 'Menu' },
   { to: 'media', label: 'Media' },
   { to: 'theme', label: 'Tema' },
+  { to: 'settings', label: 'Pengaturan' },
 ]
 
 /** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */
@@ -28229,3 +28366,264 @@ Saat menyiapkan site pertama, halaman "Latihan Ujian CPNS" perlu mengarahkan pem
    - Payload AI agent: body versi 1 atau 2, dengan aturan yang sama. Kontrak agent dan contoh payload-nya (yang diuji otomatis) diperbarui ke versi 2.
 
 3. Uji: skema (link di v1 ditolak, `javascript:`, huruf besar, mailto tanpa domain, label kosong), ekstraksi teks, pembersih editor, payload agent, dan render template (atribut tab baru hanya untuk tautan web).
+
+# Pengaturan Site dari Admin
+
+Nama, tagline, logo, favicon, dan SEO bawaan site sejauh ini hanya bisa diisi lewat `site:create` (sebagian) atau SQL. Bab ini membuka layar "Pengaturan" di admin untuk bagian yang memang dirender template.
+
+1. Tentukan isinya dari apa yang tampil. Template merender nama, tagline, logo, favicon, serta judul, deskripsi, dan gambar bagikan bawaan. Media sosial dan analytics ada di skema settings tetapi belum dirender, jadi tidak dibuka di form: isian yang tidak terlihat hasilnya hanya membingungkan. Permalink ditampilkan baca-saja, karena mengubahnya mengganti URL semua artikel.
+
+2. Tulis skema input dan fungsinya di repository editor. Settings disimpan sebagai JSON: key yang tidak ada di form (permalink, social, analytics) dipertahankan, nilai yang dikosongkan dibuang dari JSON (bukan disimpan sebagai `null`), lalu hasil gabungannya divalidasi ulang dengan `siteSettingsSchema` yang dipakai halaman publik. Logo, favicon, dan gambar bagikan harus media milik site itu. Simpan membawa `updatedAt` sebagai token konkurensi:
+
+```ts
+async updateSiteSettings(siteId: SiteId, raw: unknown, expectedUpdatedAt: string): Promise<SiteSettingsRecord>
+```
+
+3. Tambahkan API `GET/PUT /api/admin/sites/:siteId/settings`:
+
+`apps/web/server/api/admin/sites/[siteId]/settings.get.ts`
+
+```ts
+// GET: pengaturan site (nama, tagline, logo, favicon, SEO bawaan, permalink baca-saja).
+import { defineAdminSiteHandler } from '../../../../utils/admin-api'
+
+export default defineAdminSiteHandler(({ editor, site }) => editor.getSiteSettings(site.id))
+```
+
+`apps/web/server/api/admin/sites/[siteId]/settings.put.ts`
+
+```ts
+// PUT { settings, updatedAt }: simpan pengaturan site; updatedAt dari GET (409 bila berbeda).
+import { readBody } from 'nuxt/server'
+import { defineAdminSiteHandler } from '../../../../utils/admin-api'
+
+export default defineAdminSiteHandler(async ({ editor, site, event }) => {
+  const body = ((await readBody(event)) ?? {}) as { settings?: unknown; updatedAt?: unknown }
+  return editor.updateSiteSettings(site.id, body.settings, String(body.updatedAt ?? ''))
+})
+```
+
+4. Tulis halaman "Pengaturan" dengan pemilih media yang sama dengan editor artikel, dan tambahkan ke navigasi admin. Setelah simpan, nama di pemilih site ikut berubah tanpa memuat ulang:
+
+`apps/web/app/pages/admin/[site]/settings.vue`
+
+```vue
+<!--
+  Pengaturan site: nama, tagline, logo, favicon, dan SEO bawaan. Permalink
+  hanya ditampilkan: mengubahnya mengganti URL semua artikel. Simpan membawa
+  updatedAt yang dibaca saat halaman dibuka (409 bila diubah di tempat lain).
+-->
+<script setup lang="ts">
+import type { SiteSettingsRecord } from '@framework/core'
+
+definePageMeta({ layout: 'admin' })
+
+const site = useAdminSite()
+const me = useAdminMe()
+
+const { data, error, refresh } = await useAsyncData(
+  () => `settings-${site.value?.id}`,
+  () => (site.value ? adminApi<Json<SiteSettingsRecord>>(site.value.id, 'settings') : Promise.resolve(null)),
+  { server: false },
+)
+
+const form = reactive({
+  name: '', tagline: '', logoMediaId: null as string | null, faviconMediaId: null as string | null,
+  titleTemplate: '', defaultDescription: '', defaultOgImageId: null as string | null,
+})
+watch(data, (d) => {
+  if (!d) return
+  Object.assign(form, {
+    name: d.name, tagline: d.tagline ?? '', logoMediaId: d.logoMediaId, faviconMediaId: d.faviconMediaId,
+    titleTemplate: d.seo.titleTemplate ?? '', defaultDescription: d.seo.defaultDescription ?? '', defaultOgImageId: d.seo.defaultOgImageId,
+  })
+}, { immediate: true })
+
+const errors = ref<Record<string, string>>({})
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref(false)
+const err = (field: string) => fieldError(errors.value, field)
+
+async function save() {
+  if (!site.value || !data.value) return
+  busy.value = true
+  errors.value = {}
+  message.value = null
+  try {
+    const saved = await adminApi<Json<SiteSettingsRecord>>(site.value.id, 'settings', {
+      method: 'PUT',
+      body: {
+        settings: {
+          name: form.name, tagline: form.tagline || null, logoMediaId: form.logoMediaId, faviconMediaId: form.faviconMediaId,
+          seo: { titleTemplate: form.titleTemplate || null, defaultDescription: form.defaultDescription || null, defaultOgImageId: form.defaultOgImageId },
+        },
+        updatedAt: data.value.updatedAt,
+      },
+    })
+    data.value = saved
+    // Nama di pemilih site ikut berubah tanpa memuat ulang.
+    const entry = me.value?.sites.find((s) => s.id === site.value?.id)
+    if (entry) entry.name = saved.name
+    message.value = { kind: 'ok', text: 'Pengaturan site disimpan.' }
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    message.value = { kind: 'error', text: apiStatus(e) === 409 ? 'Pengaturan sudah diubah di tempat lain. Muat ulang lalu simpan lagi.' : apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Pengaturan site</h1>
+      <div class="adm-head__actions">
+        <button
+          type="button"
+          class="btn btn--primary"
+          :disabled="busy || !data"
+          @click="save"
+        >
+          {{ busy ? 'Menyimpan…' : 'Simpan' }}
+        </button>
+      </div>
+    </header>
+
+    <p
+      v-if="error"
+      class="notice notice--error"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <div
+      v-if="message"
+      class="notice"
+      :class="{ 'notice--error': message.kind === 'error' }"
+      role="status"
+    >
+      {{ message.text }}
+      <button
+        v-if="message.kind === 'error'"
+        type="button"
+        class="btn btn--small"
+        @click="refresh()"
+      >
+        Muat ulang
+      </button>
+    </div>
+
+    <div
+      v-if="data && site"
+      class="adm-editor"
+    >
+      <div class="stack">
+        <section class="adm-panel stack">
+          <h2>Identitas</h2>
+          <label class="field">
+            <span>Nama site</span>
+            <input
+              v-model="form.name"
+              type="text"
+              maxlength="120"
+              :aria-invalid="!!err('name') || undefined"
+            >
+            <span
+              v-if="err('name')"
+              class="field__error"
+            >{{ err('name') }}</span>
+          </label>
+          <label class="field">
+            <span>Tagline</span>
+            <input
+              v-model="form.tagline"
+              type="text"
+              maxlength="160"
+            >
+            <span class="field__hint">Tampil di samping nama site di kepala halaman.</span>
+          </label>
+        </section>
+
+        <section class="adm-panel stack">
+          <h2>SEO bawaan</h2>
+          <label class="field">
+            <span>Pola judul halaman</span>
+            <input
+              v-model="form.titleTemplate"
+              type="text"
+              maxlength="120"
+              :placeholder="`%s | ${form.name}`"
+              :aria-invalid="!!err('seo.titleTemplate') || undefined"
+            >
+            <span class="field__hint">%s diganti judul artikel atau halaman. Kosong: "%s | nama site".</span>
+            <span
+              v-if="err('seo.titleTemplate')"
+              class="field__error"
+            >{{ err('seo.titleTemplate') }}</span>
+          </label>
+          <label class="field">
+            <span>Deskripsi bawaan</span>
+            <textarea
+              v-model="form.defaultDescription"
+              rows="3"
+              maxlength="320"
+            />
+            <span class="field__hint">Dipakai mesin pencari dan media sosial bila halaman tidak punya ringkasan.</span>
+          </label>
+          <div class="field">
+            <span>Gambar bagikan bawaan</span>
+            <AdminMediaPicker
+              v-model="form.defaultOgImageId"
+              :site-id="site.id"
+              label="Gambar bagikan"
+              :invalid="!!err('seo.defaultOgImageId')"
+            />
+          </div>
+        </section>
+      </div>
+
+      <aside class="stack">
+        <section class="adm-panel stack">
+          <h2>Logo</h2>
+          <AdminMediaPicker
+            v-model="form.logoMediaId"
+            :site-id="site.id"
+            label="Logo"
+            :invalid="!!err('logoMediaId')"
+          />
+          <span
+            v-if="err('logoMediaId')"
+            class="field__error"
+          >{{ err('logoMediaId') }}</span>
+          <span class="field__hint">Kosong: nama site tampil sebagai teks.</span>
+        </section>
+        <section class="adm-panel stack">
+          <h2>Favicon</h2>
+          <AdminMediaPicker
+            v-model="form.faviconMediaId"
+            :site-id="site.id"
+            label="Favicon"
+            :invalid="!!err('faviconMediaId')"
+          />
+          <span
+            v-if="err('faviconMediaId')"
+            class="field__error"
+          >{{ err('faviconMediaId') }}</span>
+          <span class="field__hint">Ikon kecil di tab browser; gambar persegi.</span>
+        </section>
+        <section class="adm-panel">
+          <h2>Pola URL artikel</h2>
+          <p class="mono">
+            {{ data.permalink }}
+          </p>
+          <p class="field__hint">
+            Tidak bisa diubah di sini: mengubahnya mengganti alamat semua artikel.
+          </p>
+        </section>
+      </aside>
+    </div>
+  </div>
+</template>
+```
+
+5. Data site tidak di-cache di memori, jadi perubahan langsung terlihat di request berikutnya: judul tab mengikuti pola baru, dan `<meta name="description">` memakai deskripsi bawaan untuk halaman tanpa ringkasan.
