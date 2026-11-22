@@ -1,0 +1,21 @@
+Payment ID,Created At,Product,Amount,Currency,Status,Site
+contoh_pay_001,2026-10-01T9:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_002,2026-10-04T9:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_003,2026-10-04T10:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_004,2026-10-08T9:30:00Z,"Kelas Jurnalisme Data",29.00,USD,failed,kabartekno.id
+contoh_pay_005,2026-10-10T9:30:00Z,"Kelas Jurnalisme Data",29.00,USD,refunded,kabartekno.id
+contoh_pay_006,2026-10-10T10:30:00Z,"Resep Premium Nusantara (bulanan)",4.99,USD,paid,resepnusantara.com
+contoh_pay_007,2026-10-12T9:30:00Z,"Resep Premium Nusantara (bulanan)",4.99,USD,paid,resepnusantara.com
+contoh_pay_008,2026-10-12T10:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_009,2026-10-13T9:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_010,2026-10-15T9:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_011,2026-10-15T10:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_012,2026-10-16T9:30:00Z,"Kelas Jurnalisme Data",29.00,USD,paid,kabartekno.id
+contoh_pay_013,2026-10-16T10:30:00Z,"Resep Premium Nusantara (bulanan)",4.99,USD,paid,resepnusantara.com
+contoh_pay_014,2026-10-17T9:30:00Z,"Resep Premium Nusantara (bulanan)",4.99,USD,paid,resepnusantara.com
+contoh_pay_015,2026-10-17T10:30:00Z,"Kelas Jurnalisme Data",29.00,USD,failed,kabartekno.id
+contoh_pay_016,2026-10-18T9:30:00Z,"Komunitas Pejuang CPNS Premium (bulanan)",9.00,USD,paid,beritakonoha.id
+contoh_pay_017,2026-10-18T10:30:00Z,"Resep Premium Nusantara (bulanan)",4.99,USD,paid,resepnusantara.com
+contoh_pay_018,2026-10-19T9:30:00Z,"Resep Premium Nusantara (bulanan)",4.99,USD,paid,resepnusantara.com
+contoh_pay_019,2026-10-19T10:30:00Z,"Kelas Jurnalisme Data",29.00,USD,paid,kabartekno.id
+contoh_pay_020,2026-10-20T9:30:00Z,"Kelas Jurnalisme Data",29.00,USD,paid,kabartekno.id

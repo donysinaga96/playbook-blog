@@ -1,6 +1,7 @@
 <!--
   Kerangka admin (ADR-009): rail kiri berisi pemilih site, navigasi, dan
   user; isi halaman di kanan. Hanya dipakai halaman /admin/:site/... (SPA).
+  Superadmin punya tautan kembali ke dashboard pendapatan (ADR-011).
 -->
 <script setup lang="ts">
 import '@fontsource/inter/400.css'
@@ -69,6 +70,13 @@ useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), h
       class="adm-shell"
     >
       <aside class="adm-rail">
+        <NuxtLink
+          v-if="me.user.isSuperadmin"
+          to="/admin"
+          class="adm-rail__back"
+        >
+          Dashboard pendapatan
+        </NuxtLink>
         <div class="adm-rail__site">
           <label for="pilih-site">Site</label>
           <select

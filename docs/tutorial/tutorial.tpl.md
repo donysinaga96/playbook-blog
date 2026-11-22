@@ -341,7 +341,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 @@include packages/db/scripts/pull-schema.mjs js@@
 
 6. Jalankan `pnpm db:pull`. Hasilnya `packages/db/src/schema/schema.ts` dan `relations.ts`. Kedua file ini hasil generate; buat ulang setiap kali ada migration baru, jangan diedit tangan.
-7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar (jumlah tabel menjadi 18 di bab "Menyiapkan Database untuk Konten AI"):
+7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar (jumlah tabel menjadi 18 di bab "Menyiapkan Database untuk Konten AI", dan 26 di bab "Dashboard Pendapatan Multi-Sumber"):
 
 @@include packages/db/src/schema/schema.test.ts ts@@
 
@@ -428,11 +428,11 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 @@include packages/core/src/repositories/menu-repository.ts ts@@
 
-7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin", dan `generated` di bab "Memeriksa dan Menyetujui Hasil AI"):
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin", `generated` di bab "Memeriksa dan Menyetujui Hasil AI", serta `revenue` dan `revenueQueries` di bab "Dashboard Pendapatan Multi-Sumber"):
 
 @@include packages/core/src/repositories/index.ts ts@@
 
-8. Ekspor semua dari entry point paket core. Baris `site/mode` dan `site/resolve` ditambahkan di bab "Memilih Site dari Domain Request", `media/storage` di bab "Membangun Sistem Template", dan modul `views/*` di bab "Membangun Halaman Publik dari View Model":
+8. Ekspor semua dari entry point paket core. Baris `site/mode` dan `site/resolve` ditambahkan di bab "Memilih Site dari Domain Request", `media/storage` di bab "Membangun Sistem Template", modul `views/*` di bab "Membangun Halaman Publik dari View Model", dan `revenue` di bab "Dashboard Pendapatan Multi-Sumber":
 
 @@include packages/core/src/index.ts ts@@
 
@@ -506,7 +506,41 @@ pnpm install
 
 7. Siapkan koneksi database untuk server. Buat satu pool dan satu set repository per proses, bukan per request. Pool dibuat saat pertama kali dipakai, sehingga `nuxt build` tidak butuh `DATABASE_URL`. Semua yang khusus untuk satu request (site, theme) nantinya disimpan di `event.context`, bukan di modul ini:
 
-@@include apps/web/server/utils/database.ts ts@@
+   (Bab "Dashboard Pendapatan Multi-Sumber" meneruskan pengaturan pendapatan dari env ke `createRepositories`.)
+
+```ts
+// apps/web/server/utils/database.ts
+// Satu koneksi database (pool) dan satu set repository per PROSES server.
+// Ini bukan state per request: semua yang khusus request (site, theme) wajib
+// disimpan di event.context, tidak di modul (ADR-001).
+import { createRepositories, type Repositories } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv, type Database } from '@framework/db'
+
+let database: Database | undefined
+let repositories: Repositories | undefined
+
+/** Pool dibuat saat pertama dipakai, agar `nuxt build` tidak butuh DATABASE_URL. */
+export function useDatabase(): Database {
+  database ??= createDatabase({
+    connectionString: databaseUrlFromEnv(),
+    applicationName: 'blog-framework-web',
+  })
+  return database
+}
+
+export function useRepositories(): Repositories {
+  repositories ??= createRepositories(useDatabase())
+  return repositories
+}
+
+/** Dipanggil saat server berhenti (server/plugins/database.ts). */
+export async function closeDatabase(): Promise<void> {
+  const current = database
+  database = undefined
+  repositories = undefined
+  await current?.$client.end()
+}
+```
 
 8. Tutup pool saat server berhenti. Import `nuxt/server` di Nuxt 4.6 belum menyediakan hook shutdown, jadi file ini memakai API Nitro (`defineNitroPlugin` dan hook `close`). Hanya folder `server/plugins/` yang boleh memakai API Nitro, sehingga saat upgrade ke Nuxt 5 cukup folder ini yang perlu diperiksa:
 
@@ -753,7 +787,7 @@ export * from './site/resolve'
 
    (Header cache (`setPublicCache`, `adminNoStore`) ditambahkan di bab "Mengatur Cache Halaman Publik".)
 
-   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON". Pengecualian path webhook pendapatan ditambahkan di bab "Dashboard Pendapatan Multi-Sumber".)
 
 @@include apps/web/server/middleware/site.ts ts@@
 
@@ -1645,11 +1679,34 @@ routeRules: {
 
 @@include apps/web/app/pages/admin/login.vue vue@@
 
-@@include apps/web/app/pages/admin/index.vue vue@@
+   Di bab "Dashboard Pendapatan Multi-Sumber" `/admin` menjadi dashboard pendapatan untuk superadmin; versi di bab ini:
+
+```vue
+<!-- apps/web/app/pages/admin/index.vue -->
+<!-- /admin: arahkan ke artikel site pertama yang boleh dikelola. -->
+<script setup lang="ts">
+const error = ref<string | null>(null)
+const me = await ensureAdminMe().catch((e: unknown) => {
+  if (apiStatus(e) !== 401) error.value = apiErrorMessage(e)
+  return null
+})
+const first = me?.sites[0]
+if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
+</script>
+
+<template>
+  <p v-if="error">
+    {{ error }}
+  </p>
+  <p v-else-if="!first">
+    Tidak ada site yang bisa dikelola.
+  </p>
+</template>
+```
 
 16. Tulis gate admin terhadap server hasil build, dengan helper request umum `requestWithHost` di `scripts/lib/built-server.mjs` (bab "Membuktikan Isolasi Antar-Site"). Gate memeriksa host admin dan domain site (termasuk path ter-encode), penjaga Origin, login salah dan benar, sesi, logout, rate limit, dan login paralel:
 
-   (Pemeriksaan header cache ditambahkan di bab "Mengatur Cache Halaman Publik".)
+   (Pemeriksaan header cache ditambahkan di bab "Mengatur Cache Halaman Publik", pemeriksaan API pendapatan dan webhook di bab "Dashboard Pendapatan Multi-Sumber".)
 
 @@include apps/web/scripts/gate-admin.mjs js@@
 
@@ -1767,7 +1824,7 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
    Menu "Antrian terbit" dengan jumlah yang menunggu ditambahkan di bab "Membangun Antrian Terbit".
 
-   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin", tautan "Dashboard pendapatan" untuk superadmin di bab "Dashboard Pendapatan Multi-Sumber".)
 
 @@include apps/web/app/layouts/admin.vue vue@@
 
@@ -2363,3 +2420,218 @@ async updateSiteSettings(siteId: SiteId, raw: unknown, expectedUpdatedAt: string
 @@include apps/web/app/pages/admin/[site]/settings.vue vue@@
 
 5. Data site tidak di-cache di memori, jadi perubahan langsung terlihat di request berikutnya: judul tab mengikuti pola baru, dan `<meta name="description">` memakai deskripsi bawaan untuk halaman tanpa ringkasan.
+
+# Dashboard Pendapatan Multi-Sumber
+
+Sampai bab sebelumnya, halaman pertama setelah login adalah admin konten. Bab ini menambahkan konsol pemilik: dashboard pendapatan dari banyak situs (termasuk situs di luar framework ini) dan banyak platform, yaitu Google AdSense, Adsterra, Lynk.id, Whop, dan pemasukan manual. Admin konten tetap ada dan dibuka lewat tombol "Admin Blog". Keputusan arsitekturnya dicatat sebagai ADR-011.
+
+1. Pahami masalahnya sebelum menulis tabel. Setiap platform mengirim data dengan cara berbeda: Lynk.id mendorong webhook setiap ada pembayaran, AdSense dan Adsterra harus ditarik dari reporting API secara berkala, Whop dan platform lain cukup diekspor ke file, dan brand deal dicatat tangan. Angka jaringan iklan juga berubah: hari ini masih perkiraan dan bisa direvisi beberapa hari kemudian. Karena itu semua jalur menulis ke satu ledger dengan aturan idempotensi yang sama, dan setiap perubahan angka menyimpan versi lamanya.
+
+2. Tulis keputusan arsitekturnya:
+
+@@include docs/adr/011-dashboard-pendapatan.md markdown@@
+
+3. Tulis migration `0003_pendapatan.sql`. Delapan tabel: situs (`revenue_properties`), sumber (`revenue_sources`), kurs, log sync, batch impor, log webhook, ledger, dan revisi ledger. Trigger `revenue_ledger_guard` menjaga jejak audit untuk semua jalur: identitas entri tidak bisa diubah, angka final tidak bisa turun menjadi sementara, dan setiap perubahan angka menyalin versi lama ke `revenue_ledger_revisions`. Kolom penghubung ke site framework bernama `linked_site_id`, bukan `site_id`, karena di repo ini `site_id` berarti "data milik satu site" (test schema memeriksa konvensi itu). Lima sumber bawaan ikut dibuat sebagai master data:
+
+@@include packages/db/migrations/0003_pendapatan.sql sql@@
+
+4. Terapkan dan buat ulang schema Drizzle, lalu naikkan jumlah tabel di test schema menjadi 26:
+
+```bash
+pnpm db:migrate
+pnpm db:pull
+```
+
+5. Tulis aritmetika uang tanpa float. Nilai dibawa sebagai teks desimal dan dihitung dengan bigint berskala; pembulatan half away from zero sama dengan `round()` PostgreSQL. Pembaca nominal dari file menolak pemisah desimal yang tampaknya salah pilih (`12.50` di file berformat koma), agar angka tidak meleset 100 kali tanpa ketahuan:
+
+@@include packages/core/src/revenue/decimal.ts ts@@
+
+6. Tulis utilitas tanggal laporan. "Hari ini" dihitung di zona waktu dashboard, bukan zona waktu server, dan waktu tanpa zona dari Lynk.id dibaca sebagai WIB:
+
+@@include packages/core/src/revenue/dates.ts ts@@
+
+7. Tulis tipe bersama dan aturan upsert. `decideUpsert` adalah inti idempotensi: kunci baru disisipkan, isi sama dianggap tidak berubah, angka final tidak diturunkan, dan koreksi manual tidak ditimpa data biasa. `normalizeAmount` menolak menebak kurs: tanpa kurs, nilai konversi dibiarkan kosong:
+
+@@include packages/core/src/revenue/types.ts ts@@
+
+@@include packages/core/src/revenue/ledger-rules.ts ts@@
+
+8. Tulis adapter Lynk.id dari dokumentasi resminya (koleksi Postman "Lynk Webhook"). Hanya ada satu event, `payment.received`, dan tanda tangan `X-Lynk-Signature` adalah SHA-256 dari `grandTotal + refId + message_id + merchant key`. Bandingkan dengan `timingSafeEqual`. Tidak ada event refund, jadi refund dicatat manual:
+
+@@include packages/core/src/revenue/adapters/lynk.ts ts@@
+
+9. Tulis adapter Adsterra dari spec OpenAPI resminya (`docs.adsterratools.com/docs/public/v3/publishers-api.yml`): header `X-API-Key`, `/stats.json` dengan `group_by[]` maksimal tiga, dan `domain` di statistik berupa ID yang diterjemahkan lewat `/domains.json`. Kunci idempotensi memuat tanggal dan semua dimensi:
+
+@@include packages/core/src/revenue/adapters/adsterra.ts ts@@
+
+10. Tulis adapter AdSense Management API v2. Posisi kolom dibaca dari `headers`, bukan diasumsikan, dan mata uang diambil dari header bertipe `METRIC_CURRENCY`. Laporan yang `totalMatchedRows`-nya lebih besar dari jumlah baris dianggap gagal, bukan disimpan sebagian:
+
+@@include packages/core/src/revenue/adapters/adsense.ts ts@@
+
+11. Tulis mode mock. Yang diganti hanya jaringan: fetch palsu menjawab dengan bentuk respons asli Adsterra, Google OAuth, dan AdSense, sehingga parsing dan penulisan ledger tetap lewat kode produksi. Angkanya deterministik, dan `revision` mensimulasikan revisi oleh jaringan iklan:
+
+@@include packages/core/src/revenue/adapters/mock-fetch.ts ts@@
+
+12. Siapkan kerangka otomasi browser, tanpa scraper sungguhan. Jalur ini paling rapuh dan menyangkut Terms of Service, jadi nonaktif secara bawaan, punya batas waktu, dan hanya menghasilkan `LedgerInput` seperti adapter lain:
+
+@@include packages/core/src/revenue/adapters/headless.ts ts@@
+
+13. Tulis parser impor tanpa dependensi baru. CSV mendeteksi pemisah dan memahami tanda kutip, `.xlsx` dibaca langsung dari zip (zlib) dan XML worksheet pertama, dan JSON boleh berupa array atau object dengan `items`. Setelah itu tulis mapping kolom: validasi per baris dengan nomor baris, kunci dari kolom ID atau hash isi baris, status `failed` dilewati, dan `refunded` menjadi nominal negatif:
+
+@@include packages/core/src/revenue/import/parse-file.ts ts@@
+
+@@include packages/core/src/revenue/import/mapping.ts ts@@
+
+14. Tulis repository, satu-satunya jalan tulis ke ledger. `upsertWithin` memakai savepoint per baris, sehingga satu baris gagal tidak membatalkan yang lain. Input manual dan refund memakai `insertOnly`, karena nomor invoice yang sama tidak boleh menimpa entri lama. Bug ini tertangkap test: tanpa `insertOnly`, upsert menimpa entri lama sebelum menolak. Config sumber divalidasi per connector, dan kunci yang mirip rahasia ditolak:
+
+@@include packages/core/src/revenue/revenue-repository.ts ts@@
+
+15. Tulis query dashboard. Semua jumlah memakai `normalized_amount`, dan entri tanpa kurs dilaporkan terpisah. Satu hal yang perlu diperhatikan di Drizzle: setiap interpolasi menjadi parameter baru, sehingga `GROUP BY coalesce(e.dimensions->>${key}, '-')` tidak dianggap sama dengan ekspresi yang sama di `SELECT`. Hitung ekspresinya sekali di CTE:
+
+@@include packages/core/src/revenue/revenue-queries.ts ts@@
+
+16. Tulis service orkestrasi: memilih adapter per sumber, membuka dan menutup run sync (paling banyak satu yang berjalan per sumber), menangani webhook dengan urutan pemeriksaan yang jelas, dan mengirim event uji yang tidak menulis ledger:
+
+@@include packages/core/src/revenue/revenue-service.ts ts@@
+
+@@include packages/core/src/revenue/index.ts ts@@
+
+17. Daftarkan di `createRepositories` (opsi `revenue`) dan ekspor dari entry point core. Lihat `packages/core/src/repositories/index.ts` dan `packages/core/src/index.ts` di bab "Membaca Data dengan Repository". Server meneruskan pengaturan dari env:
+
+@@include apps/web/server/utils/database.ts ts@@
+
+18. Tulis test. Unit test memakai payload dari dokumentasi Lynk.id apa adanya, laporan AdSense dengan urutan kolom yang diacak, dan file `.xlsx` yang dibuat di test dengan zip writer kecil. Test database memakai sumber dan situs uji sendiri yang dihapus di akhir:
+
+@@include packages/core/src/revenue/decimal.test.ts ts@@
+
+@@include packages/core/src/revenue/adapters/adapters.test.ts ts@@
+
+@@include packages/core/src/revenue/import/import.test.ts ts@@
+
+@@include packages/core/src/revenue/revenue-repository.test.ts ts@@
+
+19. Tulis lapisan server. Semua route `/api/admin/revenue/*` lewat `defineRevenueHandler`: sesi admin, superadmin (selain itu 404), dan pemetaan galat. Info sumber untuk UI hanya berisi nama env yang belum diisi, tidak pernah nilainya:
+
+@@include apps/web/server/utils/revenue.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/overview.get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/index.get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/[code].get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/[code].put.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/index.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/[code]/sync.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/[code]/test.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/sources/[code]/webhook-test.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/entries/index.get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/entries/index.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/entries/[id].get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/entries/[id]/refund.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/properties/index.get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/properties/index.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/properties/[id].put.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/fx/index.get.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/fx/index.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/fx/delete.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/fx/recompute.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/runs.get.ts ts@@
+
+20. Tulis route impor: unggah (parse di server, simpan sebagai batch `uploaded`), pratinjau (validasi semua baris dan hitung baris yang sudah ada di ledger dengan `inArray` per 5.000 kunci), commit, dan buang. Jangan mengoper array ke `ANY(${keys})` di template `sql`, karena Drizzle memecahnya menjadi tuple:
+
+@@include apps/web/server/api/admin/revenue/imports/index.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/imports/[id]/preview.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/imports/[id]/commit.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/imports/[id]/discard.post.ts ts@@
+
+@@include apps/web/server/api/admin/revenue/imports/[id].get.ts ts@@
+
+21. Tulis endpoint webhook publik. Endpoint ini harus bisa dijangkau di Host mana pun, jadi middleware site melewatinya. Pengecualiannya dicocokkan persis pada path yang dilihat router (setelah decode), bukan sebagai awalan, agar `/api/webhooks/revenue/%2e%2e/...` tidak menjadi jalan pintas ke route lain:
+
+@@include apps/web/server/api/webhooks/revenue/[code].post.ts ts@@
+
+@@include apps/web/server/middleware/site.ts ts@@
+
+22. Tambahkan penjadwal (hanya bila `REVENUE_SCHEDULER=true`, satu replika) dan CLI untuk cron serta data contoh:
+
+@@include apps/web/server/plugins/revenue-scheduler.ts ts@@
+
+@@include apps/web/scripts/revenue-sync.ts ts@@
+
+@@include apps/web/scripts/revenue-demo.ts ts@@
+
+23. Tulis composable UI. Warna seri diambil dari palet kategorikal yang sudah divalidasi aman untuk buta warna (pasangan bersebelahan), diberikan menurut urutan sumber, bukan peringkat, sehingga warna AdSense tidak berubah saat filter berubah. Tiga warna terang berkontras rendah di permukaan putih, jadi setiap grafik punya legenda, tooltip, dan tampilan tabel:
+
+@@include apps/web/app/composables/useRevenue.ts ts@@
+
+24. Tulis komponen grafik tanpa library. Kolom bertumpuk: lebar maksimal 24px, ujung data membulat, celah 2px antar-segmen, crosshair yang mencari bucket terdekat, tooltip yang menampilkan semua seri, dan navigasi dengan tombol panah. Batang komposisi 28px menampilkan porsi di dalam blok bila muat:
+
+@@include apps/web/app/components/revenue/StackedColumns.vue vue@@
+
+@@include apps/web/app/components/revenue/SegmentedBar.vue vue@@
+
+25. Tulis dashboard dan tabel entri. Satu baris filter mengatur semua angka di bawahnya, dan saat memuat ulang bingkai lama tetap tampil dengan opasitas rendah (tanpa kedipan):
+
+@@include apps/web/app/components/revenue/DashboardOverview.vue vue@@
+
+@@include apps/web/app/components/revenue/EntriesTable.vue vue@@
+
+26. Tulis layout konsol dan jadikan `/admin` dashboard. User yang bukan superadmin langsung diarahkan ke Admin Blog. Di layout admin konten, tambahkan tautan kembali ke dashboard untuk superadmin:
+
+@@include apps/web/app/layouts/console.vue vue@@
+
+@@include apps/web/app/pages/admin/index.vue vue@@
+
+@@include apps/web/app/layouts/admin.vue vue@@
+
+27. Tulis halaman-halamannya: detail sumber, detail situs, kelola situs, transaksi (dengan input manual dan adjustment), wizard impor, koneksi & log, dan kurs:
+
+@@include apps/web/app/pages/admin/revenue/sources/[code].vue vue@@
+
+@@include apps/web/app/pages/admin/revenue/sites/[code].vue vue@@
+
+@@include apps/web/app/pages/admin/revenue/sites/index.vue vue@@
+
+@@include apps/web/app/pages/admin/revenue/entries.vue vue@@
+
+@@include apps/web/app/pages/admin/revenue/import.vue vue@@
+
+@@include apps/web/app/pages/admin/revenue/connections.vue vue@@
+
+@@include apps/web/app/pages/admin/revenue/fx.vue vue@@
+
+28. Tulis gayanya. Bahasanya sama dengan admin (kertas abu, garis tipis, tanpa bayangan). Satu hal yang sengaja menonjol adalah angka total dan batang komposisinya. Teks tidak pernah memakai warna seri:
+
+@@include apps/web/app/assets/revenue.css css@@
+
+29. Tambahkan pemeriksaan ke gate admin: API pendapatan 401 tanpa sesi, 404 untuk editor, 200 untuk superadmin; webhook terjangkau di host site; body rusak 400; path traversal 404 (lihat `gate-admin.mjs` di bab "Membangun Login Admin").
+
+30. Isi contoh data dan buka dashboard:
+
+```bash
+pnpm revenue:demo            # 120 hari: sync mock, webhook bertanda tangan, impor CSV, manual
+pnpm dev                     # http://admin.localhost:3000/admin
+pnpm revenue:demo --remove   # hapus lagi
+```
+
+   Isi `REVENUE_MOCK=true` di `.env` agar tombol "Tarik data sekarang" dan "Kirim event uji" berjalan tanpa kredensial. Panduan memasang kredensial asli, env lengkap, dan langkah verifikasi manual ada di `docs/pendapatan.md`.

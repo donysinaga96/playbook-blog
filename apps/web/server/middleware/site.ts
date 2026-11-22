@@ -15,7 +15,7 @@
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
-import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { isAdminPath, routedPath, useAdminConfig } from '../utils/admin'
 import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
@@ -26,6 +26,12 @@ import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/**
+ * Webhook pendapatan (ADR-011): tanpa site dan di Host mana pun, diamankan
+ * tanda tangan. Dicocokkan persis pada path yang dilihat router (setelah
+ * decode), bukan awalan, agar tidak bisa dipakai menembus route lain.
+ */
+const WEBHOOK_PATH = /^\/api\/webhooks\/revenue\/[a-z0-9_]{1,40}$/
 /** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
 const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
 
@@ -33,6 +39,7 @@ export default defineEventHandler(async (event) => {
   // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+  if (WEBHOOK_PATH.test(routedPath(url.pathname))) return
 
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)

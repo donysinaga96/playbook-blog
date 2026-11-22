@@ -6,7 +6,7 @@
 // Schema ini hanya untuk query bertipe. Constraint ditegakkan database;
 // mis. ON DELETE SET NULL (kolom) tertulis di sini sebagai "set null" saja.
 // =====================================================================
-import { pgTable, uuid, text, integer, boolean, smallint, timestamp, jsonb, bigint, numeric, customType, index, uniqueIndex, foreignKey, primaryKey, unique, check, type PgTableExtraConfigValue } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, timestamp, date, smallint, boolean, numeric, bigint, jsonb, customType, index, uniqueIndex, foreignKey, primaryKey, unique, check, type PgTableExtraConfigValue } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 
@@ -367,6 +367,254 @@ export const redirects = pgTable("redirects", {
 	}).onDelete("cascade"),
 	uniqueIndex("uq_redirects_site_from").using("btree", table.siteId.asc().nullsLast(), table.fromPath.asc().nullsLast()),
 check("redirects_from_path", sql`((from_path ~ '^/[^[:space:]]*$'::text) AND (from_path !~ '^//'::text))`),check("redirects_not_self", sql`(from_path <> to_path)`),check("redirects_status_valid", sql`(status_code = ANY (ARRAY[301, 302, 307, 308]))`),check("redirects_to_path", sql`(((to_path ~ '^/[^[:space:]]*$'::text) AND (to_path !~ '^//'::text)) OR (to_path ~ '^https?://[^[:space:]]+$'::text))`),]);
+
+export const revenueFxRates = pgTable("revenue_fx_rates", {
+	currency: text().notNull(),
+	baseCurrency: text("base_currency").notNull(),
+	rateDate: date("rate_date").notNull(),
+	rateToBase: numeric("rate_to_base", { precision: 20, scale: 8 }).notNull(),
+	note: text(),
+	createdBy: uuid("created_by"),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	primaryKey({ columns: [table.currency, table.baseCurrency, table.rateDate], name: "revenue_fx_rates_pkey"}),
+	foreignKey({
+		columns: [table.createdBy],
+		foreignColumns: [users.id],
+		name: "revenue_fx_rates_created_by_fkey"
+	}).onDelete("set null"),
+check("revenue_fx_rates_currency_format", sql`((currency ~ '^[A-Z]{3}$'::text) AND (base_currency ~ '^[A-Z]{3}$'::text))`),check("revenue_fx_rates_not_same", sql`(currency <> base_currency)`),check("revenue_fx_rates_positive", sql`(rate_to_base > (0)::numeric)`),]);
+
+export const revenueImportBatches = pgTable("revenue_import_batches", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	sourceId: uuid("source_id").notNull(),
+	fileName: text("file_name").notNull(),
+	fileFormat: text("file_format").notNull(),
+	fileSha256: text("file_sha256").notNull(),
+	status: text().default("uploaded").notNull(),
+	rowCount: integer("row_count").default(0).notNull(),
+	headers: jsonb().default([]).notNull(),
+	rows: jsonb(),
+	mapping: jsonb(),
+	inserted: integer().default(0).notNull(),
+	updated: integer().default(0).notNull(),
+	unchanged: integer().default(0).notNull(),
+	skipped: integer().default(0).notNull(),
+	failed: integer().default(0).notNull(),
+	errors: jsonb().default([]).notNull(),
+	createdBy: uuid("created_by"),
+	committedAt: timestamp("committed_at", { withTimezone: true }),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.createdBy],
+		foreignColumns: [users.id],
+		name: "revenue_import_batches_created_by_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.sourceId],
+		foreignColumns: [revenueSources.id],
+		name: "revenue_import_batches_source_id_fkey"
+	}).onDelete("cascade"),
+	index("idx_revenue_import_batches_source").using("btree", table.sourceId.asc().nullsLast(), table.createdAt.desc().nullsFirst()),
+check("revenue_import_batches_committed", sql`((status = 'committed'::text) = (committed_at IS NOT NULL))`),check("revenue_import_batches_format_valid", sql`(file_format = ANY (ARRAY['csv'::text, 'xlsx'::text, 'json'::text]))`),check("revenue_import_batches_name_length", sql`((length(file_name) >= 1) AND (length(file_name) <= 255))`),check("revenue_import_batches_rows_pending", sql`((status = 'uploaded'::text) OR (rows IS NULL))`),check("revenue_import_batches_status_valid", sql`(status = ANY (ARRAY['uploaded'::text, 'committed'::text, 'failed'::text, 'discarded'::text]))`),]);
+
+export const revenueLedgerEntries = pgTable("revenue_ledger_entries", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	sourceId: uuid("source_id").notNull(),
+	propertyId: uuid("property_id"),
+	channelType: text("channel_type").notNull(),
+	idempotencyKey: text("idempotency_key").notNull(),
+	externalId: text("external_id"),
+	occurredAt: timestamp("occurred_at", { withTimezone: true }),
+	reportDate: date("report_date").notNull(),
+	grossAmount: numeric("gross_amount", { precision: 20, scale: 6 }).notNull(),
+	currency: text().notNull(),
+	fxRateToBase: numeric("fx_rate_to_base", { precision: 20, scale: 8 }),
+	baseCurrency: text("base_currency").notNull(),
+	normalizedAmount: numeric("normalized_amount", { precision: 20, scale: 2 }),
+	status: text().notNull(),
+	metricsJson: jsonb("metrics_json").default({}).notNull(),
+	dimensions: jsonb().default({}).notNull(),
+	description: text(),
+	note: text(),
+	rawPayload: jsonb("raw_payload"),
+	adjustsEntryId: uuid("adjusts_entry_id"),
+	syncRunId: uuid("sync_run_id"),
+	importBatchId: uuid("import_batch_id"),
+	webhookEventId: uuid("webhook_event_id"),
+	createdBy: uuid("created_by"),
+	revision: integer().default(1).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	foreignKey({
+		columns: [table.adjustsEntryId],
+		foreignColumns: [table.id],
+		name: "revenue_ledger_entries_adjusts_entry_id_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.createdBy],
+		foreignColumns: [users.id],
+		name: "revenue_ledger_entries_created_by_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.importBatchId],
+		foreignColumns: [revenueImportBatches.id],
+		name: "revenue_ledger_entries_import_batch_id_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.propertyId],
+		foreignColumns: [revenueProperties.id],
+		name: "revenue_ledger_entries_property_id_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.sourceId],
+		foreignColumns: [revenueSources.id],
+		name: "revenue_ledger_entries_source_id_fkey"
+	}).onDelete("restrict"),
+	foreignKey({
+		columns: [table.syncRunId],
+		foreignColumns: [revenueSyncRuns.id],
+		name: "revenue_ledger_entries_sync_run_id_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.webhookEventId],
+		foreignColumns: [revenueWebhookEvents.id],
+		name: "revenue_ledger_entries_webhook_event_id_fkey"
+	}).onDelete("set null"),
+	index("idx_revenue_ledger_date").using("btree", table.reportDate.asc().nullsLast()),
+	index("idx_revenue_ledger_property_date").using("btree", table.propertyId.asc().nullsLast(), table.reportDate.asc().nullsLast()),
+	index("idx_revenue_ledger_recent").using("btree", table.updatedAt.desc().nullsFirst()),
+	index("idx_revenue_ledger_source_date").using("btree", table.sourceId.asc().nullsLast(), table.reportDate.asc().nullsLast()),
+	index("idx_revenue_ledger_unconverted").using("btree", table.currency.asc().nullsLast(), table.reportDate.asc().nullsLast()).where(sql`(normalized_amount IS NULL)`),
+	uniqueIndex("uq_revenue_ledger_key").using("btree", table.sourceId.asc().nullsLast(), table.idempotencyKey.asc().nullsLast()),
+check("revenue_ledger_channel_valid", sql`(channel_type = ANY (ARRAY['webhook'::text, 'api'::text, 'csv_import'::text, 'headless'::text, 'manual'::text]))`),check("revenue_ledger_currency_format", sql`((currency ~ '^[A-Z]{3}$'::text) AND (base_currency ~ '^[A-Z]{3}$'::text))`),check("revenue_ledger_description_len", sql`((description IS NULL) OR (length(description) <= 500))`),check("revenue_ledger_fx_pair", sql`((fx_rate_to_base IS NULL) = (normalized_amount IS NULL))`),check("revenue_ledger_fx_positive", sql`((fx_rate_to_base IS NULL) OR (fx_rate_to_base > (0)::numeric))`),check("revenue_ledger_fx_same_ccy", sql`((currency <> base_currency) OR (fx_rate_to_base = (1)::numeric))`),check("revenue_ledger_key_length", sql`((length(idempotency_key) >= 1) AND (length(idempotency_key) <= 300))`),check("revenue_ledger_metrics_object", sql`((jsonb_typeof(metrics_json) = 'object'::text) AND (jsonb_typeof(dimensions) = 'object'::text))`),check("revenue_ledger_note_len", sql`((note IS NULL) OR (length(note) <= 2000))`),check("revenue_ledger_note_required", sql`((status <> ALL (ARRAY['adjusted'::text, 'refunded'::text])) OR (length(btrim(COALESCE(note, ''::text))) > 0))`),check("revenue_ledger_refund_negative", sql`((status <> 'refunded'::text) OR (gross_amount < (0)::numeric))`),check("revenue_ledger_revision_pos", sql`(revision >= 1)`),check("revenue_ledger_status_valid", sql`(status = ANY (ARRAY['estimated'::text, 'finalized'::text, 'adjusted'::text, 'refunded'::text]))`),]);
+
+export const revenueLedgerRevisions = pgTable("revenue_ledger_revisions", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	entryId: uuid("entry_id").notNull(),
+	revision: integer().notNull(),
+	grossAmount: numeric("gross_amount", { precision: 20, scale: 6 }).notNull(),
+	currency: text().notNull(),
+	fxRateToBase: numeric("fx_rate_to_base", { precision: 20, scale: 8 }),
+	normalizedAmount: numeric("normalized_amount", { precision: 20, scale: 2 }),
+	status: text().notNull(),
+	metricsJson: jsonb("metrics_json").notNull(),
+	syncRunId: uuid("sync_run_id"),
+	importBatchId: uuid("import_batch_id"),
+	replacedAt: timestamp("replaced_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.entryId],
+		foreignColumns: [revenueLedgerEntries.id],
+		name: "revenue_ledger_revisions_entry_id_fkey"
+	}).onDelete("cascade"),
+	uniqueIndex("uq_revenue_ledger_revisions").using("btree", table.entryId.asc().nullsLast(), table.revision.asc().nullsLast()),
+]);
+
+export const revenueProperties = pgTable("revenue_properties", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	code: text().notNull(),
+	name: text().notNull(),
+	domain: text(),
+	linkedSiteId: uuid("linked_site_id"),
+	status: text().default("ACTIVE").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.linkedSiteId],
+		foreignColumns: [sites.id],
+		name: "revenue_properties_linked_site_id_fkey"
+	}).onDelete("set null"),
+	uniqueIndex("uq_revenue_properties_code").using("btree", table.code.asc().nullsLast()),
+	uniqueIndex("uq_revenue_properties_domain").using("btree", table.domain.asc().nullsLast()).where(sql`(domain IS NOT NULL)`),
+check("revenue_properties_code_format", sql`((code ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text) AND (length(code) <= 50))`),check("revenue_properties_domain_format", sql`((domain IS NULL) OR ((domain = lower(domain)) AND (domain ~ '^[a-z0-9.-]+$'::text) AND (domain !~ '^www\\.'::text) AND (length(domain) <= 253)))`),check("revenue_properties_name_length", sql`((length(btrim(name)) >= 1) AND (length(btrim(name)) <= 120))`),check("revenue_properties_status_valid", sql`(status = ANY (ARRAY['ACTIVE'::text, 'ARCHIVED'::text]))`),]);
+
+export const revenueSources = pgTable("revenue_sources", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	code: text().notNull(),
+	name: text().notNull(),
+	connector: text().default("generic").notNull(),
+	integrationType: text("integration_type").default("manual").notNull(),
+	isActive: boolean("is_active").default(true).notNull(),
+	defaultCurrency: text("default_currency").default("IDR").notNull(),
+	config: jsonb().default({}).notNull(),
+	credentialsEnv: text("credentials_env"),
+	syncIntervalMinutes: integer("sync_interval_minutes"),
+	lookbackDays: smallint("lookback_days").default(3).notNull(),
+	sortOrder: smallint("sort_order").default(0).notNull(),
+	lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+	lastSyncStatus: text("last_sync_status"),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	uniqueIndex("uq_revenue_sources_code").using("btree", table.code.asc().nullsLast()),
+check("revenue_sources_code_format", sql`((code ~ '^[a-z0-9]+(_[a-z0-9]+)*$'::text) AND (length(code) <= 40))`),check("revenue_sources_config_object", sql`(jsonb_typeof(config) = 'object'::text)`),check("revenue_sources_connector_valid", sql`(connector = ANY (ARRAY['lynk'::text, 'adsterra'::text, 'adsense'::text, 'headless'::text, 'generic'::text]))`),check("revenue_sources_credentials_env", sql`((credentials_env IS NULL) OR (credentials_env ~ '^[A-Z][A-Z0-9_]{1,60}$'::text))`),check("revenue_sources_currency_format", sql`(default_currency ~ '^[A-Z]{3}$'::text)`),check("revenue_sources_interval_range", sql`((sync_interval_minutes IS NULL) OR ((sync_interval_minutes >= 15) AND (sync_interval_minutes <= 10080)))`),check("revenue_sources_lookback_range", sql`((lookback_days >= 0) AND (lookback_days <= 60))`),check("revenue_sources_name_length", sql`((length(btrim(name)) >= 1) AND (length(btrim(name)) <= 80))`),check("revenue_sources_sync_status", sql`((last_sync_status IS NULL) OR (last_sync_status = ANY (ARRAY['success'::text, 'partial'::text, 'failed'::text])))`),check("revenue_sources_type_valid", sql`(integration_type = ANY (ARRAY['webhook'::text, 'api'::text, 'csv_import'::text, 'headless'::text, 'manual'::text]))`),]);
+
+export const revenueSyncRuns = pgTable("revenue_sync_runs", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	sourceId: uuid("source_id").notNull(),
+	channelType: text("channel_type").notNull(),
+	trigger: text().notNull(),
+	status: text().default("running").notNull(),
+	mock: boolean().default(false).notNull(),
+	rangeStart: date("range_start").notNull(),
+	rangeEnd: date("range_end").notNull(),
+	startedAt: timestamp("started_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	finishedAt: timestamp("finished_at", { withTimezone: true }),
+	rowsFetched: integer("rows_fetched").default(0).notNull(),
+	inserted: integer().default(0).notNull(),
+	updated: integer().default(0).notNull(),
+	unchanged: integer().default(0).notNull(),
+	skipped: integer().default(0).notNull(),
+	failed: integer().default(0).notNull(),
+	errorMessage: text("error_message"),
+	log: jsonb().default([]).notNull(),
+	triggeredBy: uuid("triggered_by"),
+}, (table) => [
+	foreignKey({
+		columns: [table.sourceId],
+		foreignColumns: [revenueSources.id],
+		name: "revenue_sync_runs_source_id_fkey"
+	}).onDelete("cascade"),
+	foreignKey({
+		columns: [table.triggeredBy],
+		foreignColumns: [users.id],
+		name: "revenue_sync_runs_triggered_by_fkey"
+	}).onDelete("set null"),
+	index("idx_revenue_sync_runs_source").using("btree", table.sourceId.asc().nullsLast(), table.startedAt.desc().nullsFirst()),
+	uniqueIndex("uq_revenue_sync_runs_running").using("btree", table.sourceId.asc().nullsLast()).where(sql`(status = 'running'::text)`),
+check("revenue_sync_runs_channel_valid", sql`(channel_type = ANY (ARRAY['api'::text, 'headless'::text]))`),check("revenue_sync_runs_finished", sql`((status = 'running'::text) = (finished_at IS NULL))`),check("revenue_sync_runs_log_array", sql`(jsonb_typeof(log) = 'array'::text)`),check("revenue_sync_runs_range_valid", sql`(range_start <= range_end)`),check("revenue_sync_runs_status_valid", sql`(status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text]))`),check("revenue_sync_runs_trigger_valid", sql`(trigger = ANY (ARRAY['schedule'::text, 'manual'::text, 'cli'::text]))`),]);
+
+export const revenueWebhookEvents = pgTable("revenue_webhook_events", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	sourceId: uuid("source_id").notNull(),
+	receivedAt: timestamp("received_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	eventType: text("event_type"),
+	externalEventId: text("external_event_id"),
+	signatureValid: boolean("signature_valid").notNull(),
+	status: text().notNull(),
+	ledgerEntryId: uuid("ledger_entry_id"),
+	error: text(),
+	payload: jsonb(),
+	test: boolean().default(false).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	foreignKey({
+		columns: [table.ledgerEntryId],
+		foreignColumns: [revenueLedgerEntries.id],
+		name: "fk_revenue_webhook_events_entry"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.sourceId],
+		foreignColumns: [revenueSources.id],
+		name: "revenue_webhook_events_source_id_fkey"
+	}).onDelete("cascade"),
+	index("idx_revenue_webhook_events_source").using("btree", table.sourceId.asc().nullsLast(), table.receivedAt.desc().nullsFirst()),
+check("revenue_webhook_events_payload_signed", sql`((payload IS NULL) OR signature_valid)`),check("revenue_webhook_events_status_valid", sql`(status = ANY (ARRAY['processed'::text, 'duplicate'::text, 'ignored'::text, 'rejected'::text, 'failed'::text]))`),]);
 
 export const siteDomains = pgTable("site_domains", {
 	id: uuid().default(sql`uuidv7()`).primaryKey(),

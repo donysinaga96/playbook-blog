@@ -138,7 +138,9 @@ allowBuilds:
     "tutorial": "node docs/tutorial/build.mjs",
     "admin:create": "pnpm --filter @framework/web admin:create",
     "site:create": "pnpm --filter @framework/web site:create",
-    "site:domain": "pnpm --filter @framework/web site:domain"
+    "site:domain": "pnpm --filter @framework/web site:domain",
+    "revenue:sync": "pnpm --filter @framework/web revenue:sync",
+    "revenue:demo": "pnpm --filter @framework/web revenue:demo"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -398,6 +400,23 @@ ADMIN_HOST=admin.localhost
 # true bila server di belakang SATU reverse proxy (M5); pembatas login lalu
 # memakai entri paling kanan X-Forwarded-For (yang ditambahkan proxy itu).
 # TRUST_PROXY=true
+
+# --- Pendapatan (ADR-011, docs/pendapatan.md) ---
+# Mata uang utama dashboard dan zona waktu "hari ini".
+# REVENUE_BASE_CURRENCY=IDR
+# REVENUE_TIMEZONE=Asia/Jakarta
+# Dev/sandbox: adapter Adsterra/AdSense/Lynk.id memakai mock (tanpa jaringan).
+# REVENUE_MOCK=true
+# Tarik terjadwal di proses web (HANYA bila satu replika); alternatif: cron `pnpm revenue:sync --due`.
+# REVENUE_SCHEDULER=true
+# Otomasi browser (headless) untuk sumber yang config.enabled=true. Bawaan mati.
+# REVENUE_HEADLESS_ENABLED=false
+# Kredensial: hanya di env server, tidak pernah di database.
+# REVENUE_ADSTERRA_API_TOKEN=
+# REVENUE_ADSENSE_CLIENT_ID=
+# REVENUE_ADSENSE_CLIENT_SECRET=
+# REVENUE_ADSENSE_REFRESH_TOKEN=
+# REVENUE_LYNK_MERCHANT_KEY=
 ```
 
 4. Salin menjadi `.env` (`cp .env.example .env`), lalu ganti kedua password. Samakan password di `DATABASE_URL` dengan `APP_DB_PASSWORD`.
@@ -2491,6 +2510,7 @@ Alternatif yang ditolak, Konsekuensi, dan Status (Diusulkan, Diterima, Diganti o
 | [008](008-kontrak-section.md) | Section di base, manifest server (`./manifest`), theme diselesaikan sebelum view model | Diterima |
 | [009](009-admin.md) | Admin: host khusus (multi) / domain site (single), SPA, sesi cookie terenkripsi, Argon2id, CLI admin pertama | Diterima |
 | [010](010-alur-konten-ai.md) | Alur konten AI: tabel hasil AI terpisah (`generated_articles`), role `blog_agent`, approval memindahkan ke tabel konten, referensi tampil | Diterima |
+| [011](011-dashboard-pendapatan.md) | Dashboard pendapatan: ledger terpadu, idempotensi per sumber, revisi via trigger, kredensial hanya di env, hanya superadmin, webhook publik bertanda tangan | Diterima |
 ```
 
 3. ADR-001, mode deploy. Satu schema, dua mode, dan konsekuensinya: repository tetap wajib menerima `siteId` walau berjalan di mode single-site, dan tidak boleh ada global state di SSR:
@@ -2828,7 +2848,7 @@ rmSync(outDir, { recursive: true, force: true })
 ```
 
 6. Jalankan `pnpm db:pull`. Hasilnya `packages/db/src/schema/schema.ts` dan `relations.ts`. Kedua file ini hasil generate; buat ulang setiap kali ada migration baru, jangan diedit tangan.
-7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar (jumlah tabel menjadi 18 di bab "Menyiapkan Database untuk Konten AI"):
+7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar (jumlah tabel menjadi 18 di bab "Menyiapkan Database untuk Konten AI", dan 26 di bab "Dashboard Pendapatan Multi-Sumber"):
 
 `packages/db/src/schema/schema.test.ts`
 
@@ -2874,9 +2894,9 @@ function index(tableName: string, indexName: string) {
 }
 
 describe('schema hasil drizzle-kit pull', () => {
-  it('berisi 18 tabel (0001: 16, 0002: +2), tanpa schema_migrations', () => {
+  it('berisi 26 tabel (0001: 16, 0002: +2, 0003: +8), tanpa schema_migrations', () => {
     const names = tables.map(getTableName)
-    expect(names).toHaveLength(18)
+    expect(names).toHaveLength(26)
     expect(names).not.toContain('schema_migrations')
   })
 
@@ -4675,7 +4695,7 @@ export function createMenuRepository(ctx: RepositoryContext) {
 export type MenuRepository = ReturnType<typeof createMenuRepository>
 ```
 
-7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin", dan `generated` di bab "Memeriksa dan Menyetujui Hasil AI"):
+7. Gabungkan semuanya dalam satu factory. Buat satu instance per proses (repository `users` dan `editor` ditambahkan di bab "Membangun Login Admin" dan "Menyimpan Konten dari Admin", `generated` di bab "Memeriksa dan Menyetujui Hasil AI", serta `revenue` dan `revenueQueries` di bab "Dashboard Pendapatan Multi-Sumber"):
 
 `packages/core/src/repositories/index.ts`
 
@@ -4688,6 +4708,8 @@ import { createUserRepository } from './user-repository'
 import { createMenuRepository } from './menu-repository'
 import { createSiteRepository } from './site-repository'
 import type { RepositoryContext } from './types'
+import { createRevenueRepository, DEFAULT_REVENUE_SETTINGS, type RevenueSettings } from '../revenue/revenue-repository'
+import { createRevenueQueries } from '../revenue/revenue-queries'
 
 export * from './content-repository'
 export * from './menu-repository'
@@ -4698,6 +4720,8 @@ export * from './user-repository'
 export interface RepositoryOptions {
   /** Jam untuk aturan "sudah terbit"; default jam sistem. Disuntik di test. */
   now?: () => Date
+  /** Mata uang utama dan zona waktu dashboard pendapatan (ADR-011). */
+  revenue?: Partial<RevenueSettings>
 }
 
 /**
@@ -4713,6 +4737,7 @@ export interface RepositoryOptions {
 export function createRepositories(db: Database, options: RepositoryOptions = {}) {
   const ctx: RepositoryContext = { db, now: options.now ?? (() => new Date()) }
   const editor = createEditorRepository(ctx)
+  const revenueSettings = { ...DEFAULT_REVENUE_SETTINGS, ...options.revenue }
   return {
     sites: createSiteRepository(ctx),
     content: createContentRepository(ctx),
@@ -4721,13 +4746,17 @@ export function createRepositories(db: Database, options: RepositoryOptions = {}
     editor,
     /** Hasil AI agent: antrian, pemeriksaan, approve, tolak (ADR-010). */
     generated: createGeneratedRepository(ctx, editor),
+    /** Ledger pendapatan multi-sumber: tulis (ADR-011). Data global, hanya superadmin. */
+    revenue: createRevenueRepository(ctx, revenueSettings),
+    /** Ledger pendapatan: query dashboard. */
+    revenueQueries: createRevenueQueries(ctx, revenueSettings),
   }
 }
 
 export type Repositories = ReturnType<typeof createRepositories>
 ```
 
-8. Ekspor semua dari entry point paket core. Baris `site/mode` dan `site/resolve` ditambahkan di bab "Memilih Site dari Domain Request", `media/storage` di bab "Membangun Sistem Template", dan modul `views/*` di bab "Membangun Halaman Publik dari View Model":
+8. Ekspor semua dari entry point paket core. Baris `site/mode` dan `site/resolve` ditambahkan di bab "Memilih Site dari Domain Request", `media/storage` di bab "Membangun Sistem Template", modul `views/*` di bab "Membangun Halaman Publik dari View Model", dan `revenue` di bab "Dashboard Pendapatan Multi-Sumber":
 
 `packages/core/src/index.ts`
 
@@ -4760,6 +4789,7 @@ export * from './generated/payload'
 export * from './generated/generated-repository'
 export * from './generated/preview-content'
 export * from './site/provision'
+export * from './revenue'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -5666,7 +5696,9 @@ pnpm install
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
     "log:report": "node scripts/log-report.mjs",
     "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
-    "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
+    "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts",
+    "revenue:sync": "node --env-file-if-exists=../../.env --import tsx scripts/revenue-sync.ts",
+    "revenue:demo": "node --env-file-if-exists=../../.env --import tsx scripts/revenue-demo.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
@@ -5737,9 +5769,10 @@ export default defineNuxtConfig({
 
 7. Siapkan koneksi database untuk server. Buat satu pool dan satu set repository per proses, bukan per request. Pool dibuat saat pertama kali dipakai, sehingga `nuxt build` tidak butuh `DATABASE_URL`. Semua yang khusus untuk satu request (site, theme) nantinya disimpan di `event.context`, bukan di modul ini:
 
-`apps/web/server/utils/database.ts`
+   (Bab "Dashboard Pendapatan Multi-Sumber" meneruskan pengaturan pendapatan dari env ke `createRepositories`.)
 
 ```ts
+// apps/web/server/utils/database.ts
 // Satu koneksi database (pool) dan satu set repository per PROSES server.
 // Ini bukan state per request: semua yang khusus request (site, theme) wajib
 // disimpan di event.context, tidak di modul (ADR-001).
@@ -6435,7 +6468,7 @@ export {}
 
    (Header cache (`setPublicCache`, `adminNoStore`) ditambahkan di bab "Mengatur Cache Halaman Publik".)
 
-   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON". Pengecualian path webhook pendapatan ditambahkan di bab "Dashboard Pendapatan Multi-Sumber".)
 
 `apps/web/server/middleware/site.ts`
 
@@ -6457,7 +6490,7 @@ export {}
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
-import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { isAdminPath, routedPath, useAdminConfig } from '../utils/admin'
 import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
@@ -6468,6 +6501,12 @@ import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/**
+ * Webhook pendapatan (ADR-011): tanpa site dan di Host mana pun, diamankan
+ * tanda tangan. Dicocokkan persis pada path yang dilihat router (setelah
+ * decode), bukan awalan, agar tidak bisa dipakai menembus route lain.
+ */
+const WEBHOOK_PATH = /^\/api\/webhooks\/revenue\/[a-z0-9_]{1,40}$/
 /** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
 const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
 
@@ -6475,6 +6514,7 @@ export default defineEventHandler(async (event) => {
   // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+  if (WEBHOOK_PATH.test(routedPath(url.pathname))) return
 
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
@@ -12037,7 +12077,7 @@ export function useFeedBuilder() {
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
-import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { isAdminPath, routedPath, useAdminConfig } from '../utils/admin'
 import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
@@ -12048,6 +12088,12 @@ import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/**
+ * Webhook pendapatan (ADR-011): tanpa site dan di Host mana pun, diamankan
+ * tanda tangan. Dicocokkan persis pada path yang dilihat router (setelah
+ * decode), bukan awalan, agar tidak bisa dipakai menembus route lain.
+ */
+const WEBHOOK_PATH = /^\/api\/webhooks\/revenue\/[a-z0-9_]{1,40}$/
 /** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
 const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
 
@@ -12055,6 +12101,7 @@ export default defineEventHandler(async (event) => {
   // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+  if (WEBHOOK_PATH.test(routedPath(url.pathname))) return
 
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
@@ -13083,7 +13130,7 @@ describe.skipIf(!process.env['DATABASE_URL'])('feed per site (database dev, role
 // dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
 import { normalizeHost, resolveSiteRequest } from '@framework/core'
 import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
-import { isAdminPath, useAdminConfig } from '../utils/admin'
+import { isAdminPath, routedPath, useAdminConfig } from '../utils/admin'
 import { NO_STORE, setPublicCache } from '../utils/cache-control'
 import { useRepositories } from '../utils/database'
 import { usePageBuilder } from '../utils/pages'
@@ -13094,6 +13141,12 @@ import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/**
+ * Webhook pendapatan (ADR-011): tanpa site dan di Host mana pun, diamankan
+ * tanda tangan. Dicocokkan persis pada path yang dilihat router (setelah
+ * decode), bukan awalan, agar tidak bisa dipakai menembus route lain.
+ */
+const WEBHOOK_PATH = /^\/api\/webhooks\/revenue\/[a-z0-9_]{1,40}$/
 /** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
 const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
 
@@ -13101,6 +13154,7 @@ export default defineEventHandler(async (event) => {
   // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
   const url = getRequestURL(event, { xForwardedProto: true })
   if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+  if (WEBHOOK_PATH.test(routedPath(url.pathname))) return
 
   const admin = useAdminConfig()
   const adminPath = isAdminPath(url.pathname)
@@ -17127,9 +17181,10 @@ async function submit() {
 </template>
 ```
 
-`apps/web/app/pages/admin/index.vue`
+   Di bab "Dashboard Pendapatan Multi-Sumber" `/admin` menjadi dashboard pendapatan untuk superadmin; versi di bab ini:
 
 ```vue
+<!-- apps/web/app/pages/admin/index.vue -->
 <!-- /admin: arahkan ke artikel site pertama yang boleh dikelola. -->
 <script setup lang="ts">
 const error = ref<string | null>(null)
@@ -17153,7 +17208,7 @@ if (first) await navigateTo(`/admin/${first.code}/articles`, { replace: true })
 
 16. Tulis gate admin terhadap server hasil build, dengan helper request umum `requestWithHost` di `scripts/lib/built-server.mjs` (bab "Membuktikan Isolasi Antar-Site"). Gate memeriksa host admin dan domain site (termasuk path ter-encode), penjaga Origin, login salah dan benar, sesi, logout, rate limit, dan login paralel:
 
-   (Pemeriksaan header cache ditambahkan di bab "Mengatur Cache Halaman Publik".)
+   (Pemeriksaan header cache ditambahkan di bab "Mengatur Cache Halaman Publik", pemeriksaan API pendapatan dan webhook di bab "Dashboard Pendapatan Multi-Sumber".)
 
 `apps/web/scripts/gate-admin.mjs`
 
@@ -17421,6 +17476,24 @@ try {
   check('editor: site sendiri 200', r.status === 200, String(r.status))
   r = await admin(`/api/admin/sites/${kuliner.id}/articles`, { cookie: editorCookie })
   check('editor: site lain 404', r.status === 404, String(r.status))
+
+  // Dashboard pendapatan (ADR-011): hanya superadmin; webhook publik di host
+  // mana pun, diamankan tanda tangan, tidak bisa dipakai menembus route lain.
+  r = await admin('/api/admin/revenue/overview')
+  check('pendapatan: tanpa sesi 401', r.status === 401, String(r.status))
+  r = await admin('/api/admin/revenue/overview', { cookie: editorCookie })
+  check('pendapatan: bukan superadmin 404', r.status === 404, String(r.status))
+  r = await admin('/api/admin/revenue/overview?from=2026-01-01&to=2026-01-31', { cookie: adminCookie })
+  check('pendapatan: superadmin 200 + total', r.status === 200 && JSON.parse(r.body).overview?.total !== undefined, String(r.status))
+  r = await admin('/api/admin/revenue/sources', { cookie: adminCookie })
+  check('pendapatan: daftar sumber tanpa nilai rahasia', r.status === 200 && !/token|secret|merchant_key/i.test(JSON.stringify(JSON.parse(r.body).sources.map((s) => s.config))), String(r.status))
+  const lynkBody = JSON.stringify({ event: 'payment.received', data: { message_id: 'GATE_1', message_data: { refId: 'GATE-1', totals: { grandTotal: 1000 } } } })
+  r = await requestWithHost(port, { path: '/api/webhooks/revenue/lynk', host: siteHost, method: 'POST', rawBody: Buffer.from(lynkBody), headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(lynkBody)), 'x-lynk-signature': 'a'.repeat(64) } })
+  check('webhook: di host site terjangkau, tanpa key/tanda tangan sah tidak diterima (401/503)', r.status === 401 || r.status === 503, String(r.status))
+  r = await requestWithHost(port, { path: '/api/webhooks/revenue/lynk', host: siteHost, method: 'POST', rawBody: Buffer.from('{'), headers: { 'content-type': 'application/json', 'content-length': '1' } })
+  check('webhook: body rusak 400', r.status === 400, String(r.status))
+  r = await requestWithHost(port, { path: '/api/webhooks/revenue/%2e%2e/%2e%2e/admin/me', host: siteHost, method: 'POST', rawBody: Buffer.from('{}'), headers: { 'content-type': 'application/json', 'content-length': '2' } })
+  check('webhook: path traversal tidak sampai ke admin', r.status === 404, String(r.status))
 
   // Rate limit: 5 kegagalan per IP + email -> 429 dengan Retry-After.
   const victim = `gate-${Date.now()}@local.test`
@@ -20593,7 +20666,7 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
 
    Menu "Antrian terbit" dengan jumlah yang menunggu ditambahkan di bab "Membangun Antrian Terbit".
 
-   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin".)
+   (Pengaturan site ditambahkan di bab "Pengaturan Site dari Admin", tautan "Dashboard pendapatan" untuk superadmin di bab "Dashboard Pendapatan Multi-Sumber".)
 
 `apps/web/app/layouts/admin.vue`
 
@@ -20601,6 +20674,7 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
 <!--
   Kerangka admin (ADR-009): rail kiri berisi pemilih site, navigasi, dan
   user; isi halaman di kanan. Hanya dipakai halaman /admin/:site/... (SPA).
+  Superadmin punya tautan kembali ke dashboard pendapatan (ADR-011).
 -->
 <script setup lang="ts">
 import '@fontsource/inter/400.css'
@@ -20669,6 +20743,13 @@ useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), h
       class="adm-shell"
     >
       <aside class="adm-rail">
+        <NuxtLink
+          v-if="me.user.isSuperadmin"
+          to="/admin"
+          class="adm-rail__back"
+        >
+          Dashboard pendapatan
+        </NuxtLink>
         <div class="adm-rail__site">
           <label for="pilih-site">Site</label>
           <select
@@ -28627,3 +28708,10956 @@ async function save() {
 ```
 
 5. Data site tidak di-cache di memori, jadi perubahan langsung terlihat di request berikutnya: judul tab mengikuti pola baru, dan `<meta name="description">` memakai deskripsi bawaan untuk halaman tanpa ringkasan.
+
+# Dashboard Pendapatan Multi-Sumber
+
+Sampai bab sebelumnya, halaman pertama setelah login adalah admin konten. Bab ini menambahkan konsol pemilik: dashboard pendapatan dari banyak situs (termasuk situs di luar framework ini) dan banyak platform, yaitu Google AdSense, Adsterra, Lynk.id, Whop, dan pemasukan manual. Admin konten tetap ada dan dibuka lewat tombol "Admin Blog". Keputusan arsitekturnya dicatat sebagai ADR-011.
+
+1. Pahami masalahnya sebelum menulis tabel. Setiap platform mengirim data dengan cara berbeda: Lynk.id mendorong webhook setiap ada pembayaran, AdSense dan Adsterra harus ditarik dari reporting API secara berkala, Whop dan platform lain cukup diekspor ke file, dan brand deal dicatat tangan. Angka jaringan iklan juga berubah: hari ini masih perkiraan dan bisa direvisi beberapa hari kemudian. Karena itu semua jalur menulis ke satu ledger dengan aturan idempotensi yang sama, dan setiap perubahan angka menyimpan versi lamanya.
+
+2. Tulis keputusan arsitekturnya:
+
+`docs/adr/011-dashboard-pendapatan.md`
+
+```markdown
+# ADR-011: Dashboard pendapatan multi-sumber, ledger terpadu, lima jalur ingest
+
+Status: Diterima (22 Nov 2026)
+
+## Konteks
+
+Pemilik proyek punya pemasukan dari beberapa situs (termasuk situs di luar
+framework ini) dan beberapa platform: jaringan iklan (Google AdSense,
+Adsterra), penjualan produk digital (Lynk.id, Whop), dan pemasukan non-API
+(brand deal). Ia ingin satu tampilan awal setelah login yang menunjukkan
+pendapatan harian/bulanan semua sumber, dengan detail per sumber dan per situs.
+Admin konten (ADR-009) tetap ada, dibuka lewat tombol "Admin Blog".
+
+Setiap platform menyediakan data dengan cara berbeda: webhook (Lynk.id),
+reporting API terjadwal (AdSense, Adsterra), file ekspor (Whop dan lainnya),
+dan input manual. Angka jaringan iklan juga berubah: hari berjalan masih
+perkiraan dan bisa direvisi beberapa hari kemudian.
+
+## Keputusan
+
+1. **Satu ledger terpadu** `revenue_ledger_entries`. Semua jalur menghasilkan
+   bentuk yang sama (`LedgerInput`) dan ditulis lewat satu fungsi
+   (`upsertEntries`). Dashboard hanya membaca ledger.
+2. **Idempotensi per sumber**: unik `(source_id, idempotency_key)`. Kunci
+   dibangun adapter dari identitas data, bukan waktu masuk:
+   - Lynk.id `lynk:<refId>:sale` (pengiriman ulang tidak menggandakan saldo);
+   - Adsterra `adsterra:<tanggal>:<domain>:<placement>[:<country>][:sub:<sub_id>]`;
+   - AdSense `adsense:<tanggal>:<domain>`;
+   - impor file `<sumber>:ext:<ID>` bila kolom ID dipetakan, selain itu hash isi baris;
+   - manual `manual:<uuid>` atau `manual:ext:<no invoice>`, adjustment `adjustment:<uuid>`, refund `refund:<entri>:<n>`.
+3. **Revisi tanpa merusak jejak audit**. Kunci sama + isi sama = `unchanged`;
+   isi berubah = `update`, dan trigger database menyalin versi lama ke
+   `revenue_ledger_revisions` serta menaikkan `revision`. Database juga
+   menolak: mengubah identitas entri, menurunkan `finalized` ke `estimated`,
+   dan mengubah baris revisi. Koreksi manual tidak pernah mengubah entri asal:
+   adjustment dan refund adalah entri baru (`adjusted`/`refunded`, alasan wajib).
+4. **Status angka**: `estimated` (bisa berubah), `finalized`, `adjusted`,
+   `refunded`. Adsterra: di luar jendela lookback = final. AdSense: bulan
+   berjalan estimated; bulan lalu final mulai tanggal `finalizeDay` (bawaan 7).
+5. **Mata uang**: angka asli (`gross_amount`, `currency`) selalu disimpan.
+   `normalized_amount` = round(gross x kurs, 2) dalam mata uang utama
+   (`REVENUE_BASE_CURRENCY`, bawaan IDR) dengan kurs terakhir <= tanggal
+   laporan dari `revenue_fx_rates`, dan kurs itu disimpan di entri. Tanpa kurs,
+   entri tetap tersimpan dan tampil sebagai "belum dikonversi"; tidak pernah
+   memakai kurs tebakan. Aritmetika uang memakai bigint desimal, bukan float.
+6. **Kredensial hanya di env server** (`<credentials_env>_API_TOKEN`, `_CLIENT_ID`,
+   `_CLIENT_SECRET`, `_REFRESH_TOKEN`, `_MERCHANT_KEY`). Database hanya menyimpan
+   awalan nama env; config sumber ditolak bila memuat kunci yang mirip rahasia.
+   API admin hanya melaporkan nama env yang belum diisi, tidak pernah nilainya.
+7. **Hak akses**: data pendapatan lintas situs, jadi hanya `users.is_superadmin`.
+   User lain mendapat 404 dari API dan diarahkan ke Admin Blog.
+8. **Webhook publik** di `/api/webhooks/revenue/:code`, di Host mana pun
+   (middleware site melewatinya hanya bila path yang dilihat router persis
+   cocok), diamankan tanda tangan. Semua kiriman tercatat di
+   `revenue_webhook_events`; payload hanya disimpan bila tanda tangan sah.
+   Balasan: 200 (termasuk duplikat), 400 bentuk salah, 401 tanda tangan
+   salah, 503 merchant key belum dipasang (agar pengirim mengulang).
+9. **Tarik terjadwal**: penjadwal di proses web hanya bila `REVENUE_SCHEDULER=true`
+   (asumsi satu replika, sama seperti ADR M5-I); alternatifnya
+   `pnpm revenue:sync --due` dari cron. Paling banyak satu run berjalan per
+   sumber (index unik `status = 'running'`).
+10. **Headless/otomasi browser** hanya sebagai kerangka: nonaktif bawaan
+    (`REVENUE_HEADLESS_ENABLED` dan `config.enabled`), tanpa scraper sungguhan
+    di repo, dengan batas waktu dan log run terpisah.
+11. **Mode mock** (`REVENUE_MOCK=true` atau `config.mock`) mengganti jaringan
+    saja: fetch palsu menjawab dengan bentuk respons asli, sehingga parsing,
+    normalisasi, dan UI teruji tanpa kredensial.
+12. **Situs** (`revenue_properties`) terpisah dari `sites`: situs luar framework
+    juga bisa dicatat. Tautan opsional ke site framework memakai
+    `linked_site_id` (bukan `site_id`, karena konvensi repo: `site_id` = data
+    milik satu site).
+
+## Alternatif yang ditolak
+
+- **Tabel terpisah per platform** (adsense_reports, lynk_orders, ...): setiap
+  agregasi dashboard harus UNION semua tabel, dan sumber baru butuh migrasi.
+  Metrik khusus platform cukup di `metrics_json` dan `dimensions`.
+- **Menimpa angka tanpa riwayat**: angka iklan memang direvisi; tanpa riwayat
+  tidak bisa menjelaskan kenapa total kemarin berbeda dengan hari ini.
+- **Menyimpan token di database (terenkripsi)**: butuh pengelolaan kunci enkripsi
+  dan alur OAuth di UI. Env server lebih sederhana untuk satu pemilik.
+- **Konversi kurs saat query dengan kurs terbaru**: total masa lalu berubah setiap
+  kurs diperbarui. Kurs disimpan di entri; hitung ulang bersifat eksplisit dan tercatat.
+- **Library chart / spreadsheet** (Chart.js, SheetJS): grafik cukup SVG kecil;
+  pembaca .xlsx minimal (zip + XML) cukup untuk worksheet pertama, tanpa
+  menambah dependensi besar.
+
+## Konsekuensi
+
+- Sumber API baru = adapter baru di `packages/core/src/revenue/adapters` + nilai
+  `connector`; sumber impor/manual bisa ditambah dari admin tanpa kode.
+- Lynk.id tidak mengirim event refund (dokumentasi resmi hanya `payment.received`);
+  refund dicatat manual dari detail entri.
+- Data pendapatan masuk backup database yang sama (`pnpm db:backup`).
+- `raw_payload` Lynk.id memuat data pembeli (nama, email, telepon) untuk audit;
+  hanya superadmin yang bisa melihatnya.
+```
+
+3. Tulis migration `0003_pendapatan.sql`. Delapan tabel: situs (`revenue_properties`), sumber (`revenue_sources`), kurs, log sync, batch impor, log webhook, ledger, dan revisi ledger. Trigger `revenue_ledger_guard` menjaga jejak audit untuk semua jalur: identitas entri tidak bisa diubah, angka final tidak bisa turun menjadi sementara, dan setiap perubahan angka menyalin versi lama ke `revenue_ledger_revisions`. Kolom penghubung ke site framework bernama `linked_site_id`, bukan `site_id`, karena di repo ini `site_id` berarti "data milik satu site" (test schema memeriksa konvensi itu). Lima sumber bawaan ikut dibuat sebagai master data:
+
+`packages/db/migrations/0003_pendapatan.sql`
+
+```sql
+-- =====================================================================
+-- 0003_pendapatan.sql  -  Dashboard pendapatan multi-sumber (ADR-011).
+--
+-- Satu ledger terpadu untuk semua pemasukan, dari lima jalur:
+--   webhook     push event pembayaran (Lynk.id)
+--   api         pull laporan terjadwal (Adsterra, Google AdSense)
+--   csv_import  impor file CSV / Excel / JSON
+--   headless    otomasi browser (opsional, nonaktif secara bawaan)
+--   manual      input manual dan adjustment
+--
+--   revenue_properties        situs/web penghasil pendapatan, termasuk
+--                             yang tidak dilayani framework ini
+--   revenue_sources           master sumber (lynk, adsterra, adsense, ...)
+--   revenue_fx_rates          kurs ke mata uang utama dashboard
+--   revenue_sync_runs         log tarikan API / headless
+--   revenue_import_batches    log impor file (+ baris hasil parse)
+--   revenue_webhook_events    log setiap webhook masuk
+--   revenue_ledger_entries    ledger terpadu; unik (source, idempotency_key)
+--   revenue_ledger_revisions  jejak nilai lama setiap kali angka berubah
+--
+-- Kredensial (API token, OAuth secret, merchant key) TIDAK disimpan di
+-- database: credentials_env hanya menyebut awalan nama env var di server.
+-- Data pendapatan bersifat global (tanpa site_id); hanya superadmin yang
+-- boleh membacanya (diperiksa di aplikasi).
+-- =====================================================================
+
+-- ---------- situs penghasil pendapatan -----------------------------
+CREATE TABLE revenue_properties (
+  id          uuid        PRIMARY KEY DEFAULT uuidv7(),
+  code        text        NOT NULL,
+  name        text        NOT NULL,
+  domain      text,                              -- host tanpa skema, huruf kecil, tanpa www.
+  -- Site framework ini bila situsnya dilayani di sini. Bukan site_id:
+  -- properti tidak dimiliki satu site (konvensi site_id = milik site).
+  linked_site_id uuid     REFERENCES sites (id) ON DELETE SET NULL,
+  status      text        NOT NULL DEFAULT 'ACTIVE',
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT revenue_properties_code_format CHECK (code ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(code) <= 50),
+  CONSTRAINT revenue_properties_name_length CHECK (length(btrim(name)) BETWEEN 1 AND 120),
+  CONSTRAINT revenue_properties_domain_format
+             CHECK (domain IS NULL OR (domain = lower(domain) AND domain ~ '^[a-z0-9.-]+$' AND domain !~ '^www\.' AND length(domain) <= 253)),
+  CONSTRAINT revenue_properties_status_valid CHECK (status IN ('ACTIVE', 'ARCHIVED'))
+);
+CREATE UNIQUE INDEX uq_revenue_properties_code   ON revenue_properties (code);
+CREATE UNIQUE INDEX uq_revenue_properties_domain ON revenue_properties (domain) WHERE domain IS NOT NULL;
+
+CREATE TRIGGER trg_revenue_properties_updated_at BEFORE UPDATE ON revenue_properties
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------- master sumber pendapatan --------------------------------
+-- connector: adapter di packages/core/src/revenue/adapters.
+--   lynk / adsterra / adsense : adapter khusus
+--   headless                  : runner otomasi browser (opsional)
+--   generic                   : hanya impor file dan input manual
+-- integration_type: jalur utama sumber ini (untuk tampilan dan filter).
+CREATE TABLE revenue_sources (
+  id                     uuid        PRIMARY KEY DEFAULT uuidv7(),
+  code                   text        NOT NULL,
+  name                   text        NOT NULL,
+  connector              text        NOT NULL DEFAULT 'generic',
+  integration_type       text        NOT NULL DEFAULT 'manual',
+  is_active              boolean     NOT NULL DEFAULT true,
+  default_currency       text        NOT NULL DEFAULT 'IDR',
+  config                 jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- non-rahasia saja
+  credentials_env        text,                          -- awalan env var, mis. REVENUE_ADSTERRA
+  sync_interval_minutes  integer,                       -- NULL = tanpa jadwal
+  lookback_days          smallint    NOT NULL DEFAULT 3,
+  sort_order             smallint    NOT NULL DEFAULT 0, -- urutan tampil = urutan warna seri
+  last_sync_at           timestamptz,
+  last_sync_status       text,
+  created_at             timestamptz NOT NULL DEFAULT now(),
+  updated_at             timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT revenue_sources_code_format     CHECK (code ~ '^[a-z0-9]+(_[a-z0-9]+)*$' AND length(code) <= 40),
+  CONSTRAINT revenue_sources_name_length     CHECK (length(btrim(name)) BETWEEN 1 AND 80),
+  CONSTRAINT revenue_sources_connector_valid CHECK (connector IN ('lynk', 'adsterra', 'adsense', 'headless', 'generic')),
+  CONSTRAINT revenue_sources_type_valid      CHECK (integration_type IN ('webhook', 'api', 'csv_import', 'headless', 'manual')),
+  CONSTRAINT revenue_sources_currency_format CHECK (default_currency ~ '^[A-Z]{3}$'),
+  CONSTRAINT revenue_sources_config_object   CHECK (jsonb_typeof(config) = 'object'),
+  CONSTRAINT revenue_sources_credentials_env CHECK (credentials_env IS NULL OR credentials_env ~ '^[A-Z][A-Z0-9_]{1,60}$'),
+  CONSTRAINT revenue_sources_interval_range  CHECK (sync_interval_minutes IS NULL OR sync_interval_minutes BETWEEN 15 AND 10080),
+  CONSTRAINT revenue_sources_lookback_range  CHECK (lookback_days BETWEEN 0 AND 60),
+  CONSTRAINT revenue_sources_sync_status     CHECK (last_sync_status IS NULL OR last_sync_status IN ('success', 'partial', 'failed'))
+);
+CREATE UNIQUE INDEX uq_revenue_sources_code ON revenue_sources (code);
+
+CREATE TRIGGER trg_revenue_sources_updated_at BEFORE UPDATE ON revenue_sources
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------- kurs ------------------------------------------------------
+-- 1 <currency> = rate_to_base <base_currency>, berlaku mulai rate_date
+-- sampai ada kurs lebih baru. Entri memakai kurs terakhir <= report_date.
+CREATE TABLE revenue_fx_rates (
+  currency       text           NOT NULL,
+  base_currency  text           NOT NULL,
+  rate_date      date           NOT NULL,
+  rate_to_base   numeric(20,8)  NOT NULL,
+  note           text,
+  created_by     uuid           REFERENCES users (id) ON DELETE SET NULL,
+  created_at     timestamptz    NOT NULL DEFAULT now(),
+  updated_at     timestamptz    NOT NULL DEFAULT now(),
+  PRIMARY KEY (currency, base_currency, rate_date),
+  CONSTRAINT revenue_fx_rates_currency_format CHECK (currency ~ '^[A-Z]{3}$' AND base_currency ~ '^[A-Z]{3}$'),
+  CONSTRAINT revenue_fx_rates_not_same        CHECK (currency <> base_currency),
+  CONSTRAINT revenue_fx_rates_positive        CHECK (rate_to_base > 0)
+);
+
+CREATE TRIGGER trg_revenue_fx_rates_updated_at BEFORE UPDATE ON revenue_fx_rates
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------- log tarikan API / headless -------------------------------
+CREATE TABLE revenue_sync_runs (
+  id              uuid        PRIMARY KEY DEFAULT uuidv7(),
+  source_id       uuid        NOT NULL REFERENCES revenue_sources (id) ON DELETE CASCADE,
+  channel_type    text        NOT NULL,
+  trigger         text        NOT NULL,
+  status          text        NOT NULL DEFAULT 'running',
+  mock            boolean     NOT NULL DEFAULT false,
+  range_start     date        NOT NULL,
+  range_end       date        NOT NULL,
+  started_at      timestamptz NOT NULL DEFAULT now(),
+  finished_at     timestamptz,
+  rows_fetched    integer     NOT NULL DEFAULT 0,
+  inserted        integer     NOT NULL DEFAULT 0,
+  updated         integer     NOT NULL DEFAULT 0,
+  unchanged       integer     NOT NULL DEFAULT 0,
+  skipped         integer     NOT NULL DEFAULT 0,
+  failed          integer     NOT NULL DEFAULT 0,
+  error_message   text,
+  log             jsonb       NOT NULL DEFAULT '[]'::jsonb,
+  triggered_by    uuid        REFERENCES users (id) ON DELETE SET NULL,
+  CONSTRAINT revenue_sync_runs_channel_valid CHECK (channel_type IN ('api', 'headless')),
+  CONSTRAINT revenue_sync_runs_trigger_valid CHECK (trigger IN ('schedule', 'manual', 'cli')),
+  CONSTRAINT revenue_sync_runs_status_valid  CHECK (status IN ('running', 'success', 'partial', 'failed')),
+  CONSTRAINT revenue_sync_runs_range_valid   CHECK (range_start <= range_end),
+  CONSTRAINT revenue_sync_runs_finished      CHECK ((status = 'running') = (finished_at IS NULL)),
+  CONSTRAINT revenue_sync_runs_log_array     CHECK (jsonb_typeof(log) = 'array')
+);
+CREATE INDEX idx_revenue_sync_runs_source ON revenue_sync_runs (source_id, started_at DESC);
+-- Paling banyak satu tarikan berjalan per sumber (jadwal dan tombol manual tidak bertabrakan).
+CREATE UNIQUE INDEX uq_revenue_sync_runs_running ON revenue_sync_runs (source_id) WHERE status = 'running';
+
+-- ---------- log impor file ------------------------------------------
+-- rows: hasil parse file (array object kolom -> teks), disimpan sampai
+-- impor di-commit atau dibuang, agar preview dan commit memakai data yang
+-- sama tanpa mengunggah ulang.
+CREATE TABLE revenue_import_batches (
+  id            uuid        PRIMARY KEY DEFAULT uuidv7(),
+  source_id     uuid        NOT NULL REFERENCES revenue_sources (id) ON DELETE CASCADE,
+  file_name     text        NOT NULL,
+  file_format   text        NOT NULL,
+  file_sha256   text        NOT NULL,
+  status        text        NOT NULL DEFAULT 'uploaded',
+  row_count     integer     NOT NULL DEFAULT 0,
+  headers       jsonb       NOT NULL DEFAULT '[]'::jsonb,
+  rows          jsonb,
+  mapping       jsonb,
+  inserted      integer     NOT NULL DEFAULT 0,
+  updated       integer     NOT NULL DEFAULT 0,
+  unchanged     integer     NOT NULL DEFAULT 0,
+  skipped       integer     NOT NULL DEFAULT 0,
+  failed        integer     NOT NULL DEFAULT 0,
+  errors        jsonb       NOT NULL DEFAULT '[]'::jsonb,
+  created_by    uuid        REFERENCES users (id) ON DELETE SET NULL,
+  committed_at  timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT revenue_import_batches_format_valid CHECK (file_format IN ('csv', 'xlsx', 'json')),
+  CONSTRAINT revenue_import_batches_status_valid CHECK (status IN ('uploaded', 'committed', 'failed', 'discarded')),
+  CONSTRAINT revenue_import_batches_name_length  CHECK (length(file_name) BETWEEN 1 AND 255),
+  CONSTRAINT revenue_import_batches_committed    CHECK ((status = 'committed') = (committed_at IS NOT NULL)),
+  CONSTRAINT revenue_import_batches_rows_pending CHECK (status = 'uploaded' OR rows IS NULL)
+);
+CREATE INDEX idx_revenue_import_batches_source ON revenue_import_batches (source_id, created_at DESC);
+
+CREATE TRIGGER trg_revenue_import_batches_updated_at BEFORE UPDATE ON revenue_import_batches
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------- log webhook masuk ---------------------------------------
+-- Payload hanya disimpan bila tanda tangan sah (request palsu tidak
+-- mengisi database dengan data sembarang).
+CREATE TABLE revenue_webhook_events (
+  id                 uuid        PRIMARY KEY DEFAULT uuidv7(),
+  source_id          uuid        NOT NULL REFERENCES revenue_sources (id) ON DELETE CASCADE,
+  received_at        timestamptz NOT NULL DEFAULT now(),
+  event_type         text,
+  external_event_id  text,
+  signature_valid    boolean     NOT NULL,
+  status             text        NOT NULL,
+  ledger_entry_id    uuid,                              -- FK ditambahkan setelah tabel ledger
+  error              text,
+  payload            jsonb,
+  test               boolean     NOT NULL DEFAULT false,  -- dikirim tombol uji di admin
+  CONSTRAINT revenue_webhook_events_status_valid CHECK (status IN ('processed', 'duplicate', 'ignored', 'rejected', 'failed')),
+  CONSTRAINT revenue_webhook_events_payload_signed CHECK (payload IS NULL OR signature_valid)
+);
+CREATE INDEX idx_revenue_webhook_events_source ON revenue_webhook_events (source_id, received_at DESC);
+
+-- ---------- ledger terpadu ------------------------------------------
+-- status:
+--   estimated  angka sementara (hari berjalan, laporan belum final)
+--   finalized  angka final dari sumber
+--   adjusted   koreksi manual (boleh negatif), wajib alasan
+--   refunded   pengembalian dana (negatif), wajib alasan
+-- normalized_amount = round(gross_amount * fx_rate_to_base, 2) dalam
+-- base_currency; NULL bila kurs belum tersedia (tampil sebagai peringatan).
+CREATE TABLE revenue_ledger_entries (
+  id                 uuid           PRIMARY KEY DEFAULT uuidv7(),
+  source_id          uuid           NOT NULL REFERENCES revenue_sources (id) ON DELETE RESTRICT,
+  property_id        uuid           REFERENCES revenue_properties (id) ON DELETE SET NULL,
+  channel_type       text           NOT NULL,
+  idempotency_key    text           NOT NULL,
+  external_id        text,
+  occurred_at        timestamptz,
+  report_date        date           NOT NULL,
+  gross_amount       numeric(20,6)  NOT NULL,
+  currency           text           NOT NULL,
+  fx_rate_to_base    numeric(20,8),
+  base_currency      text           NOT NULL,
+  normalized_amount  numeric(20,2),
+  status             text           NOT NULL,
+  metrics_json       jsonb          NOT NULL DEFAULT '{}'::jsonb,
+  dimensions         jsonb          NOT NULL DEFAULT '{}'::jsonb,
+  description        text,
+  note               text,                              -- alasan / catatan audit
+  raw_payload        jsonb,
+  adjusts_entry_id   uuid           REFERENCES revenue_ledger_entries (id) ON DELETE SET NULL,
+  sync_run_id        uuid           REFERENCES revenue_sync_runs (id) ON DELETE SET NULL,
+  import_batch_id    uuid           REFERENCES revenue_import_batches (id) ON DELETE SET NULL,
+  webhook_event_id   uuid           REFERENCES revenue_webhook_events (id) ON DELETE SET NULL,
+  created_by         uuid           REFERENCES users (id) ON DELETE SET NULL,
+  revision           integer        NOT NULL DEFAULT 1,
+  created_at         timestamptz    NOT NULL DEFAULT now(),
+  updated_at         timestamptz    NOT NULL DEFAULT now(),
+  CONSTRAINT revenue_ledger_channel_valid   CHECK (channel_type IN ('webhook', 'api', 'csv_import', 'headless', 'manual')),
+  CONSTRAINT revenue_ledger_status_valid    CHECK (status IN ('estimated', 'finalized', 'adjusted', 'refunded')),
+  CONSTRAINT revenue_ledger_key_length      CHECK (length(idempotency_key) BETWEEN 1 AND 300),
+  CONSTRAINT revenue_ledger_currency_format CHECK (currency ~ '^[A-Z]{3}$' AND base_currency ~ '^[A-Z]{3}$'),
+  CONSTRAINT revenue_ledger_fx_pair         CHECK ((fx_rate_to_base IS NULL) = (normalized_amount IS NULL)),
+  CONSTRAINT revenue_ledger_fx_positive     CHECK (fx_rate_to_base IS NULL OR fx_rate_to_base > 0),
+  CONSTRAINT revenue_ledger_fx_same_ccy     CHECK (currency <> base_currency OR fx_rate_to_base = 1),
+  CONSTRAINT revenue_ledger_metrics_object  CHECK (jsonb_typeof(metrics_json) = 'object' AND jsonb_typeof(dimensions) = 'object'),
+  CONSTRAINT revenue_ledger_note_required   CHECK (status NOT IN ('adjusted', 'refunded') OR length(btrim(coalesce(note, ''))) > 0),
+  CONSTRAINT revenue_ledger_refund_negative CHECK (status <> 'refunded' OR gross_amount < 0),
+  CONSTRAINT revenue_ledger_description_len CHECK (description IS NULL OR length(description) <= 500),
+  CONSTRAINT revenue_ledger_note_len        CHECK (note IS NULL OR length(note) <= 2000),
+  CONSTRAINT revenue_ledger_revision_pos    CHECK (revision >= 1)
+);
+CREATE UNIQUE INDEX uq_revenue_ledger_key      ON revenue_ledger_entries (source_id, idempotency_key);
+CREATE INDEX idx_revenue_ledger_date           ON revenue_ledger_entries (report_date);
+CREATE INDEX idx_revenue_ledger_source_date    ON revenue_ledger_entries (source_id, report_date);
+CREATE INDEX idx_revenue_ledger_property_date  ON revenue_ledger_entries (property_id, report_date);
+CREATE INDEX idx_revenue_ledger_recent         ON revenue_ledger_entries (updated_at DESC);
+CREATE INDEX idx_revenue_ledger_unconverted    ON revenue_ledger_entries (currency, report_date) WHERE normalized_amount IS NULL;
+
+ALTER TABLE revenue_webhook_events
+  ADD CONSTRAINT fk_revenue_webhook_events_entry FOREIGN KEY (ledger_entry_id)
+      REFERENCES revenue_ledger_entries (id) ON DELETE SET NULL;
+
+CREATE TABLE revenue_ledger_revisions (
+  id                 uuid           PRIMARY KEY DEFAULT uuidv7(),
+  entry_id           uuid           NOT NULL REFERENCES revenue_ledger_entries (id) ON DELETE CASCADE,
+  revision           integer        NOT NULL,
+  gross_amount       numeric(20,6)  NOT NULL,
+  currency           text           NOT NULL,
+  fx_rate_to_base    numeric(20,8),
+  normalized_amount  numeric(20,2),
+  status             text           NOT NULL,
+  metrics_json       jsonb          NOT NULL,
+  sync_run_id        uuid,
+  import_batch_id    uuid,
+  replaced_at        timestamptz    NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uq_revenue_ledger_revisions ON revenue_ledger_revisions (entry_id, revision);
+
+-- Jejak audit ledger, ditegakkan database (berlaku untuk semua jalur):
+--  - identitas entri (sumber, kunci, jalur, mata uang utama) tidak bisa diubah;
+--  - angka final tidak bisa turun kembali menjadi sementara;
+--  - setiap perubahan angka/status/metrik menyimpan versi lama ke
+--    revenue_ledger_revisions dan menaikkan revision. Mengisi kurs yang
+--    tadinya kosong bukan revisi (angka sumber tidak berubah).
+CREATE FUNCTION revenue_ledger_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.source_id       IS DISTINCT FROM OLD.source_id OR
+     NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key OR
+     NEW.channel_type    IS DISTINCT FROM OLD.channel_type OR
+     NEW.base_currency   IS DISTINCT FROM OLD.base_currency THEN
+    RAISE EXCEPTION 'identitas entri ledger % tidak bisa diubah', OLD.id USING ERRCODE = 'P0001';
+  END IF;
+  IF OLD.status = 'finalized' AND NEW.status = 'estimated' THEN
+    RAISE EXCEPTION 'entri ledger % sudah final, tidak bisa kembali sementara', OLD.id USING ERRCODE = 'P0001';
+  END IF;
+  IF NEW.gross_amount IS DISTINCT FROM OLD.gross_amount OR
+     NEW.currency     IS DISTINCT FROM OLD.currency OR
+     NEW.status       IS DISTINCT FROM OLD.status OR
+     NEW.metrics_json IS DISTINCT FROM OLD.metrics_json OR
+     (OLD.fx_rate_to_base IS NOT NULL AND NEW.fx_rate_to_base IS DISTINCT FROM OLD.fx_rate_to_base) THEN
+    INSERT INTO revenue_ledger_revisions
+      (entry_id, revision, gross_amount, currency, fx_rate_to_base, normalized_amount, status, metrics_json, sync_run_id, import_batch_id)
+    VALUES
+      (OLD.id, OLD.revision, OLD.gross_amount, OLD.currency, OLD.fx_rate_to_base, OLD.normalized_amount, OLD.status, OLD.metrics_json, OLD.sync_run_id, OLD.import_batch_id);
+    NEW.revision := OLD.revision + 1;
+  ELSE
+    NEW.revision := OLD.revision;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER trg_revenue_ledger_guard BEFORE UPDATE ON revenue_ledger_entries
+  FOR EACH ROW EXECUTE FUNCTION revenue_ledger_guard();
+
+CREATE TRIGGER trg_revenue_ledger_updated_at BEFORE UPDATE ON revenue_ledger_entries
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Revisi hanya ditambah (oleh trigger), tidak pernah diubah.
+CREATE FUNCTION revenue_ledger_revisions_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'revisi ledger tidak bisa diubah' USING ERRCODE = 'P0001';
+END
+$$;
+
+CREATE TRIGGER trg_revenue_ledger_revisions_immutable BEFORE UPDATE ON revenue_ledger_revisions
+  FOR EACH ROW EXECUTE FUNCTION revenue_ledger_revisions_immutable();
+
+-- ---------- sumber bawaan -------------------------------------------
+-- Master data (bukan data contoh): empat sumber yang dipakai pemilik
+-- proyek, ditambah satu sumber umum untuk input manual. Semua tanpa
+-- kredensial; adapter API memakai mode mock sampai env diisi.
+INSERT INTO revenue_sources (code, name, connector, integration_type, default_currency, credentials_env, sync_interval_minutes, lookback_days, sort_order, config) VALUES
+  ('adsense',  'Google AdSense', 'adsense',  'api',        'USD', 'REVENUE_ADSENSE',  360, 3, 1, '{"reportingTimeZone": "ACCOUNT_TIME_ZONE", "finalizeDay": 7}'),
+  ('adsterra', 'Adsterra',       'adsterra', 'api',        'USD', 'REVENUE_ADSTERRA', 180, 3, 2, '{}'),
+  ('lynk',     'Lynk.id',        'lynk',     'webhook',    'IDR', 'REVENUE_LYNK',     NULL, 0, 3, '{"timezone": "Asia/Jakarta"}'),
+  ('whop',     'Whop',           'generic',  'csv_import', 'USD', NULL,               NULL, 0, 4, '{}'),
+  ('lainnya',  'Lainnya',        'generic',  'manual',     'IDR', NULL,               NULL, 0, 9, '{}');
+```
+
+4. Terapkan dan buat ulang schema Drizzle, lalu naikkan jumlah tabel di test schema menjadi 26:
+
+```bash
+pnpm db:migrate
+pnpm db:pull
+```
+
+5. Tulis aritmetika uang tanpa float. Nilai dibawa sebagai teks desimal dan dihitung dengan bigint berskala; pembulatan half away from zero sama dengan `round()` PostgreSQL. Pembaca nominal dari file menolak pemisah desimal yang tampaknya salah pilih (`12.50` di file berformat koma), agar angka tidak meleset 100 kali tanpa ketahuan:
+
+`packages/core/src/revenue/decimal.ts`
+
+```ts
+// Aritmetika desimal untuk uang tanpa float (ADR-011). Nilai dibawa sebagai
+// string desimal kanonik ('-1234.5'), dihitung sebagai bigint berskala.
+// Pembulatan: half away from zero, sama dengan round() numeric PostgreSQL.
+
+const DECIMAL = /^([+-])?(\d+)(?:\.(\d+))?$/
+
+export class DecimalError extends Error {
+  override name = 'DecimalError'
+}
+
+/**
+ * Angka dari API/JSON/teks -> string desimal kanonik. Number diterima bila
+ * hingga (1.154, 2e-7); string harus berbentuk desimal biasa dengan titik.
+ */
+export function toDecimal(value: string | number | bigint): string {
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new DecimalError(`bukan angka hingga: ${value}`)
+    // toFixed(12) menghindari notasi eksponen; nol di belakang dibuang.
+    return canonical(Math.abs(value) < 1e21 ? value.toFixed(12) : BigInt(Math.round(value)).toString())
+  }
+  const text = value.trim()
+  if (!DECIMAL.test(text)) throw new DecimalError(`format angka tidak valid: "${value}"`)
+  return canonical(text)
+}
+
+function canonical(text: string): string {
+  const m = DECIMAL.exec(text)
+  if (!m) throw new DecimalError(`format angka tidak valid: "${text}"`)
+  const int = (m[2] ?? '0').replace(/^0+(?=\d)/, '')
+  const frac = (m[3] ?? '').replace(/0+$/, '')
+  const body = frac ? `${int}.${frac}` : int
+  return m[1] === '-' && /[1-9]/.test(body) ? `-${body}` : body
+}
+
+/** Desimal -> bigint dengan `scale` digit pecahan; digit lebih dibulatkan half away from zero. */
+export function toScaled(value: string, scale: number): bigint {
+  const m = DECIMAL.exec(toDecimal(value))
+  if (!m) throw new DecimalError(`format angka tidak valid: "${value}"`)
+  const negative = m[1] === '-'
+  const frac = m[3] ?? ''
+  const digits = BigInt(`${m[2]}${frac.padEnd(scale, '0').slice(0, scale)}`)
+  const rest = frac.slice(scale)
+  const roundUp = rest.length > 0 && Number(rest[0]) >= 5
+  const magnitude = roundUp ? digits + 1n : digits
+  return negative ? -magnitude : magnitude
+}
+
+/** bigint berskala -> string desimal dengan tepat `scale` digit pecahan. */
+export function fromScaled(value: bigint, scale: number): string {
+  const negative = value < 0n
+  const digits = (negative ? -value : value).toString().padStart(scale + 1, '0')
+  const int = digits.slice(0, digits.length - scale)
+  const frac = scale > 0 ? `.${digits.slice(digits.length - scale)}` : ''
+  return `${negative && /[1-9]/.test(digits) ? '-' : ''}${int}${frac}`
+}
+
+/** a x b, dibulatkan ke `scale` digit (half away from zero). */
+export function multiply(a: string, b: string, scale: number): string {
+  const [ma, sa] = split(a)
+  const [mb, sb] = split(b)
+  const product = ma * mb
+  const productScale = sa + sb
+  if (productScale <= scale) return fromScaled(product * 10n ** BigInt(scale - productScale), scale)
+  const divisor = 10n ** BigInt(productScale - scale)
+  const negative = product < 0n
+  const abs = negative ? -product : product
+  let q = abs / divisor
+  if ((abs % divisor) * 2n >= divisor) q += 1n
+  return fromScaled(negative ? -q : q, scale)
+}
+
+/** Jumlah beberapa desimal, hasil dengan `scale` digit. */
+export function sum(values: string[], scale: number): string {
+  return fromScaled(values.reduce((acc, v) => acc + toScaled(v, scale), 0n), scale)
+}
+
+/** Perbandingan nilai (bukan teks): '1.50' sama dengan '1.5'. */
+export function compareDecimal(a: string, b: string): -1 | 0 | 1 {
+  const [ma, sa] = split(a)
+  const [mb, sb] = split(b)
+  const scale = Math.max(sa, sb)
+  const x = ma * 10n ** BigInt(scale - sa)
+  const y = mb * 10n ** BigInt(scale - sb)
+  return x < y ? -1 : x > y ? 1 : 0
+}
+
+export function negate(value: string): string {
+  const d = toDecimal(value)
+  return d.startsWith('-') ? d.slice(1) : d === '0' ? d : `-${d}`
+}
+
+function split(value: string): [bigint, number] {
+  const d = toDecimal(value)
+  const frac = d.split('.')[1] ?? ''
+  return [BigInt(d.replace('.', '')), frac.length]
+}
+
+/**
+ * Teks angka dari file impor -> desimal kanonik. `decimalSeparator` ','
+ * untuk format Indonesia/Eropa ('1.234.567,89'), '.' untuk '1,234,567.89'.
+ * Simbol mata uang, spasi, dan tanda kurung akuntansi '(12.50)' diterima.
+ */
+export function parseAmountText(raw: string, decimalSeparator: '.' | ','): string {
+  let text = raw.trim()
+  let negative = false
+  if (/^\(.*\)$/.test(text)) {
+    negative = true
+    text = text.slice(1, -1)
+  }
+  text = text.replace(/[\s\u00a0]/g, '').replace(/^[A-Za-z$€£¥₹]*?(?=[-+\d])/u, '').replace(/[A-Za-z$€£¥₹]+$/u, '')
+  if (text.startsWith('-')) {
+    negative = !negative
+    text = text.slice(1)
+  } else if (text.startsWith('+')) {
+    text = text.slice(1)
+  }
+  const thousands = decimalSeparator === ',' ? '.' : ','
+  // '12.50' di file berformat koma (atau '12,50' di file berformat titik)
+  // hampir pasti salah pilih pemisah: ditolak agar angka tidak meleset 100x.
+  const wrongSeparator = decimalSeparator === ',' ? /^\d+\.\d{1,2}$/ : /^\d+,\d{1,2}$/
+  if (wrongSeparator.test(text)) {
+    throw new DecimalError(`"${raw}" ambigu: periksa pilihan pemisah desimal`)
+  }
+  text = text.split(thousands).join('')
+  if (decimalSeparator === ',') text = text.replace(',', '.')
+  if (!/^\d+(\.\d+)?$/.test(text)) throw new DecimalError(`"${raw}" bukan angka`)
+  return toDecimal(negative ? `-${text}` : text)
+}
+```
+
+6. Tulis utilitas tanggal laporan. "Hari ini" dihitung di zona waktu dashboard, bukan zona waktu server, dan waktu tanpa zona dari Lynk.id dibaca sebagai WIB:
+
+`packages/core/src/revenue/dates.ts`
+
+```ts
+// Tanggal laporan pendapatan: 'YYYY-MM-DD' tanpa jam (kolom date). "Hari
+// ini" selalu dihitung di zona waktu dashboard (REVENUE_TIMEZONE), bukan
+// zona waktu server.
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/
+
+export function isIsoDate(value: string): boolean {
+  const m = ISO_DATE.exec(value)
+  if (!m) return false
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  return d.toISOString().slice(0, 10) === value
+}
+
+/** Tanggal kalender (YYYY-MM-DD) dari sebuah saat, di zona waktu tertentu. */
+export function dateInZone(instant: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(instant)
+}
+
+export function addDays(date: string, days: number): string {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number]
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10)
+}
+
+/** Jumlah hari dari a ke b (b - a). */
+export function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000)
+}
+
+export function startOfMonth(date: string): string {
+  return `${date.slice(0, 7)}-01`
+}
+
+export function addMonths(date: string, months: number): string {
+  const [y, m] = date.split('-').map(Number) as [number, number]
+  return new Date(Date.UTC(y, m - 1 + months, 1)).toISOString().slice(0, 10)
+}
+
+/** Indeks bulan absolut (tahun x 12 + bulan), untuk membandingkan bulan. */
+export function monthIndex(date: string): number {
+  return Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7)) - 1
+}
+
+/** Semua tanggal dari `from` sampai `to` (inklusif). */
+export function eachDate(from: string, to: string): string[] {
+  const out: string[] = []
+  for (let d = from; d <= to; d = addDays(d, 1)) out.push(d)
+  return out
+}
+
+function offsetMs(instant: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(instant)
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0)
+  const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'))
+  return asUtc - Math.floor(instant.getTime() / 1000) * 1000
+}
+
+/**
+ * Waktu lokal tanpa zona ('2025-04-10T14:30:45', seperti createdAt Lynk.id)
+ * di zona `timeZone` -> Date (UTC). Teks yang sudah membawa zona (Z atau
+ * +07:00) dipakai apa adanya. Null bila tidak bisa dibaca.
+ */
+export function zonedLocalToDate(local: string, timeZone: string): Date | null {
+  const text = local.trim()
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+    const d = new Date(text)
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(text)
+  if (!m) return null
+  const asUtc = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] ?? 0))
+  let guess = asUtc - offsetMs(new Date(asUtc), timeZone)
+  guess = asUtc - offsetMs(new Date(guess), timeZone)
+  return new Date(guess)
+}
+```
+
+7. Tulis tipe bersama dan aturan upsert. `decideUpsert` adalah inti idempotensi: kunci baru disisipkan, isi sama dianggap tidak berubah, angka final tidak diturunkan, dan koreksi manual tidak ditimpa data biasa. `normalizeAmount` menolak menebak kurs: tanpa kurs, nilai konversi dibiarkan kosong:
+
+`packages/core/src/revenue/types.ts`
+
+```ts
+// Tipe ledger pendapatan (ADR-011). Semua jalur (webhook, API, impor file,
+// headless, manual) menghasilkan LedgerInput yang sama, lalu ditulis lewat
+// satu fungsi upsert di repository.
+
+export const CHANNEL_TYPES = ['webhook', 'api', 'csv_import', 'headless', 'manual'] as const
+export type ChannelType = (typeof CHANNEL_TYPES)[number]
+
+export const LEDGER_STATUSES = ['estimated', 'finalized', 'adjusted', 'refunded'] as const
+export type LedgerStatus = (typeof LEDGER_STATUSES)[number]
+
+export const CONNECTORS = ['lynk', 'adsterra', 'adsense', 'headless', 'generic'] as const
+export type Connector = (typeof CONNECTORS)[number]
+
+/** Metrik tambahan (iklan: impressions, clicks, cpm, ...; penjualan: orders, items). */
+export type LedgerMetrics = Record<string, number>
+/** Dimensi laporan (domain, placement, country, sub_id, product, ...). */
+export type LedgerDimensions = Record<string, string>
+
+export interface LedgerInput {
+  /** Unik per sumber; menentukan insert vs update (idempotensi). */
+  idempotencyKey: string
+  externalId?: string | null
+  occurredAt?: Date | null
+  /** YYYY-MM-DD */
+  reportDate: string
+  /** Desimal kanonik di mata uang asli. */
+  grossAmount: string
+  currency: string
+  status: LedgerStatus
+  metrics?: LedgerMetrics
+  dimensions?: LedgerDimensions
+  description?: string | null
+  note?: string | null
+  rawPayload?: unknown
+  /** Domain untuk memetakan ke revenue_properties (mis. dari laporan iklan). */
+  propertyDomain?: string | null
+  /** Properti eksplisit (input manual, mapping impor); menang atas propertyDomain. */
+  propertyId?: string | null
+  adjustsEntryId?: string | null
+}
+
+export type UpsertOutcome = 'inserted' | 'updated' | 'unchanged' | 'skipped'
+
+export interface UpsertCounts {
+  inserted: number
+  updated: number
+  unchanged: number
+  skipped: number
+  failed: number
+}
+
+export const emptyCounts = (): UpsertCounts => ({ inserted: 0, updated: 0, unchanged: 0, skipped: 0, failed: 0 })
+
+export class RevenueError extends Error {
+  override name = 'RevenueError'
+}
+```
+
+`packages/core/src/revenue/ledger-rules.ts`
+
+```ts
+// Aturan idempotensi dan revisi ledger (ADR-011), murni tanpa database agar
+// bisa diuji langsung. Repository memanggil decideUpsert untuk setiap baris
+// yang kuncinya sudah ada.
+//
+//   kunci baru                          -> insert
+//   existing adjusted/refunded, masuk
+//   status lain                         -> skip   (koreksi tidak ditimpa data biasa)
+//   existing finalized, masuk estimated -> skip   (angka final tidak turun lagi)
+//   isi sama (angka, mata uang, status,
+//   metrik, dimensi, properti)          -> unchanged (webhook terkirim ulang, impor ulang)
+//   selain itu                          -> update (trigger DB menyimpan versi lama)
+import { addDays } from './dates'
+import { compareDecimal, multiply } from './decimal'
+import type { LedgerInput, LedgerStatus } from './types'
+
+export interface ExistingEntry {
+  status: LedgerStatus
+  grossAmount: string
+  currency: string
+  metrics: Record<string, unknown>
+  dimensions: Record<string, unknown>
+  propertyId: string | null
+}
+
+export type UpsertDecision =
+  | { action: 'insert' }
+  | { action: 'update' }
+  | { action: 'unchanged' }
+  | { action: 'skip'; reason: string }
+
+export function decideUpsert(existing: ExistingEntry | null, incoming: LedgerInput, incomingPropertyId: string | null): UpsertDecision {
+  if (!existing) return { action: 'insert' }
+  // Koreksi/refund hanya dibandingkan dengan data berstatus sama (mis.
+  // baris refund dari file yang diimpor ulang); data biasa tidak menimpanya.
+  if ((existing.status === 'adjusted' || existing.status === 'refunded') && incoming.status !== existing.status) {
+    return { action: 'skip', reason: 'entri koreksi/refund tidak ditimpa data berstatus lain' }
+  }
+  if (existing.status === 'finalized' && incoming.status === 'estimated') {
+    return { action: 'skip', reason: 'angka sudah final; data sementara diabaikan' }
+  }
+  const same =
+    compareDecimal(existing.grossAmount, incoming.grossAmount) === 0 &&
+    existing.currency === incoming.currency &&
+    existing.status === incoming.status &&
+    sameRecord(existing.metrics, incoming.metrics ?? {}) &&
+    sameRecord(existing.dimensions, incoming.dimensions ?? {}) &&
+    existing.propertyId === incomingPropertyId
+  return same ? { action: 'unchanged' } : { action: 'update' }
+}
+
+/** Perbandingan object datar (metrik/dimensi); angka dibandingkan sebagai nilai. */
+function sameRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+  for (const key of keys) {
+    const x = a[key]
+    const y = b[key]
+    if (typeof x === 'number' && typeof y === 'number') {
+      if (Math.abs(x - y) > 1e-9) return false
+    } else if (x !== y) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Konversi ke mata uang utama: round(gross x rate, 2). Mata uang sama ->
+ * kurs 1. Kurs null (belum ada) -> keduanya null; entri tetap tersimpan
+ * dan tampil sebagai "belum dikonversi".
+ */
+export function normalizeAmount(grossAmount: string, currency: string, baseCurrency: string, rate: string | null): { fxRate: string | null; normalized: string | null } {
+  if (currency === baseCurrency) return { fxRate: '1', normalized: multiply(grossAmount, '1', 2) }
+  if (rate === null) return { fxRate: null, normalized: null }
+  return { fxRate: rate, normalized: multiply(grossAmount, rate, 2) }
+}
+
+/** Domain dari laporan/URL -> bentuk revenue_properties.domain (huruf kecil, tanpa skema, port, www.). */
+export function normalizeDomain(value: string | null | undefined): string | null {
+  if (!value) return null
+  let text = value.trim().toLowerCase()
+  if (!text || text === '-') return null
+  text = text.replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split('/')[0]?.split(':')[0] ?? ''
+  text = text.replace(/^www\./, '').replace(/\.$/, '')
+  return /^[a-z0-9.-]+$/.test(text) && text.includes('.') ? text : null
+}
+
+/** Status final per jendela lookback: tanggal lebih tua dari `lookbackDays` hari = final. */
+export function statusByLookback(reportDate: string, today: string, lookbackDays: number): LedgerStatus {
+  return reportDate < addDays(today, -lookbackDays) ? 'finalized' : 'estimated'
+}
+```
+
+8. Tulis adapter Lynk.id dari dokumentasi resminya (koleksi Postman "Lynk Webhook"). Hanya ada satu event, `payment.received`, dan tanda tangan `X-Lynk-Signature` adalah SHA-256 dari `grandTotal + refId + message_id + merchant key`. Bandingkan dengan `timingSafeEqual`. Tidak ada event refund, jadi refund dicatat manual:
+
+`packages/core/src/revenue/adapters/lynk.ts`
+
+```ts
+// Adapter webhook Lynk.id (push). Kontrak dari dokumentasi resmi "Lynk
+// Webhook" (Postman, dibaca 22 Nov 2026):
+//   - POST application/json, satu event: payment.received
+//   - header X-Lynk-Signature = sha256_hex(amount + refId + message_id + merchantKey)
+//     dengan amount = data.message_data.totals.grandTotal (nominal bersih
+//     yang diterima penjual, IDR) sebagai teks
+//   - tidak ada event refund/pembatalan; refund dicatat manual di admin
+//
+// Idempotensi: kunci = lynk:<refId>:sale. Pengiriman ulang event yang sama
+// (atau message_id berbeda untuk order yang sama) tidak menggandakan saldo.
+import { createHash, timingSafeEqual } from 'node:crypto'
+import { z } from 'zod'
+import { dateInZone, zonedLocalToDate } from '../dates'
+import { toDecimal } from '../decimal'
+import type { LedgerInput } from '../types'
+
+export const LYNK_SIGNATURE_HEADER = 'x-lynk-signature'
+export const LYNK_EVENT_PAYMENT = 'payment.received'
+
+const amount = z.union([z.number(), z.string().regex(/^-?\d+(\.\d+)?$/)])
+
+const itemSchema = z.looseObject({
+  title: z.string().optional(),
+  qty: z.number().optional(),
+  price: z.union([z.number(), z.string()]).optional(),
+  uuid: z.string().optional(),
+})
+
+export const lynkPayloadSchema = z.looseObject({
+  event: z.string().min(1),
+  data: z.looseObject({
+    message_action: z.string().optional(),
+    message_code: z.string().optional(),
+    message_id: z.string().min(1).max(200),
+    message_data: z.looseObject({
+      refId: z.string().min(1).max(200),
+      createdAt: z.string().optional(),
+      items: z.array(itemSchema).optional(),
+      totals: z.looseObject({
+        grandTotal: amount,
+        totalPrice: amount.optional(),
+        totalAddon: amount.optional(),
+        totalItem: z.number().optional(),
+        convenienceFee: amount.optional(),
+        discount: amount.optional(),
+        affiliate: amount.optional(),
+        totalShipping: amount.optional(),
+      }),
+    }),
+  }),
+})
+
+export type LynkPayload = z.infer<typeof lynkPayloadSchema>
+
+/** Teks amount untuk tanda tangan: grandTotal apa adanya seperti di JSON (72000 -> "72000"). */
+function amountText(value: number | string): string {
+  return typeof value === 'number' ? String(value) : value
+}
+
+export function lynkSignature(payload: LynkPayload, merchantKey: string): string {
+  const data = payload.data
+  const text = amountText(data.message_data.totals.grandTotal) + data.message_data.refId + data.message_id + merchantKey
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/** Bandingkan tanda tangan dengan waktu konstan; header kosong/salah format = tidak sah. */
+export function verifyLynkSignature(payload: LynkPayload, header: string | null | undefined, merchantKey: string): boolean {
+  if (!header || !merchantKey) return false
+  const received = header.trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(received)) return false
+  return timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(lynkSignature(payload, merchantKey), 'hex'))
+}
+
+export type LynkParseResult =
+  | { kind: 'invalid'; error: string }
+  | { kind: 'ok'; payload: LynkPayload }
+
+/** Body mentah -> payload tervalidasi (bentuk saja; tanda tangan diperiksa terpisah). */
+export function parseLynkBody(raw: string): LynkParseResult {
+  let json: unknown
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    return { kind: 'invalid', error: 'body bukan JSON' }
+  }
+  const parsed = lynkPayloadSchema.safeParse(json)
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]
+    return { kind: 'invalid', error: `payload tidak sesuai: ${issue?.path.join('.') ?? ''} ${issue?.message ?? ''}`.trim() }
+  }
+  return { kind: 'ok', payload: parsed.data }
+}
+
+export type LynkLedgerResult =
+  | { kind: 'entry'; entry: LedgerInput }
+  | { kind: 'ignored'; reason: string }
+
+const num = (v: number | string | undefined): number | undefined => (v === undefined ? undefined : Number(v))
+
+/**
+ * Event -> entri ledger. Event selain payment.received, atau
+ * message_action selain SUCCESS, diabaikan (dicatat, tidak masuk ledger).
+ */
+export function lynkToLedger(payload: LynkPayload, options: { timeZone: string; now: Date }): LynkLedgerResult {
+  if (payload.event !== LYNK_EVENT_PAYMENT) return { kind: 'ignored', reason: `event ${payload.event} tidak dipakai` }
+  const data = payload.data
+  if (data.message_action && data.message_action.toUpperCase() !== 'SUCCESS') {
+    return { kind: 'ignored', reason: `message_action ${data.message_action}` }
+  }
+  const order = data.message_data
+  const occurredAt = (order.createdAt ? zonedLocalToDate(order.createdAt, options.timeZone) : null) ?? options.now
+  const items = order.items ?? []
+  const titles = items.map((i) => i.title).filter((t): t is string => Boolean(t))
+  const totals = order.totals
+  const metrics: Record<string, number> = { orders: 1 }
+  const put = (key: string, value: number | undefined) => {
+    if (value !== undefined && Number.isFinite(value)) metrics[key] = value
+  }
+  put('items', totals.totalItem ?? items.reduce((n, i) => n + (i.qty ?? 1), 0))
+  put('totalPrice', num(totals.totalPrice))
+  put('totalAddon', num(totals.totalAddon))
+  put('convenienceFee', num(totals.convenienceFee))
+  put('discount', num(totals.discount))
+  put('affiliate', num(totals.affiliate))
+  put('shipping', num(totals.totalShipping))
+
+  return {
+    kind: 'entry',
+    entry: {
+      idempotencyKey: `lynk:${order.refId}:sale`,
+      externalId: order.refId,
+      occurredAt,
+      reportDate: dateInZone(occurredAt, options.timeZone),
+      grossAmount: toDecimal(totals.grandTotal),
+      currency: 'IDR',
+      status: 'finalized',
+      metrics,
+      dimensions: titles[0] ? { product: titles[0].slice(0, 200) } : {},
+      description: titles.length ? titles.join(', ').slice(0, 500) : `Order ${order.refId}`,
+      rawPayload: payload,
+    },
+  }
+}
+
+/** Contoh event untuk tombol uji di admin dan data contoh; bentuk sama dengan dokumentasi. */
+export function sampleLynkPayload(input: { refId: string; messageId: string; grandTotal: number; title: string; price: number; createdAt: string; customerName?: string }): LynkPayload {
+  return {
+    event: LYNK_EVENT_PAYMENT,
+    data: {
+      message_action: 'SUCCESS',
+      message_code: '0',
+      message_id: input.messageId,
+      message_desc: '',
+      message_title: '',
+      message_data: {
+        createdAt: input.createdAt,
+        customer: { email: 'pembeli@contoh.test', name: input.customerName ?? 'Pembeli Contoh', phone: '080000000000' },
+        items: [{ addons: [], appointment_data: {}, pafId: '', price: input.price, public_affiliate_content: {}, qty: 1, stock: 1, title: input.title, uuid: `item-${input.refId}` }],
+        refId: input.refId,
+        shippingAddress: '',
+        shippingInfo: '',
+        totals: {
+          affiliate: 0,
+          convenienceFee: input.grandTotal - input.price,
+          discount: 0,
+          grandTotal: input.grandTotal,
+          totalAddon: 0,
+          totalItem: 1,
+          totalPrice: input.price,
+          totalShipping: 0,
+        },
+      },
+    },
+  }
+}
+```
+
+9. Tulis adapter Adsterra dari spec OpenAPI resminya (`docs.adsterratools.com/docs/public/v3/publishers-api.yml`): header `X-API-Key`, `/stats.json` dengan `group_by[]` maksimal tiga, dan `domain` di statistik berupa ID yang diterjemahkan lewat `/domains.json`. Kunci idempotensi memuat tanggal dan semua dimensi:
+
+`packages/core/src/revenue/adapters/adsterra.ts`
+
+```ts
+// Adapter Adsterra Publisher API v3 (pull terjadwal). Kontrak dari spec
+// OpenAPI resmi (docs.adsterratools.com/docs/public/v3/publishers-api.yml,
+// dibaca 22 Nov 2026):
+//   base     https://api3.adsterratools.com/publisher
+//   auth     header X-API-Key
+//   GET /domains.json                 -> { items: [{ id, title }] }
+//   GET /stats.json?start_date&finish_date&group_by[]=date&group_by[]=domain&group_by[]=placement
+//            (group_by 1-3 nilai dari date|domain|placement|country|placement_sub_id;
+//             rentang maksimum 366 hari)
+//            -> { items: [{ date, domain, placement, impression, clicks, ctr, cpm, revenue }], itemCount, dbDateTime }
+// Revenue dalam USD. Kolom `domain` di stats adalah ID domain; nama domain
+// diambil dari /domains.json lalu dipetakan ke revenue_properties.
+//
+// Idempotensi: kunci = adsterra:<tanggal>:<domain>:<placement>[:<country>][:<sub_id>]
+// sehingga sync ulang (lookback) meng-upsert baris yang sama, dan angka yang
+// direvisi Adsterra tercatat sebagai revisi.
+import { z } from 'zod'
+import { daysBetween } from '../dates'
+import { toDecimal } from '../decimal'
+import { normalizeDomain, statusByLookback } from '../ledger-rules'
+import { RevenueError, type LedgerInput } from '../types'
+
+export const ADSTERRA_BASE_URL = 'https://api3.adsterratools.com/publisher'
+export const ADSTERRA_GROUPS = ['date', 'domain', 'placement', 'country', 'placement_sub_id'] as const
+export type AdsterraGroup = (typeof ADSTERRA_GROUPS)[number]
+
+export type FetchLike = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<{
+  ok: boolean
+  status: number
+  json(): Promise<unknown>
+  text(): Promise<string>
+}>
+
+const id = z.union([z.number(), z.string()]).transform((v) => String(v))
+const numeric = z.union([z.number(), z.string()]).transform((v) => Number(v)).pipe(z.number().finite())
+
+const statsSchema = z.looseObject({
+  items: z.array(z.looseObject({
+    date: z.string().optional(),
+    domain: id.optional(),
+    placement: id.optional(),
+    country: z.string().optional(),
+    placement_sub_id: z.string().optional(),
+    impression: numeric.optional(),
+    clicks: numeric.optional(),
+    ctr: numeric.optional(),
+    cpm: numeric.optional(),
+    revenue: z.union([z.number(), z.string()]),
+  })),
+  itemCount: z.number().optional(),
+  dbDateTime: z.string().optional(),
+  dbLastUpdateTime: z.string().optional(),
+})
+
+const domainsSchema = z.looseObject({
+  items: z.array(z.looseObject({ id, title: z.string() })),
+})
+
+export type AdsterraStats = z.infer<typeof statsSchema>
+
+export interface AdsterraClientOptions {
+  token: string
+  fetch: FetchLike
+  baseUrl?: string
+  timeoutMs?: number
+}
+
+export function createAdsterraClient(options: AdsterraClientOptions) {
+  const base = (options.baseUrl ?? ADSTERRA_BASE_URL).replace(/\/$/, '')
+
+  async function get(path: string, query: URLSearchParams | null): Promise<unknown> {
+    const url = `${base}${path}${query ? `?${query.toString()}` : ''}`
+    const res = await options.fetch(url, {
+      headers: { 'X-API-Key': options.token, Accept: 'application/json' },
+      signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+    })
+    if (!res.ok) {
+      const body = (await res.text().catch(() => '')).slice(0, 300)
+      const hint = res.status === 401 || res.status === 403 ? ' (periksa API token Adsterra)' : res.status === 422 ? ' (parameter ditolak)' : ''
+      throw new RevenueError(`Adsterra ${path} HTTP ${res.status}${hint}: ${body}`)
+    }
+    return res.json()
+  }
+
+  return {
+    async domains(): Promise<Map<string, string>> {
+      const parsed = domainsSchema.safeParse(await get('/domains.json', null))
+      if (!parsed.success) throw new RevenueError('respons /domains.json Adsterra tidak dikenali')
+      return new Map(parsed.data.items.map((d) => [d.id, d.title]))
+    },
+
+    async stats(input: { start: string; finish: string; groupBy: AdsterraGroup[] }): Promise<AdsterraStats> {
+      if (input.groupBy.length < 1 || input.groupBy.length > 3) throw new RevenueError('group_by Adsterra harus 1-3 nilai')
+      if (daysBetween(input.start, input.finish) > 365) throw new RevenueError('rentang Adsterra maksimum 366 hari')
+      const query = new URLSearchParams({ start_date: input.start, finish_date: input.finish })
+      for (const g of input.groupBy) query.append('group_by[]', g)
+      const parsed = statsSchema.safeParse(await get('/stats.json', query))
+      if (!parsed.success) throw new RevenueError(`respons /stats.json Adsterra tidak dikenali: ${parsed.error.issues[0]?.message ?? ''}`)
+      return parsed.data
+    },
+  }
+}
+
+export interface AdsterraMapOptions {
+  today: string
+  lookbackDays: number
+  currency: string
+  /** id domain Adsterra -> nama domain (dari /domains.json). */
+  domains: Map<string, string>
+}
+
+/**
+ * Baris stats (group_by date + dimensi) -> entri ledger. Baris tanpa tanggal
+ * ditolak: ledger selalu per hari. Tanggal lebih tua dari jendela lookback
+ * = finalized; di dalam jendela = estimated (Adsterra masih bisa merevisi).
+ */
+export function adsterraToLedger(stats: AdsterraStats, options: AdsterraMapOptions): LedgerInput[] {
+  return stats.items.map((row) => {
+    if (!row.date) throw new RevenueError('baris stats Adsterra tanpa tanggal; group_by wajib memuat date')
+    const domainTitle = row.domain ? (options.domains.get(row.domain) ?? null) : null
+    const dimensions: Record<string, string> = {}
+    if (row.domain) dimensions['domain_id'] = row.domain
+    if (domainTitle) dimensions['domain'] = domainTitle
+    if (row.placement) dimensions['placement'] = row.placement
+    if (row.country) dimensions['country'] = row.country
+    if (row.placement_sub_id) dimensions['sub_id'] = row.placement_sub_id
+    const metrics: Record<string, number> = {}
+    if (row.impression !== undefined) metrics['impressions'] = row.impression
+    if (row.clicks !== undefined) metrics['clicks'] = row.clicks
+    if (row.ctr !== undefined) metrics['ctr'] = row.ctr
+    if (row.cpm !== undefined) metrics['cpm'] = row.cpm
+    const keyParts = ['adsterra', row.date, row.domain ?? '-', row.placement ?? '-']
+    if (row.country) keyParts.push(row.country)
+    if (row.placement_sub_id) keyParts.push(`sub:${row.placement_sub_id}`)
+    return {
+      idempotencyKey: keyParts.join(':'),
+      reportDate: row.date,
+      grossAmount: toDecimal(row.revenue),
+      currency: options.currency,
+      status: statusByLookback(row.date, options.today, options.lookbackDays),
+      metrics,
+      dimensions,
+      description: domainTitle ? `Adsterra ${domainTitle}` : 'Adsterra',
+      propertyDomain: normalizeDomain(domainTitle),
+    }
+  })
+}
+```
+
+10. Tulis adapter AdSense Management API v2. Posisi kolom dibaca dari `headers`, bukan diasumsikan, dan mata uang diambil dari header bertipe `METRIC_CURRENCY`. Laporan yang `totalMatchedRows`-nya lebih besar dari jumlah baris dianggap gagal, bukan disimpan sebagian:
+
+`packages/core/src/revenue/adapters/adsense.ts`
+
+```ts
+// Adapter Google AdSense Management API v2 (pull terjadwal, OAuth 2.0
+// scope https://www.googleapis.com/auth/adsense.readonly).
+//
+//   token   POST https://oauth2.googleapis.com/token (grant_type=refresh_token)
+//   laporan GET  https://adsense.googleapis.com/v2/{account}/reports:generate
+//           dateRange=CUSTOM, startDate.year/month/day, endDate.*,
+//           dimensions=DATE&dimensions=DOMAIN_NAME, metrics=..., reportingTimeZone,
+//           currencyCode (opsional), limit
+//   respons { totalMatchedRows, headers: [{ name, type, currencyCode? }],
+//             rows: [{ cells: [{ value }] }], warnings?, startDate, endDate }
+//
+// Parsing digerakkan header: posisi kolom dibaca dari `headers`, bukan
+// diasumsikan, sehingga urutan metrik yang berbeda tetap terbaca benar.
+// Mata uang diambil dari header bertipe METRIC_CURRENCY. Bila
+// totalMatchedRows lebih besar dari jumlah baris, laporan terpotong ->
+// gagal dengan pesan jelas (tidak pernah menyimpan data yang terpotong diam-diam).
+//
+// Status: earnings AdSense final setelah bulan ditutup (awal bulan
+// berikutnya). Bulan berjalan = estimated; bulan lalu = finalized mulai
+// tanggal `finalizeDay` bulan ini; lebih lama = finalized.
+import { z } from 'zod'
+import { monthIndex } from '../dates'
+import { toDecimal } from '../decimal'
+import { normalizeDomain } from '../ledger-rules'
+import { RevenueError, type LedgerInput, type LedgerStatus } from '../types'
+import type { FetchLike } from './adsterra'
+
+export const ADSENSE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+export const ADSENSE_API_BASE = 'https://adsense.googleapis.com/v2'
+export const ADSENSE_SCOPE = 'https://www.googleapis.com/auth/adsense.readonly'
+
+export const ADSENSE_METRICS = [
+  'ESTIMATED_EARNINGS',
+  'PAGE_VIEWS',
+  'CLICKS',
+  'IMPRESSIONS',
+  'PAGE_VIEWS_RPM',
+  'IMPRESSIONS_RPM',
+  'COST_PER_CLICK',
+] as const
+
+/** Nama metrik AdSense -> kunci metrics_json. */
+const METRIC_KEYS: Record<string, string> = {
+  PAGE_VIEWS: 'pageViews',
+  CLICKS: 'clicks',
+  IMPRESSIONS: 'impressions',
+  PAGE_VIEWS_RPM: 'pageViewsRpm',
+  IMPRESSIONS_RPM: 'impressionsRpm',
+  COST_PER_CLICK: 'cpc',
+  AD_REQUESTS: 'adRequests',
+  PAGE_VIEWS_CTR: 'pageViewsCtr',
+}
+
+const reportSchema = z.looseObject({
+  totalMatchedRows: z.union([z.string(), z.number()]).optional(),
+  headers: z.array(z.looseObject({ name: z.string(), type: z.string(), currencyCode: z.string().optional() })),
+  rows: z.array(z.looseObject({ cells: z.array(z.looseObject({ value: z.string().optional() })) })).optional(),
+  warnings: z.array(z.string()).optional(),
+})
+
+export type AdsenseReport = z.infer<typeof reportSchema>
+
+export interface ParsedAdsenseReport {
+  /** Satu object per baris: nama header -> nilai teks. */
+  rows: Record<string, string>[]
+  /** Mata uang metrik uang (dari header METRIC_CURRENCY). */
+  currencyCode: string | null
+  totalMatchedRows: number
+  warnings: string[]
+}
+
+/** Parse respons reports:generate berdasarkan header; lempar bila terpotong atau tanpa kolom wajib. */
+export function parseAdsenseReport(json: unknown): ParsedAdsenseReport {
+  const parsed = reportSchema.safeParse(json)
+  if (!parsed.success) throw new RevenueError('respons laporan AdSense tidak dikenali (headers/rows)')
+  const report = parsed.data
+  const names = report.headers.map((h) => h.name)
+  const currencyHeaders = report.headers.filter((h) => h.type === 'METRIC_CURRENCY' && h.currencyCode)
+  const currencies = new Set(currencyHeaders.map((h) => h.currencyCode))
+  if (currencies.size > 1) throw new RevenueError(`laporan AdSense memuat lebih dari satu mata uang: ${[...currencies].join(', ')}`)
+  const rows = (report.rows ?? []).map((row, index) => {
+    if (row.cells.length !== names.length) {
+      throw new RevenueError(`baris ${index + 1} laporan AdSense punya ${row.cells.length} sel, header ${names.length}`)
+    }
+    const out: Record<string, string> = {}
+    names.forEach((name, i) => {
+      out[name] = row.cells[i]?.value ?? ''
+    })
+    return out
+  })
+  const total = Number(report.totalMatchedRows ?? rows.length)
+  if (Number.isFinite(total) && total > rows.length) {
+    throw new RevenueError(`laporan AdSense terpotong: ${rows.length} dari ${total} baris. Perkecil rentang tanggal atau naikkan limit.`)
+  }
+  return { rows, currencyCode: currencyHeaders[0]?.currencyCode ?? null, totalMatchedRows: total, warnings: report.warnings ?? [] }
+}
+
+export function adsenseStatus(reportDate: string, today: string, finalizeDay: number): LedgerStatus {
+  const age = monthIndex(today) - monthIndex(reportDate)
+  if (age >= 2) return 'finalized'
+  if (age === 1) return Number(today.slice(8, 10)) >= finalizeDay ? 'finalized' : 'estimated'
+  return 'estimated'
+}
+
+/**
+ * Baris laporan -> entri ledger (satu per tanggal per domain). Kolom wajib:
+ * DATE dan ESTIMATED_EARNINGS. DOMAIN_NAME opsional (tanpa itu: per akun).
+ */
+export function adsenseToLedger(report: ParsedAdsenseReport, options: { today: string; finalizeDay: number; fallbackCurrency: string }): LedgerInput[] {
+  if (report.rows.length && !('DATE' in (report.rows[0] ?? {}))) throw new RevenueError('laporan AdSense tanpa dimensi DATE')
+  if (report.rows.length && !('ESTIMATED_EARNINGS' in (report.rows[0] ?? {}))) throw new RevenueError('laporan AdSense tanpa metrik ESTIMATED_EARNINGS')
+  const currency = report.currencyCode ?? options.fallbackCurrency
+  return report.rows.map((row) => {
+    const date = row['DATE'] ?? ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new RevenueError(`tanggal AdSense tidak dikenali: "${date}"`)
+    const domain = row['DOMAIN_NAME'] || null
+    const metrics: Record<string, number> = {}
+    for (const [name, key] of Object.entries(METRIC_KEYS)) {
+      const value = row[name]
+      if (value !== undefined && value !== '' && Number.isFinite(Number(value))) metrics[key] = Number(value)
+    }
+    return {
+      idempotencyKey: `adsense:${date}:${domain ?? '-'}`,
+      reportDate: date,
+      grossAmount: toDecimal(row['ESTIMATED_EARNINGS'] || '0'),
+      currency,
+      status: adsenseStatus(date, options.today, options.finalizeDay),
+      metrics,
+      dimensions: (domain ? { domain } : {}) as Record<string, string>,
+      description: domain ? `AdSense ${domain}` : 'AdSense',
+      propertyDomain: normalizeDomain(domain),
+    }
+  })
+}
+
+export interface AdsenseClientOptions {
+  clientId: string
+  clientSecret: string
+  refreshToken: string
+  fetch: FetchLike
+  timeoutMs?: number
+}
+
+export function createAdsenseClient(options: AdsenseClientOptions) {
+  const timeout = () => AbortSignal.timeout(options.timeoutMs ?? 30_000)
+
+  async function accessToken(): Promise<string> {
+    const res = await options.fetch(ADSENSE_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: options.clientId,
+        client_secret: options.clientSecret,
+        refresh_token: options.refreshToken,
+      }).toString(),
+      signal: timeout(),
+    })
+    const body = (await res.json().catch(() => ({}))) as { access_token?: string; error?: string; error_description?: string }
+    if (!res.ok || !body.access_token) {
+      throw new RevenueError(`OAuth AdSense gagal (HTTP ${res.status}): ${body.error ?? ''} ${body.error_description ?? ''}`.trim())
+    }
+    return body.access_token
+  }
+
+  return {
+    accessToken,
+
+    async generateReport(input: { account: string; start: string; end: string; dimensions: string[]; metrics: readonly string[]; reportingTimeZone?: string; currencyCode?: string | null; limit?: number }): Promise<unknown> {
+      if (!/^accounts\/pub-\d+$/.test(input.account)) throw new RevenueError('accountId AdSense harus berbentuk accounts/pub-XXXXXXXX')
+      const token = await accessToken()
+      const query = new URLSearchParams({ dateRange: 'CUSTOM' })
+      const [sy, sm, sd] = input.start.split('-')
+      const [ey, em, ed] = input.end.split('-')
+      query.set('startDate.year', String(Number(sy)))
+      query.set('startDate.month', String(Number(sm)))
+      query.set('startDate.day', String(Number(sd)))
+      query.set('endDate.year', String(Number(ey)))
+      query.set('endDate.month', String(Number(em)))
+      query.set('endDate.day', String(Number(ed)))
+      for (const d of input.dimensions) query.append('dimensions', d)
+      for (const m of input.metrics) query.append('metrics', m)
+      query.set('reportingTimeZone', input.reportingTimeZone ?? 'ACCOUNT_TIME_ZONE')
+      if (input.currencyCode) query.set('currencyCode', input.currencyCode)
+      query.set('limit', String(input.limit ?? 10_000))
+      query.append('orderBy', '+DATE')
+      const res = await options.fetch(`${ADSENSE_API_BASE}/${input.account}/reports:generate?${query.toString()}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: timeout(),
+      })
+      if (!res.ok) {
+        const text = (await res.text().catch(() => '')).slice(0, 300)
+        throw new RevenueError(`laporan AdSense HTTP ${res.status}: ${text}`)
+      }
+      return res.json()
+    },
+  }
+}
+```
+
+11. Tulis mode mock. Yang diganti hanya jaringan: fetch palsu menjawab dengan bentuk respons asli Adsterra, Google OAuth, dan AdSense, sehingga parsing dan penulisan ledger tetap lewat kode produksi. Angkanya deterministik, dan `revision` mensimulasikan revisi oleh jaringan iklan:
+
+`packages/core/src/revenue/adapters/mock-fetch.ts`
+
+```ts
+// Mode mock/sandbox (REVENUE_MOCK=true atau config.mock=true per sumber):
+// fetch palsu yang menjawab dengan BENTUK RESPONS ASLI Adsterra dan Google
+// AdSense. Adapter, parsing header, normalisasi kurs, dan UI berjalan lewat
+// kode yang sama dengan produksi; hanya jaringan yang diganti.
+//
+// Angka deterministik: hash dari (tanggal, dimensi) + pola mingguan + tren
+// naik pelan, sehingga sync ulang menghasilkan angka yang sama (unchanged),
+// kecuali `revision` dinaikkan untuk mensimulasikan revisi angka.
+import { ADSENSE_TOKEN_URL } from './adsense'
+import type { FetchLike } from './adsterra'
+import { addDays, eachDate } from '../dates'
+
+export interface MockSite {
+  /** Nama domain seperti di laporan jaringan iklan. */
+  domain: string
+  /** Skala trafik relatif (1 = sedang). */
+  weight: number
+}
+
+export const DEFAULT_MOCK_SITES: MockSite[] = [
+  { domain: 'beritakonoha.id', weight: 1.4 },
+  { domain: 'kabartekno.id', weight: 1 },
+  { domain: 'resepnusantara.com', weight: 0.7 },
+  { domain: 'cekbansos.info', weight: 0.45 },
+]
+
+export interface MockOptions {
+  sites?: MockSite[]
+  /** Naikkan untuk mensimulasikan revisi angka oleh jaringan iklan. */
+  revision?: number
+}
+
+/** Hash FNV-1a -> [0, 1). */
+export function unitHash(text: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0) / 0x1_0000_0000
+}
+
+/** Faktor trafik harian: akhir pekan lebih rendah, tren naik ~0,15%/hari. */
+function dayFactor(date: string): number {
+  const dow = new Date(`${date}T00:00:00Z`).getUTCDay()
+  const weekly = dow === 0 || dow === 6 ? 0.78 : 1
+  const days = (Date.parse(`${date}T00:00:00Z`) - Date.parse('2026-01-01T00:00:00Z')) / 86_400_000
+  return weekly * (1 + days * 0.0015)
+}
+
+const round = (n: number, digits: number) => Number(n.toFixed(digits))
+
+function json(status: number, body: unknown) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  }
+}
+
+const PLACEMENTS = [
+  { suffix: 1, kind: 'banner', cpmBase: 0.42, share: 0.62 },
+  { suffix: 2, kind: 'popunder', cpmBase: 1.35, share: 0.38 },
+]
+
+function adsterraDomainId(domain: string): number {
+  return 11_000_000 + Math.floor(unitHash(`adsterra-domain:${domain}`) * 900_000)
+}
+
+export function createMockRevenueFetch(options: MockOptions = {}): FetchLike {
+  const sites = options.sites ?? DEFAULT_MOCK_SITES
+  const revision = options.revision ?? 0
+
+  return async (input, init) => {
+    const url = new URL(input)
+    const headers = Object.fromEntries(Object.entries(init?.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]))
+
+    // ---------- Adsterra ----------
+    if (url.hostname === 'api3.adsterratools.com') {
+      if (!headers['x-api-key']) return json(401, { message: 'Invalid token provided' })
+      if (url.pathname.endsWith('/domains.json')) {
+        const items = sites.map((s) => ({ id: adsterraDomainId(s.domain), title: s.domain }))
+        return json(200, { items, itemCount: items.length })
+      }
+      if (url.pathname.endsWith('/stats.json')) {
+        const start = url.searchParams.get('start_date') ?? ''
+        const finish = url.searchParams.get('finish_date') ?? ''
+        const groups = url.searchParams.getAll('group_by[]')
+        if (!start || !finish || start > finish) return json(422, { message: 'invalid date range' })
+        const items: Record<string, unknown>[] = []
+        for (const date of eachDate(start, finish)) {
+          for (const site of sites) {
+            for (const p of PLACEMENTS) {
+              const noise = unitHash(`adsterra:${date}:${site.domain}:${p.suffix}:${revision}`)
+              const impression = Math.round(site.weight * dayFactor(date) * p.share * (5200 + noise * 2600))
+              const cpm = round(p.cpmBase * (0.85 + noise * 0.3), 3)
+              const revenue = round((impression / 1000) * cpm, 3)
+              const clicks = Math.round(impression * (p.kind === 'banner' ? 0.006 : 0.0012) * (0.7 + noise * 0.6))
+              items.push({
+                date,
+                domain: adsterraDomainId(site.domain),
+                placement: adsterraDomainId(site.domain) * 10 + p.suffix,
+                impression,
+                clicks,
+                ctr: impression ? round((clicks / impression) * 100, 3) : 0,
+                cpm,
+                revenue,
+              })
+            }
+          }
+        }
+        // group_by tanpa placement: jumlahkan per tanggal + domain (seperti API).
+        const rows = groups.includes('placement') ? items : collapse(items, groups)
+        return json(200, { items: rows, itemCount: rows.length, dbLastUpdateTime: `${finish} 23:00:00`, dbDateTime: `${finish} 23:00:05` })
+      }
+      return json(404, { message: 'not found' })
+    }
+
+    // ---------- Google OAuth + AdSense ----------
+    if (input === ADSENSE_TOKEN_URL) {
+      const body = new URLSearchParams(init?.body ?? '')
+      if (!body.get('refresh_token')) return json(400, { error: 'invalid_request', error_description: 'refresh_token kosong' })
+      return json(200, { access_token: 'mock-access-token', expires_in: 3599, scope: 'https://www.googleapis.com/auth/adsense.readonly', token_type: 'Bearer' })
+    }
+    if (url.hostname === 'adsense.googleapis.com' && url.pathname.endsWith('/reports:generate')) {
+      if (headers['authorization'] !== 'Bearer mock-access-token') return json(401, { error: { code: 401, message: 'Request had invalid authentication credentials.' } })
+      const p = (prefix: string) => `${url.searchParams.get(`${prefix}.year`)}-${String(url.searchParams.get(`${prefix}.month`)).padStart(2, '0')}-${String(url.searchParams.get(`${prefix}.day`)).padStart(2, '0')}`
+      const start = p('startDate')
+      const end = p('endDate')
+      const dims = url.searchParams.getAll('dimensions')
+      const metrics = url.searchParams.getAll('metrics')
+      const currency = url.searchParams.get('currencyCode') ?? 'USD'
+      const headersOut = [
+        ...dims.map((name) => ({ name, type: 'DIMENSION' })),
+        ...metrics.map((name) => metricHeader(name, currency)),
+      ]
+      const rows: { cells: { value: string }[] }[] = []
+      for (const date of eachDate(start, end)) {
+        for (const site of dims.includes('DOMAIN_NAME') ? sites : [{ domain: '', weight: sites.reduce((n, s) => n + s.weight, 0) }]) {
+          const noise = unitHash(`adsense:${date}:${site.domain}:${revision}`)
+          const pageViews = Math.round(site.weight * dayFactor(date) * (3800 + noise * 1500))
+          const impressions = Math.round(pageViews * 2.6)
+          const clicks = Math.round(impressions * 0.009 * (0.75 + noise * 0.5))
+          const cpc = round(0.035 + noise * 0.03, 2)
+          const earnings = round(clicks * cpc + impressions * 0.00011, 2)
+          const values: Record<string, string> = {
+            DATE: date,
+            DOMAIN_NAME: site.domain,
+            ESTIMATED_EARNINGS: earnings.toFixed(2),
+            PAGE_VIEWS: String(pageViews),
+            CLICKS: String(clicks),
+            IMPRESSIONS: String(impressions),
+            PAGE_VIEWS_RPM: pageViews ? ((earnings / pageViews) * 1000).toFixed(2) : '0',
+            IMPRESSIONS_RPM: impressions ? ((earnings / impressions) * 1000).toFixed(2) : '0',
+            COST_PER_CLICK: clicks ? (earnings / clicks).toFixed(2) : '0',
+          }
+          rows.push({ cells: headersOut.map((h) => ({ value: values[h.name] ?? '' })) })
+        }
+      }
+      return json(200, {
+        totalMatchedRows: String(rows.length),
+        headers: headersOut,
+        rows,
+        totals: { cells: [] },
+        averages: { cells: [] },
+        startDate: dateObj(start),
+        endDate: dateObj(addDays(end, 0)),
+      })
+    }
+
+    return json(404, { message: `mock tidak mengenal ${url.hostname}${url.pathname}` })
+  }
+}
+
+function metricHeader(name: string, currency: string) {
+  if (name === 'ESTIMATED_EARNINGS' || name.endsWith('_RPM') || name === 'COST_PER_CLICK') return { name, type: 'METRIC_CURRENCY', currencyCode: currency }
+  if (name.endsWith('_CTR')) return { name, type: 'METRIC_RATIO' }
+  return { name, type: 'METRIC_TALLY' }
+}
+
+function dateObj(date: string) {
+  const [year, month, day] = date.split('-').map(Number)
+  return { year, month, day }
+}
+
+function collapse(items: Record<string, unknown>[], groups: string[]): Record<string, unknown>[] {
+  const map = new Map<string, Record<string, unknown>>()
+  for (const item of items) {
+    const key = groups.map((g) => String(item[g])).join('|')
+    const acc = map.get(key)
+    if (!acc) {
+      map.set(key, { ...Object.fromEntries(groups.map((g) => [g, item[g]])), impression: item['impression'], clicks: item['clicks'], revenue: item['revenue'] })
+      continue
+    }
+    acc['impression'] = Number(acc['impression']) + Number(item['impression'])
+    acc['clicks'] = Number(acc['clicks']) + Number(item['clicks'])
+    acc['revenue'] = round(Number(acc['revenue']) + Number(item['revenue']), 3)
+  }
+  return [...map.values()].map((r) => ({
+    ...r,
+    ctr: Number(r['impression']) ? round((Number(r['clicks']) / Number(r['impression'])) * 100, 3) : 0,
+    cpm: Number(r['impression']) ? round((Number(r['revenue']) / Number(r['impression'])) * 1000, 3) : 0,
+  }))
+}
+```
+
+12. Siapkan kerangka otomasi browser, tanpa scraper sungguhan. Jalur ini paling rapuh dan menyangkut Terms of Service, jadi nonaktif secara bawaan, punya batas waktu, dan hanya menghasilkan `LedgerInput` seperti adapter lain:
+
+`packages/core/src/revenue/adapters/headless.ts`
+
+```ts
+// Runner otomasi browser / headless scraper (opsional, terisolasi).
+//
+// Jalur ini paling rapuh (perubahan UI, 2FA, CAPTCHA) dan menyangkut Terms
+// of Service platform, jadi:
+//   - NONAKTIF secara bawaan: butuh REVENUE_HEADLESS_ENABLED=true DAN
+//     config.enabled=true di sumbernya; tanpa keduanya, sync ditolak;
+//   - tidak ada scraper sungguhan di repo. Scraper didaftarkan lewat
+//     registerHeadlessScraper (mis. modul terpisah yang memakai Playwright),
+//     dan hanya menghasilkan LedgerInput, sama seperti adapter API;
+//   - setiap jalan tercatat di revenue_sync_runs (channel headless) dengan
+//     batas waktu, sehingga kegagalannya tidak memengaruhi sumber lain.
+import type { LedgerInput } from '../types'
+import { RevenueError } from '../types'
+import { eachDate } from '../dates'
+import { unitHash } from './mock-fetch'
+
+export interface HeadlessContext {
+  range: { start: string; end: string }
+  config: Record<string, unknown>
+  /** Kredensial dari env (awalan credentials_env), tidak pernah dari database. */
+  env: (name: string) => string | undefined
+  log: (message: string) => void
+  signal: AbortSignal
+}
+
+export interface HeadlessScraper {
+  key: string
+  description: string
+  run(ctx: HeadlessContext): Promise<LedgerInput[]>
+}
+
+const registry = new Map<string, HeadlessScraper>()
+
+export function registerHeadlessScraper(scraper: HeadlessScraper): void {
+  registry.set(scraper.key, scraper)
+}
+
+export function getHeadlessScraper(key: string): HeadlessScraper | undefined {
+  return registry.get(key)
+}
+
+export function listHeadlessScrapers(): { key: string; description: string }[] {
+  return [...registry.values()].map(({ key, description }) => ({ key, description }))
+}
+
+export function headlessGloballyEnabled(env: Record<string, string | undefined>): boolean {
+  return env['REVENUE_HEADLESS_ENABLED'] === 'true'
+}
+
+/** Jalankan scraper dengan batas waktu; galat apa pun menjadi RevenueError yang tercatat di log run. */
+export async function runHeadless(scraper: HeadlessScraper, ctx: Omit<HeadlessContext, 'signal'>, timeoutMs = 120_000): Promise<LedgerInput[]> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await Promise.race([
+      scraper.run({ ...ctx, signal: controller.signal }),
+      new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new RevenueError(`scraper ${scraper.key} melewati batas waktu ${timeoutMs / 1000} detik`)))),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// Scraper contoh untuk mode mock: tidak membuka browser, hanya
+// menghasilkan angka deterministik agar alur headless bisa diuji ujung ke ujung.
+registerHeadlessScraper({
+  key: 'mock',
+  description: 'Contoh (tanpa browser): angka deterministik untuk menguji alur headless',
+  async run(ctx) {
+    ctx.log(`mock: ${ctx.range.start} s.d. ${ctx.range.end}`)
+    return eachDate(ctx.range.start, ctx.range.end).map((date) => ({
+      idempotencyKey: `headless-mock:${date}`,
+      reportDate: date,
+      grossAmount: (5 + unitHash(`headless:${date}`) * 3).toFixed(2),
+      currency: 'USD',
+      status: 'estimated' as const,
+      description: 'Contoh headless',
+    }))
+  },
+})
+```
+
+13. Tulis parser impor tanpa dependensi baru. CSV mendeteksi pemisah dan memahami tanda kutip, `.xlsx` dibaca langsung dari zip (zlib) dan XML worksheet pertama, dan JSON boleh berupa array atau object dengan `items`. Setelah itu tulis mapping kolom: validasi per baris dengan nomor baris, kunci dari kolom ID atau hash isi baris, status `failed` dilewati, dan `refunded` menjadi nominal negatif:
+
+`packages/core/src/revenue/import/parse-file.ts`
+
+```ts
+// Parser file impor pendapatan: CSV, Excel (.xlsx), JSON -> tabel teks
+// { headers, rows }. Tanpa dependensi tambahan: CSV mengikuti RFC 4180
+// (pemisah dideteksi), XLSX dibaca langsung dari zip (zlib) dan XML
+// worksheet pertama, JSON berupa array object (atau { items | data | rows }).
+//
+// Semua nilai dijadikan teks; tafsiran (tanggal, angka) dikerjakan mapping.
+import { inflateRawSync } from 'node:zlib'
+import { RevenueError } from '../types'
+
+export const MAX_IMPORT_BYTES = 5 * 1024 * 1024
+export const MAX_IMPORT_ROWS = 20_000
+const MAX_COLUMNS = 100
+
+export type ImportFormat = 'csv' | 'xlsx' | 'json'
+
+export interface ParsedTable {
+  format: ImportFormat
+  headers: string[]
+  rows: Record<string, string>[]
+}
+
+export function detectFormat(fileName: string, bytes: Uint8Array): ImportFormat {
+  const ext = fileName.toLowerCase().split('.').pop() ?? ''
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    if (ext === 'xls') throw new RevenueError('format .xls lama tidak didukung; simpan ulang sebagai .xlsx atau CSV')
+    return 'xlsx'
+  }
+  if (ext === 'json') return 'json'
+  if (ext === 'csv' || ext === 'txt' || ext === 'tsv') return 'csv'
+  if (ext === 'xlsx') throw new RevenueError('file .xlsx rusak (bukan arsip zip)')
+  const head = new TextDecoder().decode(bytes.slice(0, 64)).trimStart()
+  return head.startsWith('[') || head.startsWith('{') ? 'json' : 'csv'
+}
+
+export function parseImportFile(fileName: string, bytes: Uint8Array): ParsedTable {
+  if (bytes.length === 0) throw new RevenueError('file kosong')
+  if (bytes.length > MAX_IMPORT_BYTES) throw new RevenueError(`file lebih dari ${MAX_IMPORT_BYTES / 1024 / 1024} MB`)
+  const format = detectFormat(fileName, bytes)
+  const table = format === 'xlsx' ? parseXlsx(bytes) : format === 'json' ? parseJsonTable(decodeText(bytes)) : parseCsv(decodeText(bytes))
+  if (table.headers.length === 0) throw new RevenueError('tidak ada kolom yang terbaca')
+  if (table.rows.length > MAX_IMPORT_ROWS) throw new RevenueError(`lebih dari ${MAX_IMPORT_ROWS} baris; pecah file menjadi beberapa bagian`)
+  return { format, ...table }
+}
+
+function decodeText(bytes: Uint8Array): string {
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+/** Nama kolom unik dan tidak kosong ('', 'Amount', 'Amount' -> 'Kolom 1', 'Amount', 'Amount (2)'). */
+function uniqueHeaders(raw: string[]): string[] {
+  const seen = new Map<string, number>()
+  return raw.slice(0, MAX_COLUMNS).map((h, i) => {
+    const base = h.trim() || `Kolom ${i + 1}`
+    const n = (seen.get(base) ?? 0) + 1
+    seen.set(base, n)
+    return n === 1 ? base : `${base} (${n})`
+  })
+}
+
+function toRows(headers: string[], matrix: string[][]): Record<string, string>[] {
+  return matrix
+    .filter((cells) => cells.some((c) => c.trim() !== ''))
+    .map((cells) => Object.fromEntries(headers.map((h, i) => [h, (cells[i] ?? '').trim()])))
+}
+
+// ---------- CSV --------------------------------------------------------
+
+export function detectDelimiter(text: string): string {
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
+  const candidates = [',', ';', '\t', '|']
+  let best = ','
+  let bestCount = 0
+  for (const c of candidates) {
+    // Hitung di luar tanda kutip.
+    let count = 0
+    let quoted = false
+    for (const ch of firstLine) {
+      if (ch === '"') quoted = !quoted
+      else if (ch === c && !quoted) count++
+    }
+    if (count > bestCount) {
+      best = c
+      bestCount = count
+    }
+  }
+  return best
+}
+
+export function parseCsv(text: string, delimiter = detectDelimiter(text)): { headers: string[]; rows: Record<string, string>[] } {
+  const matrix: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"'
+          i++
+        } else {
+          quoted = false
+        }
+      } else {
+        field += ch
+      }
+      continue
+    }
+    if (ch === '"' && field === '') {
+      quoted = true
+    } else if (ch === delimiter) {
+      row.push(field)
+      field = ''
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      row.push(field)
+      matrix.push(row)
+      row = []
+      field = ''
+      if (matrix.length > MAX_IMPORT_ROWS + 1) break
+    } else {
+      field += ch
+    }
+  }
+  if (quoted) throw new RevenueError('CSV rusak: tanda kutip tidak ditutup')
+  if (field !== '' || row.length) {
+    row.push(field)
+    matrix.push(row)
+  }
+  const [head, ...body] = matrix
+  const headers = uniqueHeaders(head ?? [])
+  return { headers, rows: toRows(headers, body) }
+}
+
+// ---------- JSON -------------------------------------------------------
+
+export function parseJsonTable(text: string): { headers: string[]; rows: Record<string, string>[] } {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new RevenueError('JSON tidak valid')
+  }
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>
+    data = obj['items'] ?? obj['data'] ?? obj['rows'] ?? obj['results']
+  }
+  if (!Array.isArray(data)) throw new RevenueError('JSON harus berupa array object, atau object dengan items/data/rows')
+  const objects = data.filter((d): d is Record<string, unknown> => Boolean(d) && typeof d === 'object' && !Array.isArray(d))
+  if (objects.length !== data.length) throw new RevenueError('setiap elemen JSON harus object')
+  const flat = objects.map((o) => flatten(o))
+  const headerSet: string[] = []
+  for (const o of flat) for (const k of Object.keys(o)) if (!headerSet.includes(k)) headerSet.push(k)
+  const headers = headerSet.slice(0, MAX_COLUMNS)
+  return { headers, rows: flat.map((o) => Object.fromEntries(headers.map((h) => [h, o[h] ?? '']))) }
+}
+
+/** { a: { b: 1 } } -> { 'a.b': '1' }; array -> teks JSON. */
+function flatten(obj: Record<string, unknown>, prefix = '', out: Record<string, string> = {}): Record<string, string> {
+  for (const [key, value] of Object.entries(obj)) {
+    const name = prefix ? `${prefix}.${key}` : key
+    if (value && typeof value === 'object' && !Array.isArray(value) && prefix.split('.').length < 3) flatten(value as Record<string, unknown>, name, out)
+    else out[name] = value === null || value === undefined ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+  }
+  return out
+}
+
+// ---------- XLSX -------------------------------------------------------
+
+interface ZipEntry {
+  name: string
+  method: number
+  compressedSize: number
+  localOffset: number
+}
+
+/** Daftar entri zip dari central directory. */
+function zipEntries(bytes: Uint8Array): ZipEntry[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let eocd = -1
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65_557); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i
+      break
+    }
+  }
+  if (eocd < 0) throw new RevenueError('file .xlsx rusak (zip tanpa central directory)')
+  const count = view.getUint16(eocd + 10, true)
+  let offset = view.getUint32(eocd + 16, true)
+  const entries: ZipEntry[] = []
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(offset, true) !== 0x02014b50) throw new RevenueError('file .xlsx rusak (central directory)')
+    const method = view.getUint16(offset + 10, true)
+    const compressedSize = view.getUint32(offset + 20, true)
+    const nameLen = view.getUint16(offset + 28, true)
+    const extraLen = view.getUint16(offset + 30, true)
+    const commentLen = view.getUint16(offset + 32, true)
+    const localOffset = view.getUint32(offset + 42, true)
+    const name = new TextDecoder().decode(bytes.slice(offset + 46, offset + 46 + nameLen))
+    entries.push({ name, method, compressedSize, localOffset })
+    offset += 46 + nameLen + extraLen + commentLen
+  }
+  return entries
+}
+
+function readZipEntry(bytes: Uint8Array, entry: ZipEntry): string {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (view.getUint32(entry.localOffset, true) !== 0x04034b50) throw new RevenueError('file .xlsx rusak (local header)')
+  const nameLen = view.getUint16(entry.localOffset + 26, true)
+  const extraLen = view.getUint16(entry.localOffset + 28, true)
+  const start = entry.localOffset + 30 + nameLen + extraLen
+  const data = bytes.slice(start, start + entry.compressedSize)
+  let out: Uint8Array
+  if (entry.method === 0) out = data
+  else if (entry.method === 8) out = inflateRawSync(data, { maxOutputLength: 64 * 1024 * 1024 })
+  else throw new RevenueError(`kompresi zip metode ${entry.method} tidak didukung`)
+  return new TextDecoder().decode(out)
+}
+
+const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
+
+function xmlText(raw: string): string {
+  return raw.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, e: string) => {
+    if (e[0] === '#') return String.fromCodePoint(e[1]?.toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10))
+    return XML_ENTITIES[e.toLowerCase()] ?? ''
+  })
+}
+
+/** Teks semua <t> di dalam potongan XML (rich text = beberapa run). */
+function joinedText(fragment: string): string {
+  return [...fragment.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((m) => xmlText(m[1] ?? '')).join('')
+}
+
+function columnIndex(ref: string): number {
+  const letters = /^[A-Z]+/.exec(ref)?.[0] ?? 'A'
+  let n = 0
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64)
+  return n - 1
+}
+
+export function parseXlsx(bytes: Uint8Array): { headers: string[]; rows: Record<string, string>[] } {
+  const entries = zipEntries(bytes)
+  const find = (name: string) => entries.find((e) => e.name === name)
+  // Worksheet pertama menurut workbook.xml + relasinya; fallback sheet1.xml.
+  let sheetPath = 'xl/worksheets/sheet1.xml'
+  const workbook = find('xl/workbook.xml')
+  const rels = find('xl/_rels/workbook.xml.rels')
+  if (workbook && rels) {
+    const firstSheet = /<sheet\b[^>]*\br:id="([^"]+)"/.exec(readZipEntry(bytes, workbook))?.[1]
+    const target = firstSheet ? new RegExp(`<Relationship\\b[^>]*Id="${firstSheet}"[^>]*Target="([^"]+)"`).exec(readZipEntry(bytes, rels))?.[1]
+      ?? new RegExp(`<Relationship\\b[^>]*Target="([^"]+)"[^>]*Id="${firstSheet}"`).exec(readZipEntry(bytes, rels))?.[1] : undefined
+    if (target) sheetPath = target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\//, '')}`
+  }
+  const sheet = find(sheetPath)
+  if (!sheet) throw new RevenueError('worksheet pertama tidak ditemukan di file .xlsx')
+  const sharedEntry = find('xl/sharedStrings.xml')
+  const shared = sharedEntry ? [...readZipEntry(bytes, sharedEntry).matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => joinedText(m[1] ?? '')) : []
+
+  const matrix: string[][] = []
+  for (const rowMatch of readZipEntry(bytes, sheet).matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+    const cells: string[] = []
+    let next = 0
+    for (const cell of (rowMatch[1] ?? '').matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const attrs = cell[1] ?? ''
+      const inner = cell[2] ?? ''
+      const ref = /\br="([A-Z]+\d+)"/.exec(attrs)?.[1]
+      const index = ref ? columnIndex(ref) : next
+      next = index + 1
+      if (index >= MAX_COLUMNS) continue
+      const type = /\bt="([^"]+)"/.exec(attrs)?.[1] ?? 'n'
+      const v = /<v>([\s\S]*?)<\/v>/.exec(inner)?.[1]
+      cells[index] = type === 's' ? (shared[Number(v)] ?? '')
+        : type === 'inlineStr' ? joinedText(inner)
+        : type === 'b' ? (v === '1' ? 'TRUE' : 'FALSE')
+        : v !== undefined ? xmlText(v) : ''
+    }
+    matrix.push(Array.from({ length: cells.length }, (_, i) => cells[i] ?? ''))
+    if (matrix.length > MAX_IMPORT_ROWS + 1) break
+  }
+  const [head, ...body] = matrix
+  const headers = uniqueHeaders(head ?? [])
+  return { headers, rows: toRows(headers, body) }
+}
+```
+
+`packages/core/src/revenue/import/mapping.ts`
+
+```ts
+// Column mapping impor: kolom file -> field ledger, validasi per baris, dan
+// kunci idempotensi. Hasilnya dipakai dua kali dengan data yang sama:
+// preview (tanpa menulis) dan commit (upsert ke ledger).
+//
+// Kunci idempotensi:
+//   kolom ID dipetakan -> <sumber>:ext:<id>     (impor ulang = update/unchanged)
+//   tanpa kolom ID     -> <sumber>:row:<hash isi baris>
+// Baris yang kuncinya sama di dalam satu file dilewati ("duplikat di file").
+import { createHash } from 'node:crypto'
+import { z } from 'zod'
+import { isIsoDate } from '../dates'
+import { DecimalError, negate, parseAmountText } from '../decimal'
+import { normalizeDomain } from '../ledger-rules'
+import type { LedgerInput, LedgerStatus } from '../types'
+
+const column = z.string().min(1).max(200)
+
+export const importMappingSchema = z.object({
+  date: column,
+  amount: column,
+  currency: column.nullish(),
+  /** Mata uang tetap bila file tidak punya kolom mata uang. */
+  currencyFixed: z.string().regex(/^[A-Z]{3}$/).nullish(),
+  externalId: column.nullish(),
+  status: column.nullish(),
+  statusFixed: z.enum(['estimated', 'finalized']).default('finalized'),
+  description: column.nullish(),
+  /** Kolom berisi domain/URL situs, dipetakan ke revenue_properties. */
+  property: column.nullish(),
+  /** Properti tetap untuk semua baris (id revenue_properties). */
+  propertyId: z.uuid().nullish(),
+  metrics: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,40}$/), column).default({}),
+  dimensions: z.array(column).max(10).default([]),
+  dateFormat: z.enum(['auto', 'YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY']).default('auto'),
+  decimalSeparator: z.enum(['.', ',']).default('.'),
+})
+
+export type ImportMapping = z.infer<typeof importMappingSchema>
+export type ImportMappingInput = z.input<typeof importMappingSchema>
+
+export interface RowError {
+  /** Nomor baris data (1 = baris pertama setelah header). */
+  row: number
+  message: string
+}
+
+export interface MappedRow {
+  row: number
+  entry: LedgerInput
+}
+
+export interface MappingResult {
+  entries: MappedRow[]
+  errors: RowError[]
+  /** Baris yang dilewati karena duplikat di dalam file yang sama. */
+  duplicates: RowError[]
+}
+
+const SYNONYMS: Record<'date' | 'amount' | 'currency' | 'externalId' | 'status' | 'description' | 'property', string[]> = {
+  date: ['date', 'tanggal', 'tgl', 'report date', 'day', 'created at', 'created_at', 'paid at', 'paid_at', 'transaction date', 'waktu'],
+  amount: ['amount', 'revenue', 'earnings', 'estimated earnings', 'net', 'net amount', 'total', 'grand total', 'pendapatan', 'nominal', 'jumlah', 'income', 'payout'],
+  currency: ['currency', 'mata uang', 'currency code', 'ccy'],
+  externalId: ['id', 'payment id', 'payment_id', 'order id', 'order_id', 'transaction id', 'transaction_id', 'ref id', 'refid', 'invoice', 'receipt id'],
+  status: ['status', 'payment status', 'state'],
+  description: ['description', 'deskripsi', 'product', 'produk', 'item', 'title', 'judul', 'plan', 'keterangan', 'note'],
+  property: ['domain', 'site', 'website', 'situs', 'web', 'url'],
+}
+
+/** Usulan mapping dari nama kolom (dicocokkan tanpa huruf besar/kecil dan tanda baca). */
+export function suggestMapping(headers: string[]): Partial<ImportMappingInput> {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const pick = (names: string[]) => {
+    const wanted = names.map(norm)
+    return headers.find((h) => wanted.includes(norm(h))) ?? headers.find((h) => wanted.some((w) => norm(h).includes(w))) ?? null
+  }
+  const out: Partial<ImportMappingInput> = {}
+  for (const [field, names] of Object.entries(SYNONYMS)) {
+    const found = pick(names)
+    if (found) (out as Record<string, string>)[field] = found
+  }
+  // Kolom yang sama tidak boleh dipakai dua field (mis. "Amount" untuk ID).
+  if (out.externalId && (out.externalId === out.amount || out.externalId === out.date)) delete out.externalId
+  if (out.description && out.description === out.status) delete out.description
+  const metricCandidates: Record<string, string[]> = { impressions: ['impressions', 'impression', 'tayangan'], clicks: ['clicks', 'klik'], pageViews: ['page views', 'pageviews'], orders: ['orders', 'order count', 'quantity', 'qty'] }
+  const metrics: Record<string, string> = {}
+  for (const [key, names] of Object.entries(metricCandidates)) {
+    const found = headers.find((h) => names.includes(norm(h)))
+    if (found) metrics[key] = found
+  }
+  if (Object.keys(metrics).length) out.metrics = metrics
+  return out
+}
+
+/** Excel menyimpan tanggal sebagai nomor seri (hari sejak 1899-12-30). */
+function excelSerialToDate(serial: number): string {
+  return new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86_400_000).toISOString().slice(0, 10)
+}
+
+export function parseDateText(raw: string, format: ImportMapping['dateFormat']): string | null {
+  const text = raw.trim()
+  if (!text) return null
+  if (/^\d{5}(\.\d+)?$/.test(text)) {
+    const d = excelSerialToDate(Number(text))
+    return isIsoDate(d) ? d : null
+  }
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/.exec(text)
+  if (iso && (format === 'auto' || format === 'YYYY-MM-DD')) {
+    const d = `${iso[1]}-${iso[2]?.padStart(2, '0')}-${iso[3]?.padStart(2, '0')}`
+    return isIsoDate(d) ? d : null
+  }
+  const slash = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[ T].*)?$/.exec(text)
+  if (slash) {
+    const [a, b, y] = [slash[1] ?? '', slash[2] ?? '', slash[3] ?? '']
+    let day: string
+    let month: string
+    if (format === 'MM/DD/YYYY') [month, day] = [a, b]
+    else if (format === 'DD/MM/YYYY') [day, month] = [a, b]
+    else if (Number(a) > 12) [day, month] = [a, b]
+    else if (Number(b) > 12) [month, day] = [a, b]
+    else return null // ambigu (mis. 03/04/2026): pilih format tanggal secara eksplisit
+    const d = `${y}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+    return isIsoDate(d) ? d : null
+  }
+  return null
+}
+
+const STATUS_WORDS: Record<string, LedgerStatus | 'skip'> = {
+  final: 'finalized', finalized: 'finalized', paid: 'finalized', completed: 'finalized', complete: 'finalized', success: 'finalized', succeeded: 'finalized', settled: 'finalized', lunas: 'finalized', berhasil: 'finalized', sukses: 'finalized',
+  estimated: 'estimated', pending: 'estimated', processing: 'estimated', sementara: 'estimated',
+  refunded: 'refunded', refund: 'refunded', chargeback: 'refunded', disputed: 'refunded',
+  failed: 'skip', canceled: 'skip', cancelled: 'skip', void: 'skip', gagal: 'skip', batal: 'skip',
+}
+
+export function mapImportRows(rows: Record<string, string>[], mapping: ImportMapping, options: { sourceCode: string; defaultCurrency: string }): MappingResult {
+  const entries: MappedRow[] = []
+  const errors: RowError[] = []
+  const duplicates: RowError[] = []
+  const seen = new Map<string, number>()
+
+  rows.forEach((row, i) => {
+    const rowNumber = i + 1
+    const get = (col: string | null | undefined) => (col ? (row[col] ?? '').trim() : '')
+    const problems: string[] = []
+
+    const reportDate = parseDateText(get(mapping.date), mapping.dateFormat)
+    if (!reportDate) problems.push(`tanggal "${get(mapping.date)}" tidak dikenali`)
+
+    let amount: string | null = null
+    try {
+      amount = parseAmountText(get(mapping.amount), mapping.decimalSeparator)
+    } catch (e) {
+      problems.push(e instanceof DecimalError ? `nominal: ${e.message}` : 'nominal tidak valid')
+    }
+
+    const currency = (get(mapping.currency) || mapping.currencyFixed || options.defaultCurrency).toUpperCase()
+    if (!/^[A-Z]{3}$/.test(currency)) problems.push(`mata uang "${currency}" bukan kode ISO 3 huruf`)
+
+    let status: LedgerStatus = mapping.statusFixed
+    const statusText = get(mapping.status).toLowerCase()
+    if (statusText) {
+      const mapped = STATUS_WORDS[statusText]
+      if (mapped === 'skip') {
+        duplicates.push({ row: rowNumber, message: `status "${statusText}" bukan pemasukan; dilewati` })
+        return
+      }
+      if (!mapped) problems.push(`status "${statusText}" tidak dikenal`)
+      else status = mapped
+    }
+
+    if (problems.length || !reportDate || amount === null) {
+      errors.push({ row: rowNumber, message: problems.join('; ') })
+      return
+    }
+
+    if (status === 'refunded' && !amount.startsWith('-')) amount = amount === '0' ? amount : negate(amount)
+    if (status === 'refunded' && amount === '0') {
+      errors.push({ row: rowNumber, message: 'refund dengan nominal 0' })
+      return
+    }
+
+    const metrics: Record<string, number> = {}
+    for (const [key, col] of Object.entries(mapping.metrics)) {
+      const raw = get(col)
+      if (!raw) continue
+      const n = Number(raw.replace(/[\s,]/g, ''))
+      if (Number.isFinite(n)) metrics[key] = n
+    }
+    const dimensions: Record<string, string> = {}
+    for (const col of mapping.dimensions) {
+      const v = get(col)
+      if (v) dimensions[col.slice(0, 60)] = v.slice(0, 200)
+    }
+    const propertyText = get(mapping.property)
+    if (propertyText) dimensions['domain'] = propertyText.slice(0, 200)
+    const description = get(mapping.description).slice(0, 500) || null
+    const externalId = get(mapping.externalId).slice(0, 200) || null
+
+    const key = externalId
+      ? `${options.sourceCode}:ext:${externalId}${status === 'refunded' ? ':refund' : ''}`
+      : `${options.sourceCode}:row:${createHash('sha256').update(JSON.stringify([reportDate, amount, currency, status, description, propertyText, dimensions])).digest('hex').slice(0, 32)}`
+
+    const first = seen.get(key)
+    if (first !== undefined) {
+      duplicates.push({ row: rowNumber, message: `duplikat baris ${first} di file yang sama` })
+      return
+    }
+    seen.set(key, rowNumber)
+
+    entries.push({
+      row: rowNumber,
+      entry: {
+        idempotencyKey: key,
+        externalId,
+        reportDate,
+        grossAmount: amount,
+        currency,
+        status,
+        metrics,
+        dimensions,
+        description,
+        note: status === 'refunded' ? 'Refund dari file impor' : null,
+        rawPayload: row,
+        propertyDomain: normalizeDomain(propertyText),
+        propertyId: mapping.propertyId ?? null,
+      },
+    })
+  })
+
+  return { entries, errors, duplicates }
+}
+```
+
+14. Tulis repository, satu-satunya jalan tulis ke ledger. `upsertWithin` memakai savepoint per baris, sehingga satu baris gagal tidak membatalkan yang lain. Input manual dan refund memakai `insertOnly`, karena nomor invoice yang sama tidak boleh menimpa entri lama. Bug ini tertangkap test: tanpa `insertOnly`, upsert menimpa entri lama sebelum menolak. Config sumber divalidasi per connector, dan kunci yang mirip rahasia ditolak:
+
+`packages/core/src/revenue/revenue-repository.ts`
+
+```ts
+// Repository pendapatan (ADR-011): satu-satunya jalan tulis ke ledger.
+// Semua jalur ingest memanggil upsertEntries, sehingga aturan idempotensi,
+// normalisasi kurs, dan pemetaan situs sama untuk webhook, API, impor file,
+// headless, dan input manual.
+//
+// Data pendapatan global (tanpa site_id). Hak akses (hanya superadmin)
+// diperiksa lapisan API, bukan di sini.
+import {
+  and, count, desc, eq, inArray, revenueFxRates, revenueImportBatches, revenueLedgerEntries, revenueProperties, revenueSources,
+  revenueSyncRuns, revenueWebhookEvents, sites, sql, type Database, type PgColumn, type SQL,
+} from '@framework/db'
+import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { conflict, editorErrorMap, EditorError, invalid, notFound, type FieldIssue } from '../editor/errors'
+import type { RepositoryContext } from '../repositories/types'
+import { isIsoDate } from './dates'
+import { compareDecimal, negate, sum, toDecimal } from './decimal'
+import { decideUpsert, normalizeAmount, normalizeDomain, type ExistingEntry } from './ledger-rules'
+import { emptyCounts, type ChannelType, type Connector, type LedgerInput, type LedgerStatus, type UpsertCounts, type UpsertOutcome } from './types'
+
+type Tx = Parameters<Parameters<Database['transaction']>[0]>[0]
+type Executor = Database | Tx
+
+export interface RevenueSettings {
+  /** Mata uang utama dashboard (REVENUE_BASE_CURRENCY), default IDR. */
+  baseCurrency: string
+  /** Zona waktu "hari ini" dashboard (REVENUE_TIMEZONE), default Asia/Jakarta. */
+  timeZone: string
+}
+
+export const DEFAULT_REVENUE_SETTINGS: RevenueSettings = { baseCurrency: 'IDR', timeZone: 'Asia/Jakarta' }
+
+export interface RevenueSource {
+  id: string
+  code: string
+  name: string
+  connector: Connector
+  integrationType: ChannelType
+  isActive: boolean
+  defaultCurrency: string
+  config: Record<string, unknown>
+  credentialsEnv: string | null
+  syncIntervalMinutes: number | null
+  lookbackDays: number
+  sortOrder: number
+  lastSyncAt: Date | null
+  lastSyncStatus: string | null
+  updatedAt: Date
+}
+
+export interface RevenueProperty {
+  id: string
+  code: string
+  name: string
+  domain: string | null
+  siteId: string | null
+  siteCode: string | null
+  status: 'ACTIVE' | 'ARCHIVED'
+  updatedAt: Date
+}
+
+export interface UpsertLink {
+  channel: ChannelType
+  syncRunId?: string | null
+  importBatchId?: string | null
+  webhookEventId?: string | null
+  createdBy?: string | null
+  /** Hanya boleh menambah (input manual, refund): kunci yang sudah ada tidak pernah ditimpa. */
+  insertOnly?: boolean
+}
+
+export interface UpsertResultRow {
+  key: string
+  outcome: UpsertOutcome | 'failed'
+  entryId: string | null
+  reason?: string
+}
+
+export interface UpsertResult {
+  counts: UpsertCounts
+  results: UpsertResultRow[]
+}
+
+const sourceColumns = {
+  id: revenueSources.id,
+  code: revenueSources.code,
+  name: revenueSources.name,
+  connector: revenueSources.connector,
+  integrationType: revenueSources.integrationType,
+  isActive: revenueSources.isActive,
+  defaultCurrency: revenueSources.defaultCurrency,
+  config: revenueSources.config,
+  credentialsEnv: revenueSources.credentialsEnv,
+  syncIntervalMinutes: revenueSources.syncIntervalMinutes,
+  lookbackDays: revenueSources.lookbackDays,
+  sortOrder: revenueSources.sortOrder,
+  lastSyncAt: revenueSources.lastSyncAt,
+  lastSyncStatus: revenueSources.lastSyncStatus,
+  updatedAt: revenueSources.updatedAt,
+}
+
+/** Kolom timestamp dibandingkan pada presisi milidetik (Date JavaScript), bukan mikrodetik PostgreSQL. */
+function sameMillis(column: PgColumn, iso: string): SQL {
+  return sql`date_trunc('milliseconds', ${column}) = ${new Date(iso).toISOString()}::timestamptz`
+}
+
+/** Hasil db.execute (node-postgres) -> baris. */
+export async function queryRows<T>(db: Executor, query: SQL): Promise<T[]> {
+  const result = (await db.execute(query)) as unknown as { rows: T[] }
+  return result.rows
+}
+
+function zodIssues(error: z.ZodError): FieldIssue[] {
+  return error.issues.map((i) => ({ field: i.path.join('.'), message: i.message }))
+}
+
+function parseInput<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
+  const parsed = schema.safeParse(input, { error: editorErrorMap })
+  if (!parsed.success) throw invalid(zodIssues(parsed.error))
+  return parsed.data
+}
+
+// ---------- config sumber (non-rahasia) ------------------------------
+
+const SECRET_KEY = /(token|secret|password|passwd|api[_-]?key|merchant[_-]?key|refresh)/i
+
+const configSchemas: Record<Connector, z.ZodType<Record<string, unknown>>> = {
+  adsense: z.object({
+    accountId: z.string().regex(/^accounts\/pub-\d+$/, 'bentuk: accounts/pub-XXXXXXXX').optional(),
+    reportingTimeZone: z.enum(['ACCOUNT_TIME_ZONE', 'GOOGLE_TIME_ZONE']).default('ACCOUNT_TIME_ZONE'),
+    finalizeDay: z.number().int().min(1).max(28).default(7),
+    currencyCode: z.string().regex(/^[A-Z]{3}$/).optional(),
+    withDomain: z.boolean().default(true),
+    mock: z.boolean().optional(),
+  }).strict(),
+  adsterra: z.object({
+    groupBy: z.array(z.enum(['domain', 'placement', 'country', 'placement_sub_id'])).max(2).default(['domain', 'placement']),
+    mock: z.boolean().optional(),
+  }).strict(),
+  lynk: z.object({
+    timezone: z.string().min(1).default('Asia/Jakarta'),
+    propertyId: z.uuid().optional(),
+  }).strict(),
+  headless: z.object({
+    enabled: z.boolean().default(false),
+    scraper: z.string().min(1).max(60).default('mock'),
+  }).strict(),
+  generic: z.object({}).strict(),
+}
+
+export function validateSourceConfig(connector: Connector, config: unknown): Record<string, unknown> {
+  if (config && typeof config === 'object') {
+    const secret = Object.keys(config).find((k) => SECRET_KEY.test(k))
+    if (secret) throw invalid([{ field: `config.${secret}`, message: 'Rahasia tidak boleh disimpan di database; isi lewat env server' }])
+  }
+  const parsed = configSchemas[connector].safeParse(config ?? {}, { error: editorErrorMap })
+  if (!parsed.success) throw invalid(parsed.error.issues.map((i) => ({ field: `config.${i.path.join('.')}`, message: i.message })))
+  return parsed.data
+}
+
+const sourceUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  isActive: z.boolean().optional(),
+  defaultCurrency: z.string().regex(/^[A-Z]{3}$/, 'Kode mata uang 3 huruf').optional(),
+  syncIntervalMinutes: z.number().int().min(15).max(10080).nullable().optional(),
+  lookbackDays: z.number().int().min(0).max(60).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+  updatedAt: z.string().min(1),
+})
+
+const sourceCreateSchema = z.object({
+  code: z.string().regex(/^[a-z0-9]+(_[a-z0-9]+)*$/, 'huruf kecil, angka, garis bawah').max(40),
+  name: z.string().trim().min(1).max(80),
+  connector: z.enum(['generic', 'headless']),
+  integrationType: z.enum(['csv_import', 'manual', 'headless']),
+  defaultCurrency: z.string().regex(/^[A-Z]{3}$/, 'Kode mata uang 3 huruf'),
+})
+
+const propertySchema = z.object({
+  code: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'huruf kecil, angka, tanda hubung').max(50),
+  name: z.string().trim().min(1).max(120),
+  domain: z.string().trim().max(253).nullish(),
+  siteId: z.uuid().nullish(),
+  status: z.enum(['ACTIVE', 'ARCHIVED']).default('ACTIVE'),
+})
+
+const fxSchema = z.object({
+  currency: z.string().regex(/^[A-Z]{3}$/, 'Kode mata uang 3 huruf'),
+  rateDate: z.string().refine(isIsoDate, 'Tanggal YYYY-MM-DD'),
+  rate: z.string().regex(/^\d+(\.\d{1,8})?$/, 'Angka positif, maksimal 8 desimal').refine((v) => compareDecimal(v, '0') > 0, 'Harus lebih dari 0'),
+  note: z.string().trim().max(200).nullish(),
+})
+
+const manualSchema = z.object({
+  sourceCode: z.string().min(1),
+  propertyId: z.uuid().nullish(),
+  reportDate: z.string().refine(isIsoDate, 'Tanggal YYYY-MM-DD'),
+  amount: z.string().trim().regex(/^-?\d+(\.\d{1,6})?$/, 'Angka dengan titik desimal, mis. 1500000 atau 12.50'),
+  currency: z.string().regex(/^[A-Z]{3}$/, 'Kode mata uang 3 huruf'),
+  kind: z.enum(['income', 'adjustment']),
+  status: z.enum(['estimated', 'finalized']).default('finalized'),
+  description: z.string().trim().min(1).max(500),
+  note: z.string().trim().max(2000).nullish(),
+  externalId: z.string().trim().max(200).nullish(),
+  adjustsEntryId: z.uuid().nullish(),
+})
+
+const refundSchema = z.object({
+  amount: z.string().trim().regex(/^\d+(\.\d{1,6})?$/, 'Angka positif').nullish(),
+  note: z.string().trim().min(1).max(2000),
+})
+
+export type ManualEntryInput = z.input<typeof manualSchema>
+
+// ---------- repository ---------------------------------------------
+
+export function createRevenueRepository(ctx: RepositoryContext, settings: RevenueSettings = DEFAULT_REVENUE_SETTINGS) {
+  const { db } = ctx
+  const base = settings.baseCurrency
+
+  async function propertyDomainMap(executor: Executor): Promise<Map<string, string>> {
+    const rows = await executor.select({ id: revenueProperties.id, domain: revenueProperties.domain }).from(revenueProperties)
+    return new Map(rows.filter((r) => r.domain).map((r) => [r.domain as string, r.id]))
+  }
+
+  /** Kurs terakhir <= tanggal; '1' untuk mata uang utama; null bila belum ada. */
+  function fxResolver(executor: Executor) {
+    const cache = new Map<string, string | null>()
+    return async (currency: string, date: string): Promise<string | null> => {
+      if (currency === base) return '1'
+      const key = `${currency}|${date}`
+      if (cache.has(key)) return cache.get(key) ?? null
+      const [row] = await executor
+        .select({ rate: revenueFxRates.rateToBase })
+        .from(revenueFxRates)
+        .where(and(eq(revenueFxRates.currency, currency), eq(revenueFxRates.baseCurrency, base), sql`${revenueFxRates.rateDate} <= ${date}`))
+        .orderBy(desc(revenueFxRates.rateDate))
+        .limit(1)
+      const rate = row?.rate ?? null
+      cache.set(key, rate)
+      return rate
+    }
+  }
+
+  function validateEntry(input: LedgerInput): string | null {
+    if (!input.idempotencyKey || input.idempotencyKey.length > 300) return 'idempotency_key kosong atau terlalu panjang'
+    if (!isIsoDate(input.reportDate)) return `tanggal laporan tidak valid: ${input.reportDate}`
+    if (!/^[A-Z]{3}$/.test(input.currency)) return `mata uang tidak valid: ${input.currency}`
+    try {
+      toDecimal(input.grossAmount)
+    } catch {
+      return `nominal tidak valid: ${input.grossAmount}`
+    }
+    if ((input.status === 'adjusted' || input.status === 'refunded') && !input.note?.trim()) return 'koreksi/refund wajib punya alasan'
+    if (input.status === 'refunded' && compareDecimal(input.grossAmount, '0') >= 0) return 'refund harus bernilai negatif'
+    return null
+  }
+
+  /**
+   * Upsert banyak entri dalam transaksi `executor`. Setiap baris memakai
+   * savepoint: satu baris gagal (mis. constraint) tidak membatalkan yang lain.
+   */
+  async function upsertWithin(executor: Tx, source: Pick<RevenueSource, 'id'>, inputs: LedgerInput[], link: UpsertLink): Promise<UpsertResult> {
+    const counts = emptyCounts()
+    const results: UpsertResultRow[] = []
+    const domains = await propertyDomainMap(executor)
+    const fx = fxResolver(executor)
+
+    for (const input of inputs) {
+      const problem = validateEntry(input)
+      if (problem) {
+        counts.failed++
+        results.push({ key: input.idempotencyKey, outcome: 'failed', entryId: null, reason: problem })
+        continue
+      }
+      const grossAmount = toDecimal(input.grossAmount)
+      const propertyId = input.propertyId ?? (input.propertyDomain ? (domains.get(input.propertyDomain) ?? null) : null)
+      const rate = await fx(input.currency, input.reportDate)
+      const { fxRate, normalized } = normalizeAmount(grossAmount, input.currency, base, rate)
+      const values = {
+        propertyId,
+        externalId: input.externalId ?? null,
+        occurredAt: input.occurredAt ?? null,
+        reportDate: input.reportDate,
+        grossAmount,
+        currency: input.currency,
+        fxRateToBase: fxRate,
+        normalizedAmount: normalized,
+        status: input.status,
+        metricsJson: input.metrics ?? {},
+        dimensions: input.dimensions ?? {},
+        description: input.description ?? null,
+        note: input.note ?? null,
+        rawPayload: input.rawPayload === undefined ? null : input.rawPayload,
+        adjustsEntryId: input.adjustsEntryId ?? null,
+        syncRunId: link.syncRunId ?? null,
+        importBatchId: link.importBatchId ?? null,
+        webhookEventId: link.webhookEventId ?? null,
+      }
+      try {
+        const row = await executor.transaction(async (sp) => {
+          const findExisting = async () => {
+            const [found] = await sp
+              .select({
+                id: revenueLedgerEntries.id,
+                status: revenueLedgerEntries.status,
+                grossAmount: revenueLedgerEntries.grossAmount,
+                currency: revenueLedgerEntries.currency,
+                metrics: revenueLedgerEntries.metricsJson,
+                dimensions: revenueLedgerEntries.dimensions,
+                propertyId: revenueLedgerEntries.propertyId,
+              })
+              .from(revenueLedgerEntries)
+              .where(and(eq(revenueLedgerEntries.sourceId, source.id), eq(revenueLedgerEntries.idempotencyKey, input.idempotencyKey)))
+              .limit(1)
+              .for('update')
+            return found
+          }
+          let existing = await findExisting()
+          if (!existing) {
+            const inserted = await sp
+              .insert(revenueLedgerEntries)
+              .values({ ...values, sourceId: source.id, channelType: link.channel, idempotencyKey: input.idempotencyKey, baseCurrency: base, createdBy: link.createdBy ?? null })
+              .onConflictDoNothing()
+              .returning({ id: revenueLedgerEntries.id })
+            if (inserted[0]) return { key: input.idempotencyKey, outcome: 'inserted' as const, entryId: inserted[0].id }
+            existing = await findExisting() // kalah balapan dengan pengiriman paralel
+            if (!existing) throw new Error('entri tidak ditemukan setelah konflik')
+          }
+          if (link.insertOnly) return { key: input.idempotencyKey, outcome: 'skipped' as const, entryId: existing.id, reason: 'kunci sudah ada; entri lama tidak diubah' }
+          const decision = decideUpsert(
+            { ...existing, status: existing.status as LedgerStatus, metrics: existing.metrics as Record<string, unknown>, dimensions: existing.dimensions as Record<string, unknown> } satisfies ExistingEntry,
+            { ...input, grossAmount },
+            propertyId,
+          )
+          if (decision.action === 'skip') return { key: input.idempotencyKey, outcome: 'skipped' as const, entryId: existing.id, reason: decision.reason }
+          if (decision.action === 'unchanged' || decision.action === 'insert') return { key: input.idempotencyKey, outcome: 'unchanged' as const, entryId: existing.id }
+          await sp.update(revenueLedgerEntries).set(values).where(eq(revenueLedgerEntries.id, existing.id))
+          return { key: input.idempotencyKey, outcome: 'updated' as const, entryId: existing.id }
+        })
+        counts[row.outcome]++
+        results.push(row)
+      } catch (error) {
+        counts.failed++
+        results.push({ key: input.idempotencyKey, outcome: 'failed', entryId: null, reason: error instanceof Error ? error.message.slice(0, 300) : 'galat' })
+      }
+    }
+    return { counts, results }
+  }
+
+  /** Tulis entri dari satu sumber dalam satu transaksi (savepoint per baris). */
+  async function upsertEntries(source: Pick<RevenueSource, 'id'>, inputs: LedgerInput[], link: UpsertLink): Promise<UpsertResult> {
+    return db.transaction((tx) => upsertWithin(tx, source, inputs, link))
+  }
+
+  async function getSourceRow(executor: Executor, where: SQL): Promise<RevenueSource | null> {
+    const [row] = await executor.select(sourceColumns).from(revenueSources).where(where).limit(1)
+    return (row as RevenueSource | undefined) ?? null
+  }
+
+  async function requireSource(code: string): Promise<RevenueSource> {
+    const source = await getSourceRow(db, eq(revenueSources.code, code))
+    if (!source) throw notFound('Sumber pendapatan')
+    return source
+  }
+
+  /** Hubungkan entri tanpa properti ke properti berdomain sama (setelah properti dibuat/diubah). */
+  async function linkUnassigned(executor: Executor, propertyId: string, domain: string | null): Promise<number> {
+    if (!domain) return 0
+    const rows = await queryRows<{ id: string }>(executor, sql`
+      UPDATE revenue_ledger_entries SET property_id = ${propertyId}
+       WHERE property_id IS NULL
+         AND regexp_replace(lower(dimensions->>'domain'), '^([a-z][a-z0-9+.-]*://)?(www\\.)?', '') = ${domain}
+      RETURNING id`)
+    return rows.length
+  }
+
+  return {
+    settings,
+
+    // ---------- sumber ----------
+    async listSources(): Promise<RevenueSource[]> {
+      const rows = await db.select(sourceColumns).from(revenueSources).orderBy(revenueSources.sortOrder, revenueSources.name)
+      return rows as RevenueSource[]
+    },
+
+    async getSource(code: string): Promise<RevenueSource | null> {
+      return getSourceRow(db, eq(revenueSources.code, code))
+    },
+
+    async getSourceById(id: string): Promise<RevenueSource | null> {
+      return getSourceRow(db, eq(revenueSources.id, id))
+    },
+
+    requireSource,
+
+    async createSource(input: unknown): Promise<RevenueSource> {
+      const data = parseInput(sourceCreateSchema, input)
+      const [max] = await queryRows<{ n: number }>(db, sql`SELECT coalesce(max(sort_order), 0)::int AS n FROM revenue_sources WHERE sort_order < 9`)
+      const inserted = await db
+        .insert(revenueSources)
+        .values({ ...data, config: data.connector === 'headless' ? { enabled: false, scraper: 'mock' } : {}, sortOrder: Math.min((max?.n ?? 0) + 1, 8) })
+        .onConflictDoNothing()
+        .returning(sourceColumns)
+      if (!inserted[0]) throw invalid([{ field: 'code', message: 'Kode sumber sudah dipakai' }])
+      return inserted[0] as RevenueSource
+    },
+
+    async updateSource(code: string, input: unknown): Promise<RevenueSource> {
+      const data = parseInput(sourceUpdateSchema, input)
+      const source = await requireSource(code)
+      if (Number.isNaN(Date.parse(data.updatedAt))) throw invalid([{ field: 'updatedAt', message: 'Token versi tidak valid' }])
+      const config = data.config === undefined ? undefined : validateSourceConfig(source.connector, data.config)
+      const [row] = await db
+        .update(revenueSources)
+        .set({
+          ...(data.name !== undefined && { name: data.name }),
+          ...(data.isActive !== undefined && { isActive: data.isActive }),
+          ...(data.defaultCurrency !== undefined && { defaultCurrency: data.defaultCurrency }),
+          ...(data.syncIntervalMinutes !== undefined && { syncIntervalMinutes: data.syncIntervalMinutes }),
+          ...(data.lookbackDays !== undefined && { lookbackDays: data.lookbackDays }),
+          ...(config !== undefined && { config }),
+        })
+        .where(and(eq(revenueSources.id, source.id), sameMillis(revenueSources.updatedAt, data.updatedAt)))
+        .returning(sourceColumns)
+      if (!row) throw conflict('Sumber pendapatan')
+      return row as RevenueSource
+    },
+
+    // ---------- properti (situs) ----------
+    async listProperties(): Promise<RevenueProperty[]> {
+      const rows = await db
+        .select({
+          id: revenueProperties.id, code: revenueProperties.code, name: revenueProperties.name, domain: revenueProperties.domain,
+          siteId: revenueProperties.linkedSiteId, siteCode: sites.code, status: revenueProperties.status, updatedAt: revenueProperties.updatedAt,
+        })
+        .from(revenueProperties)
+        .leftJoin(sites, eq(sites.id, revenueProperties.linkedSiteId))
+        .orderBy(revenueProperties.name)
+      return rows as RevenueProperty[]
+    },
+
+    async createProperty(input: unknown): Promise<RevenueProperty & { linkedEntries: number }> {
+      const data = parseInput(propertySchema, input)
+      const domain = data.domain ? normalizeDomain(data.domain) : null
+      if (data.domain && !domain) throw invalid([{ field: 'domain', message: 'Domain tidak valid, mis. contoh.com' }])
+      return db.transaction(async (tx) => {
+        const inserted = await tx
+          .insert(revenueProperties)
+          .values({ code: data.code, name: data.name, domain, linkedSiteId: data.siteId ?? null, status: data.status })
+          .onConflictDoNothing()
+          .returning({ id: revenueProperties.id })
+        if (!inserted[0]) throw invalid([{ field: 'code', message: 'Kode atau domain sudah dipakai situs lain' }])
+        const linkedEntries = await linkUnassigned(tx, inserted[0].id, domain)
+        const [row] = await tx.select({
+          id: revenueProperties.id, code: revenueProperties.code, name: revenueProperties.name, domain: revenueProperties.domain,
+          siteId: revenueProperties.linkedSiteId, siteCode: sites.code, status: revenueProperties.status, updatedAt: revenueProperties.updatedAt,
+        }).from(revenueProperties).leftJoin(sites, eq(sites.id, revenueProperties.linkedSiteId)).where(eq(revenueProperties.id, inserted[0].id))
+        return { ...(row as RevenueProperty), linkedEntries }
+      })
+    },
+
+    async updateProperty(id: string, input: unknown): Promise<{ linkedEntries: number }> {
+      const data = parseInput(propertySchema.extend({ updatedAt: z.string().min(1) }), input)
+      const domain = data.domain ? normalizeDomain(data.domain) : null
+      if (data.domain && !domain) throw invalid([{ field: 'domain', message: 'Domain tidak valid, mis. contoh.com' }])
+      return db.transaction(async (tx) => {
+        const updated = await tx
+          .update(revenueProperties)
+          .set({ code: data.code, name: data.name, domain, linkedSiteId: data.siteId ?? null, status: data.status })
+          .where(and(eq(revenueProperties.id, id), sameMillis(revenueProperties.updatedAt, data.updatedAt)))
+          .returning({ id: revenueProperties.id })
+          .catch((e: unknown) => {
+            if ((e as { cause?: { code?: string } }).cause?.code === '23505' || (e as { code?: string }).code === '23505') throw invalid([{ field: 'domain', message: 'Kode atau domain sudah dipakai situs lain' }])
+            throw e
+          })
+        if (!updated[0]) throw conflict('Situs')
+        return { linkedEntries: await linkUnassigned(tx, id, domain) }
+      })
+    },
+
+    // ---------- kurs ----------
+    async listFxRates(): Promise<{ currency: string; rateDate: string; rate: string; note: string | null; updatedAt: Date }[]> {
+      return db
+        .select({ currency: revenueFxRates.currency, rateDate: revenueFxRates.rateDate, rate: revenueFxRates.rateToBase, note: revenueFxRates.note, updatedAt: revenueFxRates.updatedAt })
+        .from(revenueFxRates)
+        .where(eq(revenueFxRates.baseCurrency, base))
+        .orderBy(revenueFxRates.currency, desc(revenueFxRates.rateDate))
+    },
+
+    async upsertFxRate(input: unknown, userId: string | null): Promise<void> {
+      const data = parseInput(fxSchema, input)
+      if (data.currency === base) throw invalid([{ field: 'currency', message: `${base} adalah mata uang utama (kurs selalu 1)` }])
+      await db
+        .insert(revenueFxRates)
+        .values({ currency: data.currency, baseCurrency: base, rateDate: data.rateDate, rateToBase: data.rate, note: data.note ?? null, createdBy: userId })
+        .onConflictDoUpdate({ target: [revenueFxRates.currency, revenueFxRates.baseCurrency, revenueFxRates.rateDate], set: { rateToBase: data.rate, note: data.note ?? null } })
+    },
+
+    async deleteFxRate(currency: string, rateDate: string): Promise<void> {
+      await db.delete(revenueFxRates).where(and(eq(revenueFxRates.currency, currency), eq(revenueFxRates.baseCurrency, base), eq(revenueFxRates.rateDate, rateDate)))
+    },
+
+    /**
+     * Isi konversi yang masih kosong (mode 'missing'), atau hitung ulang
+     * semua entri mata uang tertentu dalam rentang (mode 'range'; perubahan
+     * kurs tercatat sebagai revisi oleh trigger).
+     */
+    async recomputeFx(input: { mode: 'missing' } | { mode: 'range'; currency: string; from: string; to: string }): Promise<number> {
+      // Koreksi/refund manual hanya diisi bila kursnya masih kosong; mode
+      // rentang tidak mengubah kurs yang sudah dipakai koreksi manual.
+      const filter = input.mode === 'missing'
+        ? sql`e.normalized_amount IS NULL`
+        : sql`e.currency = ${input.currency} AND e.report_date BETWEEN ${input.from}::date AND ${input.to}::date AND e.status NOT IN ('adjusted', 'refunded')`
+      const rows = await queryRows<{ id: string }>(db, sql`
+        WITH r AS (
+          SELECT e.id,
+                 (SELECT f.rate_to_base FROM revenue_fx_rates f
+                   WHERE f.currency = e.currency AND f.base_currency = e.base_currency AND f.rate_date <= e.report_date
+                   ORDER BY f.rate_date DESC LIMIT 1) AS rate
+            FROM revenue_ledger_entries e
+           WHERE ${filter} AND e.currency <> e.base_currency
+        )
+        UPDATE revenue_ledger_entries e
+           SET fx_rate_to_base = r.rate, normalized_amount = round(e.gross_amount * r.rate, 2)
+          FROM r
+         WHERE e.id = r.id AND r.rate IS NOT NULL AND e.fx_rate_to_base IS DISTINCT FROM r.rate
+        RETURNING e.id`)
+      return rows.length
+    },
+
+    // ---------- ledger ----------
+    upsertEntries,
+
+    upsertWithin,
+
+    /** Pemasukan manual (brand deal, dll.) atau adjustment rekonsiliasi; selalu dengan jejak pembuat. */
+    async createManualEntry(input: unknown, userId: string | null): Promise<{ entryId: string }> {
+      const data = parseInput(manualSchema, input)
+      const source = await requireSource(data.sourceCode)
+      if (data.kind === 'adjustment' && !data.note?.trim()) throw invalid([{ field: 'note', message: 'Alasan adjustment wajib diisi' }])
+      if (data.kind === 'income' && compareDecimal(data.amount, '0') <= 0) throw invalid([{ field: 'amount', message: 'Pemasukan harus lebih dari 0; pakai adjustment untuk koreksi negatif' }])
+      if (data.adjustsEntryId) {
+        const [target] = await db.select({ id: revenueLedgerEntries.id }).from(revenueLedgerEntries).where(eq(revenueLedgerEntries.id, data.adjustsEntryId)).limit(1)
+        if (!target) throw invalid([{ field: 'adjustsEntryId', message: 'Entri yang dikoreksi tidak ditemukan' }])
+      }
+      const key = data.externalId ? `manual:ext:${data.externalId}` : `${data.kind === 'adjustment' ? 'adjustment' : 'manual'}:${randomUUID()}`
+      const result = await upsertEntries(source, [{
+        idempotencyKey: key,
+        externalId: data.externalId ?? null,
+        reportDate: data.reportDate,
+        grossAmount: data.amount,
+        currency: data.currency,
+        status: data.kind === 'adjustment' ? 'adjusted' : data.status,
+        description: data.description,
+        note: data.note ?? null,
+        propertyId: data.propertyId ?? null,
+        adjustsEntryId: data.adjustsEntryId ?? null,
+      }], { channel: 'manual', createdBy: userId, insertOnly: true })
+      const row = result.results[0]
+      if (!row || row.outcome === 'failed') throw invalid([{ field: '', message: row?.reason ?? 'Gagal menyimpan' }])
+      if (row.outcome !== 'inserted') throw invalid([{ field: 'externalId', message: 'ID eksternal ini sudah pernah dicatat' }])
+      return { entryId: row.entryId as string }
+    },
+
+    /** Refund atas entri pemasukan (penuh atau sebagian); total refund tidak boleh melebihi nominal asal. */
+    async createRefund(entryId: string, input: unknown, userId: string | null): Promise<{ entryId: string }> {
+      const data = parseInput(refundSchema, input)
+      return db.transaction(async (tx) => {
+        const [entry] = await tx.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.id, entryId)).limit(1).for('update')
+        if (!entry) throw notFound('Entri')
+        if (entry.status === 'refunded' || entry.status === 'adjusted' || compareDecimal(entry.grossAmount, '0') <= 0) {
+          throw invalid([{ field: '', message: 'Hanya pemasukan positif yang bisa di-refund' }])
+        }
+        const prior = await tx
+          .select({ amount: revenueLedgerEntries.grossAmount })
+          .from(revenueLedgerEntries)
+          .where(and(eq(revenueLedgerEntries.adjustsEntryId, entryId), eq(revenueLedgerEntries.status, 'refunded')))
+        const refunded = negate(sum(prior.map((p) => p.amount), 6)) // positif
+        const amount = data.amount ?? toDecimal(sum([entry.grossAmount, negate(refunded)], 6))
+        if (compareDecimal(amount, '0') <= 0) throw invalid([{ field: 'amount', message: 'Entri ini sudah di-refund penuh' }])
+        if (compareDecimal(sum([refunded, amount], 6), entry.grossAmount) > 0) throw invalid([{ field: 'amount', message: 'Total refund melebihi nominal entri' }])
+        const result = await upsertWithin(tx, { id: entry.sourceId }, [{
+          idempotencyKey: `refund:${entryId}:${prior.length + 1}`,
+          reportDate: entry.reportDate,
+          grossAmount: negate(amount),
+          currency: entry.currency,
+          status: 'refunded',
+          description: `Refund: ${entry.description ?? entry.externalId ?? entry.idempotencyKey}`.slice(0, 500),
+          note: data.note,
+          propertyId: entry.propertyId,
+          dimensions: entry.dimensions as Record<string, string>,
+          adjustsEntryId: entryId,
+          externalId: entry.externalId,
+        }], { channel: 'manual', createdBy: userId, insertOnly: true })
+        const row = result.results[0]
+        if (!row || row.outcome !== 'inserted') throw invalid([{ field: '', message: row?.reason ?? 'Gagal mencatat refund' }])
+        return { entryId: row.entryId as string }
+      })
+    },
+
+    // ---------- sync run ----------
+    /**
+     * Mulai satu run; null bila sumber ini sedang berjalan (index unik
+     * status running). Run yang macet > 30 menit ditutup sebagai gagal dulu.
+     */
+    async startSyncRun(input: { sourceId: string; channel: 'api' | 'headless'; trigger: 'schedule' | 'manual' | 'cli'; rangeStart: string; rangeEnd: string; mock: boolean; userId: string | null }): Promise<string | null> {
+      await db.execute(sql`
+        UPDATE revenue_sync_runs SET status = 'failed', finished_at = now(), error_message = 'run tidak selesai (proses berhenti?)'
+         WHERE source_id = ${input.sourceId} AND status = 'running' AND started_at < now() - interval '30 minutes'`)
+      const rows = await db
+        .insert(revenueSyncRuns)
+        .values({ sourceId: input.sourceId, channelType: input.channel, trigger: input.trigger, rangeStart: input.rangeStart, rangeEnd: input.rangeEnd, mock: input.mock, triggeredBy: input.userId })
+        .onConflictDoNothing()
+        .returning({ id: revenueSyncRuns.id })
+      return rows[0]?.id ?? null
+    },
+
+    async finishSyncRun(runId: string, sourceId: string, result: { status: 'success' | 'partial' | 'failed'; counts: UpsertCounts; rowsFetched: number; error: string | null; log: string[] }): Promise<void> {
+      await db.transaction(async (tx) => {
+        await tx.update(revenueSyncRuns).set({
+          status: result.status,
+          finishedAt: sql`now()`,
+          rowsFetched: result.rowsFetched,
+          ...result.counts,
+          errorMessage: result.error?.slice(0, 2000) ?? null,
+          log: result.log.slice(-200).map((l) => l.slice(0, 500)),
+        }).where(eq(revenueSyncRuns.id, runId))
+        await tx.update(revenueSources).set({ lastSyncAt: sql`now()`, lastSyncStatus: result.status }).where(eq(revenueSources.id, sourceId))
+      })
+    },
+
+    // ---------- webhook ----------
+    async recordWebhookEvent(input: { sourceId: string; eventType: string | null; externalEventId: string | null; signatureValid: boolean; status: 'processed' | 'duplicate' | 'ignored' | 'rejected' | 'failed'; error: string | null; payload: unknown; test: boolean }): Promise<string> {
+      const [row] = await db.insert(revenueWebhookEvents).values({
+        sourceId: input.sourceId,
+        eventType: input.eventType?.slice(0, 100) ?? null,
+        externalEventId: input.externalEventId?.slice(0, 200) ?? null,
+        signatureValid: input.signatureValid,
+        status: input.status,
+        error: input.error?.slice(0, 1000) ?? null,
+        payload: input.signatureValid ? (input.payload ?? null) : null,
+        test: input.test,
+      }).returning({ id: revenueWebhookEvents.id })
+      if (!row) throw new Error('insert webhook event gagal')
+      return row.id
+    },
+
+    async finishWebhookEvent(id: string, input: { status: 'processed' | 'duplicate' | 'ignored' | 'failed'; ledgerEntryId: string | null; error: string | null }): Promise<void> {
+      await db.update(revenueWebhookEvents).set({ status: input.status, ledgerEntryId: input.ledgerEntryId, error: input.error?.slice(0, 1000) ?? null }).where(eq(revenueWebhookEvents.id, id))
+    },
+
+    // ---------- impor file ----------
+    async createImportBatch(input: { sourceId: string; fileName: string; format: 'csv' | 'xlsx' | 'json'; sha256: string; headers: string[]; rows: Record<string, string>[]; userId: string | null }): Promise<string> {
+      // Batch yang ditinggal di tengah wizard > 24 jam dibuang (baris mentahnya ikut dihapus).
+      await db.update(revenueImportBatches).set({ status: 'discarded', rows: null })
+        .where(and(eq(revenueImportBatches.status, 'uploaded'), sql`${revenueImportBatches.createdAt} < now() - interval '24 hours'`))
+      const [row] = await db.insert(revenueImportBatches).values({
+        sourceId: input.sourceId,
+        fileName: input.fileName.slice(0, 255) || 'tanpa-nama',
+        fileFormat: input.format,
+        fileSha256: input.sha256,
+        headers: input.headers,
+        rows: input.rows,
+        rowCount: input.rows.length,
+        createdBy: input.userId,
+      }).returning({ id: revenueImportBatches.id })
+      if (!row) throw new Error('insert batch impor gagal')
+      return row.id
+    },
+
+    async getImportBatch(id: string) {
+      const [row] = await db.select().from(revenueImportBatches).where(eq(revenueImportBatches.id, id)).limit(1)
+      if (!row) throw notFound('Batch impor')
+      return row
+    },
+
+    /** Batch lain dari sumber yang sama dengan isi file identik (peringatan impor ulang). */
+    async findSameFile(sourceId: string, sha256: string, exceptId: string) {
+      return db
+        .select({ id: revenueImportBatches.id, fileName: revenueImportBatches.fileName, status: revenueImportBatches.status, createdAt: revenueImportBatches.createdAt })
+        .from(revenueImportBatches)
+        .where(and(eq(revenueImportBatches.sourceId, sourceId), eq(revenueImportBatches.fileSha256, sha256), sql`${revenueImportBatches.id} <> ${exceptId}`))
+        .orderBy(desc(revenueImportBatches.createdAt))
+        .limit(5)
+    },
+
+    /**
+     * Commit batch: kunci batch (hanya status uploaded), upsert entri hasil
+     * mapping, simpan ringkasan + galat per baris, buang baris mentah.
+     */
+    async commitImportBatch(id: string, build: (batch: { sourceId: string; rows: Record<string, string>[] }) => { entries: { row: number; entry: LedgerInput }[]; errors: { row: number; message: string }[]; duplicates: { row: number; message: string }[]; mapping: unknown }, userId: string | null) {
+      return db.transaction(async (tx) => {
+        const [batch] = await tx.select().from(revenueImportBatches).where(eq(revenueImportBatches.id, id)).limit(1).for('update')
+        if (!batch) throw notFound('Batch impor')
+        if (batch.status !== 'uploaded' || !batch.rows) throw new EditorError('conflict', 'Batch ini sudah di-commit atau dibuang')
+        const mapped = build({ sourceId: batch.sourceId, rows: batch.rows as Record<string, string>[] })
+        const result = await upsertWithin(tx, { id: batch.sourceId }, mapped.entries.map((e) => e.entry), { channel: 'csv_import', importBatchId: id, createdBy: userId })
+        const rowErrors = [
+          ...mapped.errors,
+          ...result.results.flatMap((r, i) => (r.outcome === 'failed' ? [{ row: mapped.entries[i]?.row ?? 0, message: r.reason ?? 'gagal' }] : [])),
+        ]
+        const skippedNotes = [
+          ...mapped.duplicates,
+          ...result.results.flatMap((r, i) => (r.outcome === 'skipped' ? [{ row: mapped.entries[i]?.row ?? 0, message: r.reason ?? 'dilewati' }] : [])),
+        ]
+        const counts = {
+          inserted: result.counts.inserted,
+          updated: result.counts.updated,
+          unchanged: result.counts.unchanged,
+          skipped: result.counts.skipped + mapped.duplicates.length,
+          failed: result.counts.failed + mapped.errors.length,
+        }
+        await tx.update(revenueImportBatches).set({
+          status: 'committed',
+          committedAt: sql`now()`,
+          rows: null,
+          mapping: mapped.mapping,
+          ...counts,
+          errors: [...rowErrors, ...skippedNotes.map((s) => ({ ...s, skipped: true }))].sort((a, b) => a.row - b.row).slice(0, 500),
+        }).where(eq(revenueImportBatches.id, id))
+        return { counts, errors: rowErrors.slice(0, 200), skipped: skippedNotes.slice(0, 200) }
+      })
+    },
+
+    /** Berapa kunci yang sudah ada di ledger sumber ini (perkiraan baru vs sudah ada di pratinjau impor). */
+    async countExistingKeys(sourceId: string, keys: string[]): Promise<number> {
+      let total = 0
+      // Dipecah agar jumlah parameter tetap di bawah batas PostgreSQL (65535).
+      for (let i = 0; i < keys.length; i += 5000) {
+        const [row] = await db
+          .select({ n: count() })
+          .from(revenueLedgerEntries)
+          .where(and(eq(revenueLedgerEntries.sourceId, sourceId), inArray(revenueLedgerEntries.idempotencyKey, keys.slice(i, i + 5000))))
+        total += Number(row?.n ?? 0)
+      }
+      return total
+    },
+
+    async discardImportBatch(id: string): Promise<void> {
+      const rows = await db.update(revenueImportBatches).set({ status: 'discarded', rows: null })
+        .where(and(eq(revenueImportBatches.id, id), eq(revenueImportBatches.status, 'uploaded')))
+        .returning({ id: revenueImportBatches.id })
+      if (!rows[0]) throw new EditorError('conflict', 'Batch ini sudah di-commit atau dibuang')
+    },
+  }
+}
+
+export type RevenueRepository = ReturnType<typeof createRevenueRepository>
+
+/**
+ * Pengaturan dashboard dari env: REVENUE_BASE_CURRENCY (kode ISO 3 huruf,
+ * bawaan IDR) dan REVENUE_TIMEZONE (IANA, bawaan Asia/Jakarta). Nilai salah
+ * menggagalkan start, bukan diam-diam memakai bawaan.
+ */
+export function revenueSettingsFromEnv(env: Record<string, string | undefined>): RevenueSettings {
+  const baseCurrency = env['REVENUE_BASE_CURRENCY']?.trim() || DEFAULT_REVENUE_SETTINGS.baseCurrency
+  const timeZone = env['REVENUE_TIMEZONE']?.trim() || DEFAULT_REVENUE_SETTINGS.timeZone
+  if (!/^[A-Z]{3}$/.test(baseCurrency)) throw new Error(`REVENUE_BASE_CURRENCY tidak valid: ${baseCurrency}`)
+  try {
+    new Intl.DateTimeFormat('en', { timeZone })
+  } catch {
+    throw new Error(`REVENUE_TIMEZONE tidak dikenal: ${timeZone}`)
+  }
+  return { baseCurrency, timeZone }
+}
+```
+
+15. Tulis query dashboard. Semua jumlah memakai `normalized_amount`, dan entri tanpa kurs dilaporkan terpisah. Satu hal yang perlu diperhatikan di Drizzle: setiap interpolasi menjadi parameter baru, sehingga `GROUP BY coalesce(e.dimensions->>${key}, '-')` tidak dianggap sama dengan ekspresi yang sama di `SELECT`. Hitung ekspresinya sekali di CTE:
+
+`packages/core/src/revenue/revenue-queries.ts`
+
+```ts
+// Query baca dashboard pendapatan (ADR-011). Semua angka uang dikembalikan
+// sebagai teks desimal (numeric PostgreSQL) agar tidak kehilangan presisi;
+// browser yang memformat. Jumlah selalu memakai normalized_amount (mata
+// uang utama); entri tanpa kurs dihitung terpisah sebagai peringatan.
+import { sql, type SQL } from '@framework/db'
+import { notFound } from '../editor/errors'
+import type { RepositoryContext } from '../repositories/types'
+import { normalizePaging, toPage, type Page, type PageQuery } from '../repositories/types'
+import { addDays, dateInZone, daysBetween, isIsoDate, startOfMonth } from './dates'
+import { queryRows, type RevenueSettings } from './revenue-repository'
+import { LEDGER_STATUSES, type LedgerStatus } from './types'
+
+export type Granularity = 'day' | 'week' | 'month'
+
+export interface RevenueFilters {
+  from: string
+  to: string
+  /** Kode sumber; kosong = semua. */
+  sources?: string[]
+  statuses?: LedgerStatus[]
+  /** id properti, atau 'none' untuk entri yang belum dipetakan ke situs. */
+  propertyId?: string | null
+}
+
+export interface SeriesPoint {
+  bucket: string
+  sourceCode: string
+  amount: string
+}
+
+export interface SourceTotal {
+  code: string
+  name: string
+  amount: string
+  previousAmount: string
+  entries: number
+}
+
+export interface PropertyTotal {
+  propertyId: string | null
+  code: string | null
+  name: string
+  domain: string | null
+  amount: string
+  previousAmount: string
+  entries: number
+}
+
+export interface RecentEntry {
+  id: string
+  sourceCode: string
+  sourceName: string
+  channelType: string
+  reportDate: string
+  occurredAt: string | null
+  grossAmount: string
+  currency: string
+  normalizedAmount: string | null
+  status: LedgerStatus
+  description: string | null
+  propertyName: string | null
+  revision: number
+  updatedAt: string
+}
+
+export interface SourceHealth {
+  code: string
+  name: string
+  connector: string
+  integrationType: string
+  isActive: boolean
+  syncIntervalMinutes: number | null
+  lastSyncAt: string | null
+  lastSyncStatus: string | null
+  lastRun: { id: string; status: string; startedAt: string; finishedAt: string | null; errorMessage: string | null; mock: boolean } | null
+  lastWebhook: { status: string; receivedAt: string; error: string | null } | null
+  webhookFailures24h: number
+  lastImport: { status: string; createdAt: string; fileName: string } | null
+}
+
+export interface RevenueOverview {
+  range: { from: string; to: string; previousFrom: string; previousTo: string; today: string }
+  baseCurrency: string
+  total: string
+  previousTotal: string
+  entries: number
+  today: string
+  yesterday: string
+  monthToDate: string
+  previousMonthToDate: string
+  byStatus: { status: LedgerStatus; amount: string; entries: number }[]
+  bySource: SourceTotal[]
+  byProperty: PropertyTotal[]
+  series: SeriesPoint[]
+  unconverted: { currency: string; entries: number; grossAmount: string }[]
+}
+
+function cleanFilters(filters: RevenueFilters): RevenueFilters {
+  if (!isIsoDate(filters.from) || !isIsoDate(filters.to) || filters.from > filters.to) throw new Error('rentang tanggal tidak valid')
+  if (daysBetween(filters.from, filters.to) > 3 * 366) throw new Error('rentang maksimum 3 tahun')
+  return {
+    ...filters,
+    sources: filters.sources?.filter((s) => /^[a-z0-9_]{1,40}$/.test(s)),
+    statuses: filters.statuses?.filter((s) => (LEDGER_STATUSES as readonly string[]).includes(s)),
+  }
+}
+
+/** WHERE untuk filter sumber/status/properti (tanpa rentang tanggal). */
+function scope(filters: RevenueFilters): SQL {
+  const parts: SQL[] = [sql`true`]
+  if (filters.sources?.length) parts.push(sql`s.code IN (${sql.join(filters.sources.map((c) => sql`${c}`), sql`, `)})`)
+  if (filters.statuses?.length) parts.push(sql`e.status IN (${sql.join(filters.statuses.map((c) => sql`${c}`), sql`, `)})`)
+  if (filters.propertyId === 'none') parts.push(sql`e.property_id IS NULL`)
+  else if (filters.propertyId) parts.push(sql`e.property_id = ${filters.propertyId}::uuid`)
+  return sql.join(parts, sql` AND `)
+}
+
+const between = (from: string, to: string) => sql`e.report_date BETWEEN ${from}::date AND ${to}::date`
+
+export function createRevenueQueries(ctx: RepositoryContext, settings: RevenueSettings) {
+  const { db } = ctx
+  const today = () => dateInZone(ctx.now(), settings.timeZone)
+
+  async function sumIn(filters: RevenueFilters, from: string, to: string): Promise<{ amount: string; entries: number }> {
+    const [row] = await queryRows<{ amount: string; entries: number }>(db, sql`
+      SELECT coalesce(sum(e.normalized_amount), 0)::text AS amount, count(*)::int AS entries
+        FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+       WHERE ${between(from, to)} AND ${scope(filters)}`)
+    return row ?? { amount: '0', entries: 0 }
+  }
+
+  return {
+    today,
+
+    async overview(rawFilters: RevenueFilters, granularity: Granularity): Promise<RevenueOverview> {
+      const filters = cleanFilters(rawFilters)
+      const length = daysBetween(filters.from, filters.to) + 1
+      const previousTo = addDays(filters.from, -1)
+      const previousFrom = addDays(previousTo, -(length - 1))
+      const t = today()
+      const monthStart = startOfMonth(t)
+      const dayOfMonth = daysBetween(monthStart, t)
+      const prevMonthStart = startOfMonth(addDays(monthStart, -1))
+      // Bulan lalu sampai tanggal yang sama (dibatasi akhir bulan lalu).
+      const prevMonthSameDay = [addDays(prevMonthStart, dayOfMonth), addDays(monthStart, -1)].sort()[0] as string
+
+      const [current, previous, todayRow, yesterdayRow, mtd, prevMtd] = await Promise.all([
+        sumIn(filters, filters.from, filters.to),
+        sumIn(filters, previousFrom, previousTo),
+        sumIn(filters, t, t),
+        sumIn(filters, addDays(t, -1), addDays(t, -1)),
+        sumIn(filters, monthStart, t),
+        sumIn(filters, prevMonthStart, prevMonthSameDay),
+      ])
+
+      const trunc = granularity === 'day' ? sql`e.report_date` : sql`date_trunc(${granularity}, e.report_date)::date`
+      const [series, bySource, byProperty, byStatus, unconverted] = await Promise.all([
+        queryRows<SeriesPoint>(db, sql`
+          SELECT to_char(${trunc}, 'YYYY-MM-DD') AS bucket, s.code AS "sourceCode", coalesce(sum(e.normalized_amount), 0)::text AS amount
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+           WHERE ${between(filters.from, filters.to)} AND ${scope(filters)}
+           GROUP BY 1, 2 ORDER BY 1, 2`),
+        queryRows<SourceTotal>(db, sql`
+          SELECT s.code, s.name,
+                 coalesce(sum(e.normalized_amount) FILTER (WHERE e.report_date BETWEEN ${filters.from}::date AND ${filters.to}::date), 0)::text AS amount,
+                 coalesce(sum(e.normalized_amount) FILTER (WHERE e.report_date BETWEEN ${previousFrom}::date AND ${previousTo}::date), 0)::text AS "previousAmount",
+                 count(e.id) FILTER (WHERE e.report_date BETWEEN ${filters.from}::date AND ${filters.to}::date)::int AS entries
+            FROM revenue_sources s
+            LEFT JOIN revenue_ledger_entries e ON e.source_id = s.id AND ${between(previousFrom, filters.to)} AND ${scope(filters)}
+           WHERE ${filters.sources?.length ? sql`s.code IN (${sql.join(filters.sources.map((c) => sql`${c}`), sql`, `)})` : sql`true`}
+           GROUP BY s.id, s.code, s.name, s.sort_order
+           ORDER BY s.sort_order, s.name`),
+        queryRows<PropertyTotal>(db, sql`
+          SELECT p.id AS "propertyId", p.code, coalesce(p.name, 'Belum dipetakan') AS name, p.domain,
+                 coalesce(sum(e.normalized_amount) FILTER (WHERE e.report_date BETWEEN ${filters.from}::date AND ${filters.to}::date), 0)::text AS amount,
+                 coalesce(sum(e.normalized_amount) FILTER (WHERE e.report_date BETWEEN ${previousFrom}::date AND ${previousTo}::date), 0)::text AS "previousAmount",
+                 count(e.id) FILTER (WHERE e.report_date BETWEEN ${filters.from}::date AND ${filters.to}::date)::int AS entries
+            FROM revenue_ledger_entries e
+            JOIN revenue_sources s ON s.id = e.source_id
+            LEFT JOIN revenue_properties p ON p.id = e.property_id
+           WHERE ${between(previousFrom, filters.to)} AND ${scope(filters)}
+           GROUP BY p.id, p.code, p.name, p.domain
+           ORDER BY sum(e.normalized_amount) FILTER (WHERE e.report_date BETWEEN ${filters.from}::date AND ${filters.to}::date) DESC NULLS LAST`),
+        queryRows<{ status: LedgerStatus; amount: string; entries: number }>(db, sql`
+          SELECT e.status, coalesce(sum(e.normalized_amount), 0)::text AS amount, count(*)::int AS entries
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+           WHERE ${between(filters.from, filters.to)} AND ${scope(filters)}
+           GROUP BY e.status`),
+        queryRows<{ currency: string; entries: number; grossAmount: string }>(db, sql`
+          SELECT e.currency, count(*)::int AS entries, sum(e.gross_amount)::text AS "grossAmount"
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+           WHERE e.normalized_amount IS NULL AND ${between(filters.from, filters.to)} AND ${scope(filters)}
+           GROUP BY e.currency ORDER BY e.currency`),
+      ])
+
+      return {
+        range: { from: filters.from, to: filters.to, previousFrom, previousTo, today: t },
+        baseCurrency: settings.baseCurrency,
+        total: current.amount,
+        previousTotal: previous.amount,
+        entries: current.entries,
+        today: todayRow.amount,
+        yesterday: yesterdayRow.amount,
+        monthToDate: mtd.amount,
+        previousMonthToDate: prevMtd.amount,
+        byStatus,
+        bySource,
+        byProperty,
+        series,
+        unconverted,
+      }
+    },
+
+    /** Entri terbaru (berdasarkan waktu masuk/diubah), untuk "Aktivitas terbaru". */
+    async recent(filters: Pick<RevenueFilters, 'sources' | 'propertyId'>, limit = 12): Promise<RecentEntry[]> {
+      const f = { from: '2000-01-01', to: '2999-12-31', ...filters }
+      return queryRows<RecentEntry>(db, sql`
+        SELECT e.id, s.code AS "sourceCode", s.name AS "sourceName", e.channel_type AS "channelType",
+               to_char(e.report_date, 'YYYY-MM-DD') AS "reportDate", e.occurred_at AS "occurredAt",
+               e.gross_amount::text AS "grossAmount", e.currency, e.normalized_amount::text AS "normalizedAmount",
+               e.status, e.description, p.name AS "propertyName", e.revision, e.updated_at AS "updatedAt"
+          FROM revenue_ledger_entries e
+          JOIN revenue_sources s ON s.id = e.source_id
+          LEFT JOIN revenue_properties p ON p.id = e.property_id
+         WHERE ${scope(f)}
+         ORDER BY e.updated_at DESC, e.id DESC
+         LIMIT ${Math.min(Math.max(limit, 1), 50)}`)
+    },
+
+    /** Status konektor per sumber: run terakhir, webhook terakhir, impor terakhir. */
+    async health(): Promise<SourceHealth[]> {
+      return queryRows<SourceHealth>(db, sql`
+        SELECT s.code, s.name, s.connector, s.integration_type AS "integrationType", s.is_active AS "isActive",
+               s.sync_interval_minutes AS "syncIntervalMinutes", s.last_sync_at AS "lastSyncAt", s.last_sync_status AS "lastSyncStatus",
+               (SELECT json_build_object('id', r.id, 'status', r.status, 'startedAt', r.started_at, 'finishedAt', r.finished_at, 'errorMessage', r.error_message, 'mock', r.mock)
+                  FROM revenue_sync_runs r WHERE r.source_id = s.id ORDER BY r.started_at DESC LIMIT 1) AS "lastRun",
+               (SELECT json_build_object('status', w.status, 'receivedAt', w.received_at, 'error', w.error)
+                  FROM revenue_webhook_events w WHERE w.source_id = s.id ORDER BY w.received_at DESC LIMIT 1) AS "lastWebhook",
+               (SELECT count(*)::int FROM revenue_webhook_events w
+                 WHERE w.source_id = s.id AND w.status IN ('rejected', 'failed') AND w.received_at > now() - interval '24 hours') AS "webhookFailures24h",
+               (SELECT json_build_object('status', b.status, 'createdAt', b.created_at, 'fileName', b.file_name)
+                  FROM revenue_import_batches b WHERE b.source_id = s.id ORDER BY b.created_at DESC LIMIT 1) AS "lastImport"
+          FROM revenue_sources s
+         ORDER BY s.sort_order, s.name`)
+    },
+
+    /** Daftar entri ledger dengan filter + pencarian teks, terbaru dulu. */
+    async listEntries(rawFilters: RevenueFilters & { q?: string; channel?: string }, paging: PageQuery = {}): Promise<Page<RecentEntry & { externalId: string | null; dimensions: Record<string, string>; metrics: Record<string, number> }>> {
+      const filters = cleanFilters(rawFilters)
+      const { page, pageSize, offset } = normalizePaging(paging)
+      const extra: SQL[] = []
+      const q = rawFilters.q?.trim().slice(0, 100)
+      if (q) {
+        const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+        extra.push(sql`(e.description ILIKE ${like} OR e.external_id ILIKE ${like} OR e.idempotency_key ILIKE ${like} OR e.dimensions::text ILIKE ${like})`)
+      }
+      if (rawFilters.channel && /^[a-z_]{1,20}$/.test(rawFilters.channel)) extra.push(sql`e.channel_type = ${rawFilters.channel}`)
+      const where = sql`${between(filters.from, filters.to)} AND ${scope(filters)}${extra.length ? sql` AND ${sql.join(extra, sql` AND `)}` : sql``}`
+      const [count] = await queryRows<{ n: number }>(db, sql`
+        SELECT count(*)::int AS n FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id WHERE ${where}`)
+      const items = await queryRows<RecentEntry & { externalId: string | null; dimensions: Record<string, string>; metrics: Record<string, number> }>(db, sql`
+        SELECT e.id, s.code AS "sourceCode", s.name AS "sourceName", e.channel_type AS "channelType",
+               to_char(e.report_date, 'YYYY-MM-DD') AS "reportDate", e.occurred_at AS "occurredAt",
+               e.gross_amount::text AS "grossAmount", e.currency, e.normalized_amount::text AS "normalizedAmount",
+               e.status, e.description, p.name AS "propertyName", e.revision, e.updated_at AS "updatedAt",
+               e.external_id AS "externalId", e.dimensions, e.metrics_json AS metrics
+          FROM revenue_ledger_entries e
+          JOIN revenue_sources s ON s.id = e.source_id
+          LEFT JOIN revenue_properties p ON p.id = e.property_id
+         WHERE ${where}
+         ORDER BY e.report_date DESC, e.updated_at DESC, e.id DESC
+         LIMIT ${pageSize} OFFSET ${offset}`)
+      return toPage(items, count?.n ?? 0, page, pageSize)
+    },
+
+    /** Satu entri + revisi + entri yang mengoreksinya (refund/adjustment). */
+    async getEntry(id: string) {
+      if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound('Entri')
+      const [entry] = await queryRows<Record<string, unknown>>(db, sql`
+        SELECT e.id, s.code AS "sourceCode", s.name AS "sourceName", e.channel_type AS "channelType", e.idempotency_key AS "idempotencyKey",
+               e.external_id AS "externalId", to_char(e.report_date, 'YYYY-MM-DD') AS "reportDate", e.occurred_at AS "occurredAt",
+               e.gross_amount::text AS "grossAmount", e.currency, e.fx_rate_to_base::text AS "fxRateToBase", e.base_currency AS "baseCurrency",
+               e.normalized_amount::text AS "normalizedAmount", e.status, e.metrics_json AS metrics, e.dimensions, e.description, e.note,
+               e.raw_payload AS "rawPayload", e.adjusts_entry_id AS "adjustsEntryId", e.sync_run_id AS "syncRunId",
+               e.import_batch_id AS "importBatchId", e.webhook_event_id AS "webhookEventId", u.display_name AS "createdByName",
+               e.revision, e.created_at AS "createdAt", e.updated_at AS "updatedAt", p.id AS "propertyId", p.name AS "propertyName"
+          FROM revenue_ledger_entries e
+          JOIN revenue_sources s ON s.id = e.source_id
+          LEFT JOIN revenue_properties p ON p.id = e.property_id
+          LEFT JOIN users u ON u.id = e.created_by
+         WHERE e.id = ${id}::uuid`)
+      if (!entry) throw notFound('Entri')
+      const [revisions, corrections] = await Promise.all([
+        queryRows(db, sql`
+          SELECT revision, gross_amount::text AS "grossAmount", currency, fx_rate_to_base::text AS "fxRateToBase",
+                 normalized_amount::text AS "normalizedAmount", status, metrics_json AS metrics, replaced_at AS "replacedAt"
+            FROM revenue_ledger_revisions WHERE entry_id = ${id}::uuid ORDER BY revision DESC`),
+        queryRows(db, sql`
+          SELECT id, status, gross_amount::text AS "grossAmount", currency, normalized_amount::text AS "normalizedAmount",
+                 note, to_char(report_date, 'YYYY-MM-DD') AS "reportDate", created_at AS "createdAt"
+            FROM revenue_ledger_entries WHERE adjusts_entry_id = ${id}::uuid ORDER BY created_at`),
+      ])
+      return { entry, revisions, corrections }
+    },
+
+    /**
+     * Ringkasan per sumber: total, jumlah metrik (impressions, clicks, orders,
+     * ...), tren harian, dan breakdown dimensi (domain, placement, product, ...).
+     */
+    async sourceDetail(code: string, rawFilters: Omit<RevenueFilters, 'sources'>) {
+      const filters = cleanFilters({ ...rawFilters, sources: [code] })
+      const [source] = await queryRows<{ id: string; code: string }>(db, sql`SELECT id, code FROM revenue_sources WHERE code = ${code}`)
+      if (!source) throw notFound('Sumber pendapatan')
+      const length = daysBetween(filters.from, filters.to) + 1
+      const previousTo = addDays(filters.from, -1)
+      const previousFrom = addDays(previousTo, -(length - 1))
+      const [current, previous, metrics, daily, dimensionKeys] = await Promise.all([
+        queryRows<{ amount: string; gross: string | null; currencies: string[]; entries: number }>(db, sql`
+          SELECT coalesce(sum(e.normalized_amount), 0)::text AS amount, count(*)::int AS entries,
+                 CASE WHEN count(DISTINCT e.currency) = 1 THEN sum(e.gross_amount)::text END AS gross,
+                 coalesce(array_agg(DISTINCT e.currency) FILTER (WHERE e.currency IS NOT NULL), '{}') AS currencies
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+           WHERE ${between(filters.from, filters.to)} AND ${scope(filters)}`),
+        sumIn(filters, previousFrom, previousTo),
+        queryRows<{ key: string; total: string }>(db, sql`
+          SELECT m.key, sum(m.value::numeric)::text AS total
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id,
+                 LATERAL jsonb_each_text(e.metrics_json) m
+           WHERE ${between(filters.from, filters.to)} AND ${scope(filters)} AND m.value ~ '^-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$'
+           GROUP BY m.key`),
+        queryRows<{ date: string; amount: string; gross: string; status: string; entries: number }>(db, sql`
+          SELECT to_char(e.report_date, 'YYYY-MM-DD') AS date, coalesce(sum(e.normalized_amount), 0)::text AS amount,
+                 sum(e.gross_amount)::text AS gross, min(e.status) AS status, count(*)::int AS entries
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+           WHERE ${between(filters.from, filters.to)} AND ${scope(filters)}
+           GROUP BY e.report_date ORDER BY e.report_date`),
+        queryRows<{ key: string }>(db, sql`
+          SELECT DISTINCT d.key
+            FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id,
+                 LATERAL jsonb_object_keys(e.dimensions) d(key)
+           WHERE ${between(filters.from, filters.to)} AND ${scope(filters)} AND d.key NOT IN ('domain_id')
+           LIMIT 8`),
+      ])
+      const breakdowns = await Promise.all(dimensionKeys.map(async ({ key }) => ({
+        key,
+        rows: await queryRows<{ value: string; amount: string; gross: string; entries: number; metrics: Record<string, number> }>(db, sql`
+          WITH base AS (
+            SELECT coalesce(e.dimensions->>${key}, '-') AS value, e.normalized_amount, e.gross_amount, e.metrics_json
+              FROM revenue_ledger_entries e JOIN revenue_sources s ON s.id = e.source_id
+             WHERE ${between(filters.from, filters.to)} AND ${scope(filters)}
+          )
+          SELECT b.value, coalesce(sum(b.normalized_amount), 0)::text AS amount, sum(b.gross_amount)::text AS gross, count(*)::int AS entries,
+                 coalesce((SELECT jsonb_object_agg(agg.k, agg.v) FROM (
+                    SELECT m.key AS k, sum(m.value::numeric) AS v
+                      FROM base b2, LATERAL jsonb_each_text(b2.metrics_json) m
+                     WHERE b2.value = b.value AND m.key IN ('impressions', 'clicks', 'pageViews', 'orders', 'items')
+                       AND m.value ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                     GROUP BY m.key) agg), '{}'::jsonb) AS metrics
+            FROM base b
+           GROUP BY b.value
+           ORDER BY sum(b.normalized_amount) DESC NULLS LAST
+           LIMIT 25`),
+      })))
+      const runs = await queryRows(db, sql`
+        SELECT id, channel_type AS "channelType", trigger, status, mock, to_char(range_start, 'YYYY-MM-DD') AS "rangeStart",
+               to_char(range_end, 'YYYY-MM-DD') AS "rangeEnd", started_at AS "startedAt", finished_at AS "finishedAt",
+               rows_fetched AS "rowsFetched", inserted, updated, unchanged, skipped, failed, error_message AS "errorMessage", log
+          FROM revenue_sync_runs WHERE source_id = ${source.id}::uuid ORDER BY started_at DESC LIMIT 20`)
+      const webhooks = await queryRows(db, sql`
+        SELECT id, received_at AS "receivedAt", event_type AS "eventType", external_event_id AS "externalEventId",
+               signature_valid AS "signatureValid", status, error, test, ledger_entry_id AS "ledgerEntryId"
+          FROM revenue_webhook_events WHERE source_id = ${source.id}::uuid ORDER BY received_at DESC LIMIT 30`)
+      const imports = await queryRows(db, sql`
+        SELECT id, file_name AS "fileName", file_format AS "fileFormat", status, row_count AS "rowCount",
+               inserted, updated, unchanged, skipped, failed, created_at AS "createdAt", committed_at AS "committedAt"
+          FROM revenue_import_batches WHERE source_id = ${source.id}::uuid ORDER BY created_at DESC LIMIT 20`)
+      return {
+        range: { from: filters.from, to: filters.to, previousFrom, previousTo },
+        baseCurrency: settings.baseCurrency,
+        total: current[0]?.amount ?? '0',
+        gross: current[0]?.gross ?? null,
+        currencies: current[0]?.currencies ?? [],
+        entries: current[0]?.entries ?? 0,
+        previousTotal: previous.amount,
+        metrics: Object.fromEntries(metrics.map((m) => [m.key, m.total])),
+        daily,
+        breakdowns,
+        runs,
+        webhooks,
+        imports,
+      }
+    },
+
+    async listRuns(limit = 30) {
+      return queryRows(db, sql`
+        SELECT r.id, s.code AS "sourceCode", s.name AS "sourceName", r.channel_type AS "channelType", r.trigger, r.status, r.mock,
+               to_char(r.range_start, 'YYYY-MM-DD') AS "rangeStart", to_char(r.range_end, 'YYYY-MM-DD') AS "rangeEnd",
+               r.started_at AS "startedAt", r.finished_at AS "finishedAt", r.rows_fetched AS "rowsFetched",
+               r.inserted, r.updated, r.unchanged, r.skipped, r.failed, r.error_message AS "errorMessage", r.log
+          FROM revenue_sync_runs r JOIN revenue_sources s ON s.id = r.source_id
+         ORDER BY r.started_at DESC LIMIT ${Math.min(Math.max(limit, 1), 100)}`)
+    },
+
+    async listImports(limit = 30) {
+      return queryRows(db, sql`
+        SELECT b.id, s.code AS "sourceCode", s.name AS "sourceName", b.file_name AS "fileName", b.file_format AS "fileFormat",
+               b.status, b.row_count AS "rowCount", b.inserted, b.updated, b.unchanged, b.skipped, b.failed,
+               b.created_at AS "createdAt", b.committed_at AS "committedAt", u.display_name AS "createdByName"
+          FROM revenue_import_batches b JOIN revenue_sources s ON s.id = b.source_id LEFT JOIN users u ON u.id = b.created_by
+         ORDER BY b.created_at DESC LIMIT ${Math.min(Math.max(limit, 1), 100)}`)
+    },
+  }
+}
+
+export type RevenueQueries = ReturnType<typeof createRevenueQueries>
+```
+
+16. Tulis service orkestrasi: memilih adapter per sumber, membuka dan menutup run sync (paling banyak satu yang berjalan per sumber), menangani webhook dengan urutan pemeriksaan yang jelas, dan mengirim event uji yang tidak menulis ledger:
+
+`packages/core/src/revenue/revenue-service.ts`
+
+```ts
+// Orkestrasi ingest pendapatan (ADR-011): memilih adapter per sumber,
+// menjalankan sync (dengan log run), menangani webhook, menguji koneksi.
+//
+// Kredensial dibaca dari env dengan awalan credentials_env sumbernya:
+//   adsterra : <PREFIX>_API_TOKEN
+//   adsense  : <PREFIX>_CLIENT_ID, <PREFIX>_CLIENT_SECRET, <PREFIX>_REFRESH_TOKEN (+ config.accountId)
+//   lynk     : <PREFIX>_MERCHANT_KEY
+// Mode mock: REVENUE_MOCK=true (semua sumber) atau config.mock=true (per
+// sumber). Mock memakai fetch palsu berbentuk respons asli, jadi parsing
+// dan penulisan ledger tetap lewat kode produksi.
+import { EditorError } from '../editor/errors'
+import { createAdsenseClient, ADSENSE_METRICS, adsenseToLedger, parseAdsenseReport } from './adapters/adsense'
+import { adsterraToLedger, createAdsterraClient, type AdsterraGroup, type FetchLike } from './adapters/adsterra'
+import { getHeadlessScraper, headlessGloballyEnabled, runHeadless } from './adapters/headless'
+import { LYNK_SIGNATURE_HEADER, lynkSignature, lynkToLedger, parseLynkBody, sampleLynkPayload, verifyLynkSignature } from './adapters/lynk'
+import { createMockRevenueFetch, type MockSite } from './adapters/mock-fetch'
+import { addDays, addMonths, daysBetween, isIsoDate, startOfMonth } from './dates'
+import type { RevenueQueries } from './revenue-queries'
+import type { RevenueRepository, RevenueSource } from './revenue-repository'
+import { emptyCounts, RevenueError, type LedgerInput, type UpsertCounts } from './types'
+
+export const MOCK_LYNK_MERCHANT_KEY = 'mock-merchant-key'
+export const MAX_WEBHOOK_BYTES = 256 * 1024
+
+export interface RevenueRuntime {
+  env: Record<string, string | undefined>
+  /** fetch sungguhan (globalThis.fetch); diganti fetch palsu dalam mode mock. */
+  fetch: FetchLike
+  now: () => Date
+  /** Situs palsu mode mock (default DEFAULT_MOCK_SITES); diganti di test. */
+  mockSites?: MockSite[]
+}
+
+export interface SyncSummary {
+  runId: string
+  status: 'success' | 'partial' | 'failed'
+  range: { start: string; end: string }
+  mock: boolean
+  rowsFetched: number
+  counts: UpsertCounts
+  error: string | null
+}
+
+export interface CredentialStatus {
+  /** Nama env var yang dibutuhkan (tanpa nilainya). */
+  required: string[]
+  missing: string[]
+  configured: boolean
+}
+
+export interface WebhookResponse {
+  status: number
+  body: { ok: boolean; status: string; message?: string; entryId?: string | null }
+}
+
+export function createRevenueService(deps: { revenue: RevenueRepository; queries: RevenueQueries }, runtime: RevenueRuntime) {
+  const { revenue, queries } = deps
+  const env = (name: string) => {
+    const value = runtime.env[name]
+    return value && value.trim() ? value.trim() : undefined
+  }
+
+  function isMock(source: RevenueSource): boolean {
+    return runtime.env['REVENUE_MOCK'] === 'true' || source.config['mock'] === true
+  }
+
+  function credentialNames(source: RevenueSource): string[] {
+    const prefix = source.credentialsEnv
+    if (!prefix) return []
+    if (source.connector === 'adsterra') return [`${prefix}_API_TOKEN`]
+    if (source.connector === 'adsense') return [`${prefix}_CLIENT_ID`, `${prefix}_CLIENT_SECRET`, `${prefix}_REFRESH_TOKEN`]
+    if (source.connector === 'lynk') return [`${prefix}_MERCHANT_KEY`]
+    return []
+  }
+
+  function credentialStatus(source: RevenueSource): CredentialStatus {
+    const required = credentialNames(source)
+    const missing = required.filter((n) => !env(n))
+    return { required, missing, configured: missing.length === 0 }
+  }
+
+  function fetchFor(source: RevenueSource): FetchLike {
+    return isMock(source) ? createMockRevenueFetch({ revision: Number(runtime.env['REVENUE_MOCK_REVISION'] ?? 0) || 0, ...(runtime.mockSites && { sites: runtime.mockSites }) }) : runtime.fetch
+  }
+
+  function requireCredentials(source: RevenueSource): void {
+    if (isMock(source)) return
+    const status = credentialStatus(source)
+    if (!status.configured) throw new RevenueError(`kredensial belum diisi di env server: ${status.missing.join(', ')} (atau aktifkan mode mock)`)
+  }
+
+  /** Rentang bawaan: jendela lookback (+1 hari agar hari yang keluar jendela ditandai final). */
+  function defaultRange(source: RevenueSource, today: string): { start: string; end: string } {
+    let start = addDays(today, -(source.lookbackDays + 1))
+    if (source.connector === 'adsense') {
+      const finalizeDay = Number(source.config['finalizeDay'] ?? 7)
+      // Sampai earnings bulan lalu final, bulan lalu ikut ditarik ulang.
+      if (Number(today.slice(8, 10)) <= finalizeDay) start = [start, startOfMonth(addMonths(today, -1))].sort()[0] as string
+    }
+    return { start, end: today }
+  }
+
+  async function fetchEntries(source: RevenueSource, range: { start: string; end: string }, today: string, log: (m: string) => void): Promise<LedgerInput[]> {
+    const mock = isMock(source)
+    if (source.connector === 'adsterra') {
+      const client = createAdsterraClient({ token: env(`${source.credentialsEnv}_API_TOKEN`) ?? (mock ? 'mock-token' : ''), fetch: fetchFor(source) })
+      const domains = await client.domains()
+      log(`domain Adsterra: ${domains.size}`)
+      const extra = (source.config['groupBy'] as AdsterraGroup[] | undefined) ?? ['domain', 'placement']
+      const stats = await client.stats({ start: range.start, finish: range.end, groupBy: ['date', ...extra] })
+      log(`baris stats: ${stats.items.length}${stats.dbDateTime ? ` (data Adsterra per ${stats.dbDateTime})` : ''}`)
+      return adsterraToLedger(stats, { today, lookbackDays: source.lookbackDays, currency: source.defaultCurrency, domains })
+    }
+    if (source.connector === 'adsense') {
+      const account = String(source.config['accountId'] ?? (mock ? 'accounts/pub-0000000000000000' : ''))
+      if (!account) throw new RevenueError('config.accountId AdSense belum diisi (accounts/pub-XXXXXXXX)')
+      const client = createAdsenseClient({
+        clientId: env(`${source.credentialsEnv}_CLIENT_ID`) ?? 'mock',
+        clientSecret: env(`${source.credentialsEnv}_CLIENT_SECRET`) ?? 'mock',
+        refreshToken: env(`${source.credentialsEnv}_REFRESH_TOKEN`) ?? (mock ? 'mock-refresh' : ''),
+        fetch: fetchFor(source),
+      })
+      const json = await client.generateReport({
+        account,
+        start: range.start,
+        end: range.end,
+        dimensions: source.config['withDomain'] === false ? ['DATE'] : ['DATE', 'DOMAIN_NAME'],
+        metrics: ADSENSE_METRICS,
+        reportingTimeZone: String(source.config['reportingTimeZone'] ?? 'ACCOUNT_TIME_ZONE'),
+        currencyCode: (source.config['currencyCode'] as string | undefined) ?? null,
+      })
+      const report = parseAdsenseReport(json)
+      log(`baris laporan: ${report.rows.length} dari ${report.totalMatchedRows}; mata uang ${report.currencyCode ?? '-'}`)
+      for (const w of report.warnings) log(`peringatan AdSense: ${w}`)
+      return adsenseToLedger(report, { today, finalizeDay: Number(source.config['finalizeDay'] ?? 7), fallbackCurrency: source.defaultCurrency })
+    }
+    if (source.connector === 'headless') {
+      if (!headlessGloballyEnabled(runtime.env)) throw new RevenueError('otomasi headless nonaktif (REVENUE_HEADLESS_ENABLED bukan true)')
+      if (source.config['enabled'] !== true) throw new RevenueError('otomasi headless sumber ini nonaktif (config.enabled)')
+      const key = String(source.config['scraper'] ?? '')
+      const scraper = getHeadlessScraper(key)
+      if (!scraper) throw new RevenueError(`scraper "${key}" tidak terdaftar`)
+      return runHeadless(scraper, { range, config: source.config, env: (n) => env(`${source.credentialsEnv ?? 'REVENUE_HEADLESS'}_${n}`), log })
+    }
+    throw new RevenueError(`sumber ${source.code} tidak punya jalur tarik otomatis (${source.connector}); pakai impor file atau input manual`)
+  }
+
+  const service = {
+    isMock,
+    credentialStatus,
+    defaultRange,
+
+    /** Tarik data satu sumber dan tulis ke ledger; selalu tercatat sebagai run. */
+    async sync(code: string, options: { from?: string; to?: string; trigger: 'schedule' | 'manual' | 'cli'; userId?: string | null }): Promise<SyncSummary> {
+      const source = await revenue.requireSource(code)
+      if (!['adsterra', 'adsense', 'headless'].includes(source.connector)) {
+        throw new EditorError('invalid', `${source.name} tidak punya sync otomatis; gunakan impor file, webhook, atau input manual`)
+      }
+      if (!source.isActive && options.trigger === 'schedule') throw new EditorError('invalid', `${source.name} nonaktif`)
+      const today = queries.today()
+      const range = options.from && options.to ? { start: options.from, end: options.to } : defaultRange(source, today)
+      if (!isIsoDate(range.start) || !isIsoDate(range.end) || range.start > range.end) throw new EditorError('invalid', 'Rentang tanggal sync tidak valid', [{ field: 'from', message: 'Rentang tidak valid' }])
+      if (daysBetween(range.start, range.end) > 365) throw new EditorError('invalid', 'Rentang sync maksimum 366 hari', [{ field: 'from', message: 'Maksimum 366 hari' }])
+      if (range.end > today) range.end = today
+
+      const mock = isMock(source)
+      const channel = source.connector === 'headless' ? 'headless' : 'api'
+      const runId = await revenue.startSyncRun({ sourceId: source.id, channel, trigger: options.trigger, rangeStart: range.start, rangeEnd: range.end, mock, userId: options.userId ?? null })
+      if (!runId) throw new EditorError('conflict', `Sync ${source.name} sedang berjalan; tunggu sampai selesai`)
+
+      const log: string[] = []
+      const write = (m: string) => log.push(`${new Date().toISOString().slice(11, 19)} ${m}`)
+      write(`mulai ${range.start} s.d. ${range.end}${mock ? ' (mock)' : ''}`)
+      let counts = emptyCounts()
+      let rowsFetched = 0
+      try {
+        requireCredentials(source)
+        const entries = await fetchEntries(source, range, today, write)
+        rowsFetched = entries.length
+        const result = await revenue.upsertEntries(source, entries, { channel, syncRunId: runId, createdBy: options.userId ?? null })
+        counts = result.counts
+        for (const r of result.results.filter((x) => x.outcome === 'failed').slice(0, 20)) write(`gagal ${r.key}: ${r.reason ?? ''}`)
+        write(`selesai: ${counts.inserted} baru, ${counts.updated} diperbarui, ${counts.unchanged} sama, ${counts.skipped} dilewati, ${counts.failed} gagal`)
+        const status = counts.failed > 0 ? 'partial' : 'success'
+        await revenue.finishSyncRun(runId, source.id, { status, counts, rowsFetched, error: counts.failed ? `${counts.failed} baris gagal ditulis` : null, log })
+        return { runId, status, range, mock, rowsFetched, counts, error: null }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        write(`gagal: ${message}`)
+        await revenue.finishSyncRun(runId, source.id, { status: 'failed', counts, rowsFetched, error: message, log })
+        return { runId, status: 'failed', range, mock, rowsFetched, counts, error: message }
+      }
+    },
+
+    /** Sumber terjadwal yang sudah waktunya ditarik (dipakai scheduler di server). */
+    async dueSources(now: Date): Promise<RevenueSource[]> {
+      const sources = await revenue.listSources()
+      return sources.filter((s) => {
+        if (!s.isActive || !s.syncIntervalMinutes) return false
+        if (!['adsterra', 'adsense', 'headless'].includes(s.connector)) return false
+        if (s.connector === 'headless' && (!headlessGloballyEnabled(runtime.env) || s.config['enabled'] !== true)) return false
+        if (!isMock(s) && !credentialStatus(s).configured) return false
+        return !s.lastSyncAt || now.getTime() - s.lastSyncAt.getTime() >= s.syncIntervalMinutes * 60_000
+      })
+    },
+
+    /** Uji koneksi tanpa menulis ledger. */
+    async testConnection(code: string): Promise<{ ok: boolean; mock: boolean; message: string }> {
+      const source = await revenue.requireSource(code)
+      const mock = isMock(source)
+      try {
+        requireCredentials(source)
+        if (source.connector === 'adsterra') {
+          const client = createAdsterraClient({ token: env(`${source.credentialsEnv}_API_TOKEN`) ?? 'mock-token', fetch: fetchFor(source) })
+          const domains = await client.domains()
+          return { ok: true, mock, message: `Terhubung. ${domains.size} domain: ${[...domains.values()].slice(0, 5).join(', ')}` }
+        }
+        if (source.connector === 'adsense') {
+          const today = queries.today()
+          const account = String(source.config['accountId'] ?? (mock ? 'accounts/pub-0000000000000000' : ''))
+          if (!account) return { ok: false, mock, message: 'config.accountId belum diisi (accounts/pub-XXXXXXXX)' }
+          const client = createAdsenseClient({
+            clientId: env(`${source.credentialsEnv}_CLIENT_ID`) ?? 'mock',
+            clientSecret: env(`${source.credentialsEnv}_CLIENT_SECRET`) ?? 'mock',
+            refreshToken: env(`${source.credentialsEnv}_REFRESH_TOKEN`) ?? 'mock-refresh',
+            fetch: fetchFor(source),
+          })
+          const report = parseAdsenseReport(await client.generateReport({ account, start: today, end: today, dimensions: ['DATE'], metrics: ['ESTIMATED_EARNINGS'] }))
+          return { ok: true, mock, message: `OAuth dan laporan OK (${account}); mata uang ${report.currencyCode ?? '-'}` }
+        }
+        if (source.connector === 'lynk') {
+          return { ok: true, mock, message: mock && !env(`${source.credentialsEnv}_MERCHANT_KEY`) ? 'Mode mock: webhook memakai merchant key uji' : 'Merchant key terpasang di env server' }
+        }
+        if (source.connector === 'headless') {
+          if (!headlessGloballyEnabled(runtime.env)) return { ok: false, mock, message: 'REVENUE_HEADLESS_ENABLED bukan true' }
+          if (source.config['enabled'] !== true) return { ok: false, mock, message: 'config.enabled sumber ini false' }
+          return getHeadlessScraper(String(source.config['scraper'])) ? { ok: true, mock, message: 'Scraper terdaftar' } : { ok: false, mock, message: 'Scraper tidak terdaftar' }
+        }
+        return { ok: true, mock, message: 'Sumber ini diisi lewat impor file atau input manual' }
+      } catch (error) {
+        return { ok: false, mock, message: error instanceof Error ? error.message : String(error) }
+      }
+    },
+
+    /**
+     * Webhook masuk. Urutan: sumber dikenal -> ukuran -> bentuk JSON ->
+     * merchant key ada -> tanda tangan -> event dipakai -> upsert. Semua
+     * request tercatat di revenue_webhook_events; payload hanya disimpan
+     * bila tanda tangan sah. Balasan cepat 2xx untuk event yang sudah
+     * diterima (termasuk duplikat) agar pengirim tidak mengulang.
+     */
+    async handleWebhook(code: string, rawBody: string, headers: Record<string, string | undefined>, options: { test?: boolean } = {}): Promise<WebhookResponse> {
+      const source = await revenue.getSource(code)
+      if (!source || source.connector !== 'lynk') return { status: 404, body: { ok: false, status: 'not-found' } }
+      const test = options.test === true
+      const reject = async (status: number, state: 'rejected' | 'failed', message: string, signatureValid = false, eventType: string | null = null, externalEventId: string | null = null) => {
+        await revenue.recordWebhookEvent({ sourceId: source.id, eventType, externalEventId, signatureValid, status: state, error: message, payload: null, test })
+        return { status, body: { ok: false, status: state, message } }
+      }
+      if (!source.isActive) return reject(503, 'failed', 'sumber nonaktif')
+      if (Buffer.byteLength(rawBody, 'utf8') > MAX_WEBHOOK_BYTES) return reject(413, 'rejected', 'payload terlalu besar')
+      const parsed = parseLynkBody(rawBody)
+      if (parsed.kind === 'invalid') return reject(400, 'rejected', parsed.error)
+      const payload = parsed.payload
+      const eventType = payload.event
+      const messageId = payload.data.message_id
+      const merchantKey = env(`${source.credentialsEnv}_MERCHANT_KEY`) ?? (isMock(source) ? MOCK_LYNK_MERCHANT_KEY : undefined)
+      // 503 (bukan 4xx): Lynk.id mengulang pengiriman setelah key dipasang.
+      if (!merchantKey) return reject(503, 'failed', 'merchant key belum diisi di env server', false, eventType, messageId)
+      if (!verifyLynkSignature(payload, headers[LYNK_SIGNATURE_HEADER], merchantKey)) return reject(401, 'rejected', 'tanda tangan X-Lynk-Signature tidak sah', false, eventType, messageId)
+
+      const mapped = lynkToLedger(payload, { timeZone: String(source.config['timezone'] ?? 'Asia/Jakarta'), now: runtime.now() })
+      const eventId = await revenue.recordWebhookEvent({ sourceId: source.id, eventType, externalEventId: messageId, signatureValid: true, status: mapped.kind === 'ignored' ? 'ignored' : 'processed', error: mapped.kind === 'ignored' ? mapped.reason : null, payload, test })
+      if (mapped.kind === 'ignored') return { status: 200, body: { ok: true, status: 'ignored', message: mapped.reason } }
+      // Event uji dari admin: tanda tangan dan mapping diperiksa, ledger tidak diubah.
+      if (test) {
+        await revenue.finishWebhookEvent(eventId, { status: 'processed', ledgerEntryId: null, error: null })
+        return { status: 200, body: { ok: true, status: 'tested', message: `Uji berhasil: order ${mapped.entry.externalId} senilai ${mapped.entry.grossAmount} IDR terbaca (tidak dicatat ke ledger)` } }
+      }
+      const propertyId = typeof source.config['propertyId'] === 'string' ? source.config['propertyId'] : null
+      const result = await revenue.upsertEntries(source, [{ ...mapped.entry, propertyId }], { channel: 'webhook', webhookEventId: eventId })
+      const row = result.results[0]
+      if (!row || row.outcome === 'failed') {
+        await revenue.finishWebhookEvent(eventId, { status: 'failed', ledgerEntryId: null, error: row?.reason ?? 'gagal' })
+        return { status: 500, body: { ok: false, status: 'failed', message: 'gagal menyimpan; kirim ulang' } }
+      }
+      const state = row.outcome === 'unchanged' ? 'duplicate' : row.outcome === 'skipped' ? 'ignored' : 'processed'
+      await revenue.finishWebhookEvent(eventId, { status: state, ledgerEntryId: row.entryId, error: row.reason ?? null })
+      return { status: 200, body: { ok: true, status: state, entryId: row.entryId } }
+    },
+
+    /** Kirim event contoh bertanda tangan ke handler webhook sendiri (tombol uji di admin). */
+    async sendTestWebhook(code: string): Promise<WebhookResponse> {
+      const source = await revenue.requireSource(code)
+      if (source.connector !== 'lynk') throw new EditorError('invalid', 'Uji webhook hanya untuk sumber webhook Lynk.id')
+      const merchantKey = env(`${source.credentialsEnv}_MERCHANT_KEY`) ?? (isMock(source) ? MOCK_LYNK_MERCHANT_KEY : undefined)
+      if (!merchantKey) throw new EditorError('invalid', `Isi ${source.credentialsEnv}_MERCHANT_KEY di env server, atau aktifkan mode mock`)
+      const now = runtime.now()
+      const payload = sampleLynkPayload({
+        refId: `TEST-${now.getTime().toString(36)}`,
+        messageId: `TEST_${now.getTime()}`,
+        grandTotal: 72000,
+        price: 75000,
+        title: 'Produk uji webhook',
+        createdAt: new Date(now.getTime() + 7 * 3600_000).toISOString().slice(0, 19),
+      })
+      const signature = lynkSignature(payload, merchantKey)
+      return service.handleWebhook(code, JSON.stringify(payload), { [LYNK_SIGNATURE_HEADER]: signature }, { test: true })
+    },
+  }
+  return service
+}
+
+export type RevenueService = ReturnType<typeof createRevenueService>
+```
+
+`packages/core/src/revenue/index.ts`
+
+```ts
+// Dashboard pendapatan multi-sumber (ADR-011).
+export * from './types'
+export * from './decimal'
+export * from './dates'
+export * from './ledger-rules'
+export * from './revenue-repository'
+export * from './revenue-queries'
+export * from './revenue-service'
+export * from './adapters/lynk'
+export * from './adapters/adsterra'
+export * from './adapters/adsense'
+export * from './adapters/mock-fetch'
+export * from './adapters/headless'
+export * from './import/parse-file'
+export * from './import/mapping'
+```
+
+17. Daftarkan di `createRepositories` (opsi `revenue`) dan ekspor dari entry point core. Lihat `packages/core/src/repositories/index.ts` dan `packages/core/src/index.ts` di bab "Membaca Data dengan Repository". Server meneruskan pengaturan dari env:
+
+`apps/web/server/utils/database.ts`
+
+```ts
+// Satu koneksi database (pool) dan satu set repository per PROSES server.
+// Ini bukan state per request: semua yang khusus request (site, theme) wajib
+// disimpan di event.context, tidak di modul (ADR-001).
+import { createRepositories, revenueSettingsFromEnv, type Repositories } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv, type Database } from '@framework/db'
+
+let database: Database | undefined
+let repositories: Repositories | undefined
+
+/** Pool dibuat saat pertama dipakai, agar `nuxt build` tidak butuh DATABASE_URL. */
+export function useDatabase(): Database {
+  database ??= createDatabase({
+    connectionString: databaseUrlFromEnv(),
+    applicationName: 'blog-framework-web',
+  })
+  return database
+}
+
+export function useRepositories(): Repositories {
+  repositories ??= createRepositories(useDatabase(), { revenue: revenueSettingsFromEnv(process.env) })
+  return repositories
+}
+
+/** Dipanggil saat server berhenti (server/plugins/database.ts). */
+export async function closeDatabase(): Promise<void> {
+  const current = database
+  database = undefined
+  repositories = undefined
+  await current?.$client.end()
+}
+```
+
+18. Tulis test. Unit test memakai payload dari dokumentasi Lynk.id apa adanya, laporan AdSense dengan urutan kolom yang diacak, dan file `.xlsx` yang dibuat di test dengan zip writer kecil. Test database memakai sumber dan situs uji sendiri yang dihapus di akhir:
+
+`packages/core/src/revenue/decimal.test.ts`
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { compareDecimal, DecimalError, fromScaled, multiply, negate, parseAmountText, sum, toDecimal, toScaled } from './decimal'
+import { decideUpsert, normalizeAmount, normalizeDomain, statusByLookback, type ExistingEntry } from './ledger-rules'
+import type { LedgerInput } from './types'
+
+describe('desimal uang tanpa float', () => {
+  it('toDecimal: bentuk kanonik dari angka JSON dan teks', () => {
+    expect(toDecimal(1.154)).toBe('1.154')
+    expect(toDecimal(72000)).toBe('72000')
+    expect(toDecimal(2e-7)).toBe('0.0000002')
+    expect(toDecimal('007.500')).toBe('7.5')
+    expect(toDecimal('-0.00')).toBe('0')
+    expect(() => toDecimal('1,5')).toThrow(DecimalError)
+    expect(() => toDecimal(Number.NaN)).toThrow(DecimalError)
+  })
+
+  it('toScaled/fromScaled membulatkan half away from zero', () => {
+    expect(toScaled('1.005', 2)).toBe(101n)
+    expect(toScaled('-1.005', 2)).toBe(-101n)
+    expect(fromScaled(-5n, 2)).toBe('-0.05')
+    expect(fromScaled(0n, 2)).toBe('0.00')
+  })
+
+  it('multiply tepat untuk kurs (0.1 x 3 bukan 0.30000000000000004)', () => {
+    expect(multiply('0.1', '3', 2)).toBe('0.30')
+    expect(multiply('1.154', '16250.5', 2)).toBe('18753.08') // 18753.077
+    expect(multiply('-12.345', '1', 2)).toBe('-12.35')
+    expect(multiply('0.005', '1', 2)).toBe('0.01')
+  })
+
+  it('sum, compare, negate', () => {
+    expect(sum(['0.1', '0.2', '-0.05'], 2)).toBe('0.25')
+    expect(compareDecimal('1.50', '1.5')).toBe(0)
+    expect(compareDecimal('-1', '0')).toBe(-1)
+    expect(negate('12.5')).toBe('-12.5')
+    expect(negate('-3')).toBe('3')
+    expect(negate('0')).toBe('0')
+  })
+
+  it('parseAmountText: format Indonesia dan internasional, simbol, kurung akuntansi', () => {
+    expect(parseAmountText('Rp 1.234.567,89', ',')).toBe('1234567.89')
+    expect(parseAmountText('$1,234.50', '.')).toBe('1234.5')
+    expect(parseAmountText('(12.50)', '.')).toBe('-12.5')
+    expect(parseAmountText('-72000', ',')).toBe('-72000')
+    expect(parseAmountText('1.234', ',')).toBe('1234')
+    // Pemisah salah pilih ditolak, bukan diam-diam meleset 100x.
+    expect(() => parseAmountText('12.50', ',')).toThrow(/ambigu/)
+    expect(() => parseAmountText('12,50', '.')).toThrow(/ambigu/)
+    expect(() => parseAmountText('abc', '.')).toThrow(DecimalError)
+  })
+})
+
+describe('normalisasi mata uang', () => {
+  it('mata uang utama -> kurs 1', () => {
+    expect(normalizeAmount('72000', 'IDR', 'IDR', null)).toEqual({ fxRate: '1', normalized: '72000.00' })
+  })
+  it('mata uang asing dengan kurs', () => {
+    expect(normalizeAmount('26.043', 'USD', 'IDR', '16250')).toEqual({ fxRate: '16250', normalized: '423198.75' })
+  })
+  it('kurs belum ada -> kosong (tampil sebagai belum dikonversi)', () => {
+    expect(normalizeAmount('10', 'USD', 'IDR', null)).toEqual({ fxRate: null, normalized: null })
+  })
+})
+
+describe('aturan idempotensi & revisi', () => {
+  const existing = (over: Partial<ExistingEntry> = {}): ExistingEntry => ({
+    status: 'estimated', grossAmount: '1.154000', currency: 'USD', metrics: { impressions: 3014 }, dimensions: { domain: 'a.com' }, propertyId: null, ...over,
+  })
+  const incoming = (over: Partial<LedgerInput> = {}): LedgerInput => ({
+    idempotencyKey: 'k', reportDate: '2026-11-01', grossAmount: '1.154', currency: 'USD', status: 'estimated', metrics: { impressions: 3014 }, dimensions: { domain: 'a.com' }, ...over,
+  })
+
+  it('kunci baru -> insert', () => {
+    expect(decideUpsert(null, incoming(), null)).toEqual({ action: 'insert' })
+  })
+  it('isi sama (angka dibandingkan sebagai nilai) -> unchanged', () => {
+    expect(decideUpsert(existing(), incoming(), null)).toEqual({ action: 'unchanged' })
+  })
+  it('angka direvisi -> update', () => {
+    expect(decideUpsert(existing(), incoming({ grossAmount: '1.2' }), null).action).toBe('update')
+    expect(decideUpsert(existing(), incoming({ metrics: { impressions: 3100 } }), null).action).toBe('update')
+  })
+  it('estimated -> finalized = update; finalized tidak turun ke estimated', () => {
+    expect(decideUpsert(existing(), incoming({ status: 'finalized' }), null).action).toBe('update')
+    expect(decideUpsert(existing({ status: 'finalized' }), incoming({ status: 'estimated', grossAmount: '9' }), null).action).toBe('skip')
+  })
+  it('entri koreksi/refund tidak ditimpa data berstatus lain; impor ulang refund yang sama = unchanged', () => {
+    expect(decideUpsert(existing({ status: 'adjusted' }), incoming(), null).action).toBe('skip')
+    expect(decideUpsert(existing({ status: 'refunded', grossAmount: '-29' }), incoming({ status: 'refunded', grossAmount: '-29' }), null).action).toBe('unchanged')
+  })
+  it('pemetaan situs berubah -> update', () => {
+    expect(decideUpsert(existing(), incoming(), 'p1').action).toBe('update')
+  })
+  it('statusByLookback: lebih tua dari jendela = final', () => {
+    expect(statusByLookback('2026-11-17', '2026-11-22', 3)).toBe('finalized')
+    expect(statusByLookback('2026-11-19', '2026-11-22', 3)).toBe('estimated')
+  })
+  it('normalizeDomain', () => {
+    expect(normalizeDomain('https://www.BeritaKonoha.id/berita?x=1')).toBe('beritakonoha.id')
+    expect(normalizeDomain('cekbansos.info:443')).toBe('cekbansos.info')
+    expect(normalizeDomain('-')).toBeNull()
+    expect(normalizeDomain('localhost')).toBeNull()
+  })
+})
+```
+
+`packages/core/src/revenue/adapters/adapters.test.ts`
+
+```ts
+import { createHash } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import { adsenseStatus, adsenseToLedger, createAdsenseClient, parseAdsenseReport, ADSENSE_METRICS } from './adsense'
+import { adsterraToLedger, createAdsterraClient } from './adsterra'
+import { lynkSignature, lynkToLedger, parseLynkBody, sampleLynkPayload, verifyLynkSignature } from './lynk'
+import { createMockRevenueFetch } from './mock-fetch'
+import { getHeadlessScraper, headlessGloballyEnabled, runHeadless } from './headless'
+import { RevenueError } from '../types'
+
+// Contoh payload persis dari dokumentasi Lynk.id (Postman "Lynk Webhook").
+const LYNK_DOC_PAYLOAD = {
+  event: 'payment.received',
+  data: {
+    message_action: 'SUCCESS',
+    message_code: '0',
+    message_data: {
+      createdAt: '2025-04-10T14:30:45',
+      customer: { email: 'user@lynk.id', name: 'Lynk User', phone: '0812345677889' },
+      items: [{ addons: [{ id: 'x', name: 'Iniprodukaddon', price: '50,000' }], appointment_data: {}, pafId: '', price: 25000, public_affiliate_content: {}, qty: 1, stock: 1, title: 'Digital Produk', uuid: '63cfd869524d15196a557388-8244-36439' }],
+      refId: '13f8d23beeb2aacbbc01c94060cc88d7',
+      shippingAddress: '',
+      shippingInfo: '',
+      totals: { affiliate: 0, convenienceFee: -3000, discount: 0, grandTotal: 72000, totalAddon: 50000, totalItem: 1, totalPrice: 25000, totalShipping: 0 },
+    },
+    message_desc: '',
+    message_id: 'API_CALL_1744270275143115_4624014',
+    message_title: '',
+  },
+}
+
+describe('Lynk.id webhook', () => {
+  const parsed = parseLynkBody(JSON.stringify(LYNK_DOC_PAYLOAD))
+  if (parsed.kind !== 'ok') throw new Error('payload dokumentasi harus lolos')
+  const payload = parsed.payload
+
+  it('tanda tangan = sha256(grandTotal + refId + message_id + merchantKey), sesuai contoh kode dokumentasi', () => {
+    const expected = createHash('sha256').update('72000' + '13f8d23beeb2aacbbc01c94060cc88d7' + 'API_CALL_1744270275143115_4624014' + 'rahasia').digest('hex')
+    expect(lynkSignature(payload, 'rahasia')).toBe(expected)
+    expect(verifyLynkSignature(payload, expected, 'rahasia')).toBe(true)
+    expect(verifyLynkSignature(payload, expected.toUpperCase(), 'rahasia')).toBe(true)
+    expect(verifyLynkSignature(payload, expected, 'kunci-lain')).toBe(false)
+    expect(verifyLynkSignature(payload, 'bukan-hex', 'rahasia')).toBe(false)
+    expect(verifyLynkSignature(payload, null, 'rahasia')).toBe(false)
+  })
+
+  it('payload yang diubah (nominal) tidak lolos tanda tangan lama', () => {
+    const signature = lynkSignature(payload, 'rahasia')
+    const tampered = structuredClone(payload)
+    tampered.data.message_data.totals.grandTotal = 720000
+    expect(verifyLynkSignature(tampered, signature, 'rahasia')).toBe(false)
+  })
+
+  it('mapping: grandTotal bersih IDR, waktu WIB -> UTC, kunci per order', () => {
+    const result = lynkToLedger(payload, { timeZone: 'Asia/Jakarta', now: new Date() })
+    expect(result.kind).toBe('entry')
+    if (result.kind !== 'entry') return
+    expect(result.entry).toMatchObject({
+      idempotencyKey: 'lynk:13f8d23beeb2aacbbc01c94060cc88d7:sale',
+      externalId: '13f8d23beeb2aacbbc01c94060cc88d7',
+      reportDate: '2025-04-10',
+      grossAmount: '72000',
+      currency: 'IDR',
+      status: 'finalized',
+      dimensions: { product: 'Digital Produk' },
+    })
+    expect(result.entry.occurredAt?.toISOString()).toBe('2025-04-10T07:30:45.000Z')
+    expect(result.entry.metrics).toMatchObject({ orders: 1, items: 1, convenienceFee: -3000, totalAddon: 50000 })
+  })
+
+  it('event lain atau message_action bukan SUCCESS diabaikan', () => {
+    expect(lynkToLedger({ ...payload, event: 'profile.updated' }, { timeZone: 'Asia/Jakarta', now: new Date() }).kind).toBe('ignored')
+    expect(lynkToLedger({ ...payload, data: { ...payload.data, message_action: 'FAILED' } }, { timeZone: 'Asia/Jakarta', now: new Date() }).kind).toBe('ignored')
+  })
+
+  it('body rusak ditolak dengan pesan', () => {
+    expect(parseLynkBody('{').kind).toBe('invalid')
+    expect(parseLynkBody(JSON.stringify({ event: 'payment.received', data: {} })).kind).toBe('invalid')
+  })
+
+  it('sampleLynkPayload berbentuk sama dan lolos parse', () => {
+    const sample = sampleLynkPayload({ refId: 'r1', messageId: 'm1', grandTotal: 97000, price: 100000, title: 'E-book', createdAt: '2026-11-20T10:00:00' })
+    expect(parseLynkBody(JSON.stringify(sample)).kind).toBe('ok')
+  })
+})
+
+describe('Adsterra Publisher API', () => {
+  const domains = new Map([['281040', 'beritakonoha.id'], ['291463', 'www.cekbansos.info']])
+
+  it('upsert per dimensi: kunci memuat tanggal + domain + placement (+ country/sub_id)', () => {
+    const entries = adsterraToLedger({
+      items: [
+        { date: '2026-11-20', domain: '281040', placement: '1578458751', impression: 8114, clicks: 433, ctr: 5.336, cpm: 0.354, revenue: 2.869 },
+        { date: '2026-11-20', domain: '291463', placement: '34848952', country: 'ID', impression: 100, clicks: 1, ctr: 1, cpm: 1.5, revenue: '0.15' },
+        { date: '2026-11-10', domain: '999', placement_sub_id: 'abc', impression: 1, clicks: 0, revenue: 0 },
+      ],
+    }, { today: '2026-11-22', lookbackDays: 3, currency: 'USD', domains })
+    expect(entries.map((e) => e.idempotencyKey)).toEqual([
+      'adsterra:2026-11-20:281040:1578458751',
+      'adsterra:2026-11-20:291463:34848952:ID',
+      'adsterra:2026-11-10:999:-:sub:abc',
+    ])
+    expect(entries[0]).toMatchObject({ grossAmount: '2.869', currency: 'USD', status: 'estimated', propertyDomain: 'beritakonoha.id', metrics: { impressions: 8114, clicks: 433, ctr: 5.336, cpm: 0.354 } })
+    expect(entries[1]?.propertyDomain).toBe('cekbansos.info')
+    expect(entries[2]).toMatchObject({ status: 'finalized', propertyDomain: null, dimensions: { domain_id: '999', sub_id: 'abc' } })
+  })
+
+  it('baris tanpa tanggal ditolak (ledger selalu harian)', () => {
+    expect(() => adsterraToLedger({ items: [{ domain: '1', revenue: 1 }] }, { today: '2026-11-22', lookbackDays: 3, currency: 'USD', domains })).toThrow(RevenueError)
+  })
+
+  it('client memakai header X-API-Key dan group_by[]; 401 jadi pesan jelas', async () => {
+    const calls: string[] = []
+    const fetchSpy = createMockRevenueFetch()
+    const client = createAdsterraClient({ token: 't', fetch: async (url, init) => { calls.push(url); return fetchSpy(url, init) } })
+    const stats = await client.stats({ start: '2026-11-20', finish: '2026-11-21', groupBy: ['date', 'domain', 'placement'] })
+    expect(calls[0]).toContain('/stats.json?start_date=2026-11-20&finish_date=2026-11-21&group_by%5B%5D=date&group_by%5B%5D=domain&group_by%5B%5D=placement')
+    expect(stats.items.length).toBe(2 * 4 * 2)
+    const noToken = createAdsterraClient({ token: '', fetch: createMockRevenueFetch() })
+    await expect(noToken.domains()).rejects.toThrow(/HTTP 401.*token/)
+  })
+
+  it('mock deterministik: data yang sama untuk permintaan yang sama, berubah bila revisi dinaikkan', async () => {
+    const a = await createAdsterraClient({ token: 't', fetch: createMockRevenueFetch() }).stats({ start: '2026-11-01', finish: '2026-11-01', groupBy: ['date', 'domain'] })
+    const b = await createAdsterraClient({ token: 't', fetch: createMockRevenueFetch() }).stats({ start: '2026-11-01', finish: '2026-11-01', groupBy: ['date', 'domain'] })
+    const c = await createAdsterraClient({ token: 't', fetch: createMockRevenueFetch({ revision: 1 }) }).stats({ start: '2026-11-01', finish: '2026-11-01', groupBy: ['date', 'domain'] })
+    expect(a.items).toEqual(b.items)
+    expect(a.items).not.toEqual(c.items)
+  })
+})
+
+describe('Google AdSense Management API v2', () => {
+  const report = {
+    totalMatchedRows: '2',
+    headers: [
+      { name: 'DOMAIN_NAME', type: 'DIMENSION' },
+      { name: 'DATE', type: 'DIMENSION' },
+      { name: 'CLICKS', type: 'METRIC_TALLY' },
+      { name: 'ESTIMATED_EARNINGS', type: 'METRIC_CURRENCY', currencyCode: 'USD' },
+      { name: 'PAGE_VIEWS', type: 'METRIC_TALLY' },
+      { name: 'PAGE_VIEWS_RPM', type: 'METRIC_CURRENCY', currencyCode: 'USD' },
+    ],
+    rows: [
+      { cells: [{ value: 'beritakonoha.id' }, { value: '2026-11-21' }, { value: '41' }, { value: '3.17' }, { value: '5120' }, { value: '0.62' }] },
+      { cells: [{ value: 'kabartekno.id' }, { value: '2026-10-31' }, { value: '12' }, { value: '0.80' }, { value: '2000' }, { value: '0.40' }] },
+    ],
+  }
+
+  it('parsing digerakkan header: urutan kolom tidak diasumsikan, mata uang dari header METRIC_CURRENCY', () => {
+    const parsed = parseAdsenseReport(report)
+    expect(parsed.currencyCode).toBe('USD')
+    expect(parsed.rows[0]).toEqual({ DOMAIN_NAME: 'beritakonoha.id', DATE: '2026-11-21', CLICKS: '41', ESTIMATED_EARNINGS: '3.17', PAGE_VIEWS: '5120', PAGE_VIEWS_RPM: '0.62' })
+    const entries = adsenseToLedger(parsed, { today: '2026-11-22', finalizeDay: 7, fallbackCurrency: 'IDR' })
+    expect(entries[0]).toMatchObject({ idempotencyKey: 'adsense:2026-11-21:beritakonoha.id', grossAmount: '3.17', currency: 'USD', status: 'estimated', metrics: { clicks: 41, pageViews: 5120, pageViewsRpm: 0.62 }, propertyDomain: 'beritakonoha.id' })
+    expect(entries[1]?.status).toBe('finalized') // Oktober, dan hari ini >= tanggal 7 November
+  })
+
+  it('laporan terpotong (totalMatchedRows > baris) gagal, tidak disimpan diam-diam', () => {
+    expect(() => parseAdsenseReport({ ...report, totalMatchedRows: '5000' })).toThrow(/terpotong: 2 dari 5000/)
+  })
+
+  it('jumlah sel tidak sama dengan header -> gagal', () => {
+    expect(() => parseAdsenseReport({ ...report, rows: [{ cells: [{ value: 'x' }] }] })).toThrow(RevenueError)
+  })
+
+  it('lebih dari satu mata uang -> gagal', () => {
+    expect(() => parseAdsenseReport({ ...report, headers: [...report.headers.slice(0, 5), { name: 'PAGE_VIEWS_RPM', type: 'METRIC_CURRENCY', currencyCode: 'EUR' }] })).toThrow(/lebih dari satu mata uang/)
+  })
+
+  it('status: bulan berjalan estimated; bulan lalu final mulai finalizeDay; lebih lama final', () => {
+    expect(adsenseStatus('2026-11-21', '2026-11-22', 7)).toBe('estimated')
+    expect(adsenseStatus('2026-10-31', '2026-11-03', 7)).toBe('estimated')
+    expect(adsenseStatus('2026-10-31', '2026-11-07', 7)).toBe('finalized')
+    expect(adsenseStatus('2026-09-30', '2026-11-01', 7)).toBe('finalized')
+    expect(adsenseStatus('2025-12-31', '2026-01-02', 7)).toBe('estimated')
+  })
+
+  it('client: refresh token -> access token, lalu reports:generate dengan parameter CUSTOM', async () => {
+    const calls: string[] = []
+    const mock = createMockRevenueFetch()
+    const client = createAdsenseClient({ clientId: 'c', clientSecret: 's', refreshToken: 'r', fetch: async (url, init) => { calls.push(url); return mock(url, init) } })
+    const json = await client.generateReport({ account: 'accounts/pub-123', start: '2026-11-01', end: '2026-11-02', dimensions: ['DATE', 'DOMAIN_NAME'], metrics: ADSENSE_METRICS })
+    expect(calls[0]).toBe('https://oauth2.googleapis.com/token')
+    expect(calls[1]).toContain('/v2/accounts/pub-123/reports:generate?dateRange=CUSTOM&startDate.year=2026&startDate.month=11&startDate.day=1')
+    const parsed = parseAdsenseReport(json)
+    expect(parsed.rows.length).toBe(2 * 4)
+    expect(parsed.currencyCode).toBe('USD')
+    await expect(client.generateReport({ account: 'pub-123', start: '2026-11-01', end: '2026-11-01', dimensions: ['DATE'], metrics: ADSENSE_METRICS })).rejects.toThrow(/accounts\/pub-/)
+  })
+})
+
+describe('headless runner', () => {
+  it('nonaktif secara bawaan', () => {
+    expect(headlessGloballyEnabled({})).toBe(false)
+    expect(headlessGloballyEnabled({ REVENUE_HEADLESS_ENABLED: 'true' })).toBe(true)
+  })
+  it('batas waktu menghentikan scraper yang macet', async () => {
+    const slow = { key: 'lambat', description: '', run: () => new Promise<never>(() => {}) }
+    await expect(runHeadless(slow, { range: { start: '2026-11-01', end: '2026-11-01' }, config: {}, env: () => undefined, log: () => {} }, 20)).rejects.toThrow(/batas waktu/)
+  })
+  it('scraper mock menghasilkan entri per hari', async () => {
+    const scraper = getHeadlessScraper('mock')
+    expect(scraper).toBeDefined()
+    const rows = await runHeadless(scraper!, { range: { start: '2026-11-01', end: '2026-11-03' }, config: {}, env: () => undefined, log: () => {} })
+    expect(rows.map((r) => r.reportDate)).toEqual(['2026-11-01', '2026-11-02', '2026-11-03'])
+  })
+})
+```
+
+`packages/core/src/revenue/import/import.test.ts`
+
+```ts
+import { crc32, deflateRawSync } from 'node:zlib'
+import { describe, expect, it } from 'vitest'
+import { RevenueError } from '../types'
+import { importMappingSchema, mapImportRows, parseDateText, suggestMapping } from './mapping'
+import { detectDelimiter, parseCsv, parseImportFile, parseJsonTable } from './parse-file'
+
+const enc = (s: string) => new TextEncoder().encode(s)
+
+/** Zip minimal (deflate) untuk membuat file .xlsx uji tanpa dependensi. */
+function zip(files: Record<string, string>): Uint8Array {
+  const chunks: Buffer[] = []
+  const central: Buffer[] = []
+  let offset = 0
+  for (const [name, content] of Object.entries(files)) {
+    const data = Buffer.from(content, 'utf8')
+    const compressed = deflateRawSync(data)
+    const nameBuf = Buffer.from(name)
+    const crc = crc32(data)
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(8, 8)
+    local.writeUInt32LE(crc, 14); local.writeUInt32LE(compressed.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(nameBuf.length, 26)
+    chunks.push(local, nameBuf, compressed)
+    const c = Buffer.alloc(46)
+    c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt16LE(8, 10)
+    c.writeUInt32LE(crc, 16); c.writeUInt32LE(compressed.length, 20); c.writeUInt32LE(data.length, 24); c.writeUInt16LE(nameBuf.length, 28); c.writeUInt32LE(offset, 42)
+    central.push(c, nameBuf)
+    offset += 30 + nameBuf.length + compressed.length
+  }
+  const cd = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10)
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16)
+  return new Uint8Array(Buffer.concat([...chunks, cd, end]))
+}
+
+describe('parser CSV', () => {
+  it('pemisah terdeteksi (koma, titik koma, tab), BOM dibuang, tanda kutip dan baris baru dalam sel', () => {
+    expect(detectDelimiter('a;b;c\n1;2;3')).toBe(';')
+    expect(detectDelimiter('a\tb\n1\t2')).toBe('\t')
+    const table = parseImportFile('x.csv', enc('﻿Tanggal,Produk,Nominal\n2026-11-01,"Kelas ""Pro"", batch 2",150000\r\n2026-11-02,"baris\nbaru",75000\n\n'))
+    expect(table.format).toBe('csv')
+    expect(table.headers).toEqual(['Tanggal', 'Produk', 'Nominal'])
+    expect(table.rows).toEqual([
+      { Tanggal: '2026-11-01', Produk: 'Kelas "Pro", batch 2', Nominal: '150000' },
+      { Tanggal: '2026-11-02', Produk: 'baris\nbaru', Nominal: '75000' },
+    ])
+  })
+  it('nama kolom kosong/duplikat dibuat unik', () => {
+    expect(parseCsv('Amount,,Amount\n1,2,3').headers).toEqual(['Amount', 'Kolom 2', 'Amount (2)'])
+  })
+  it('tanda kutip tidak ditutup -> galat jelas', () => {
+    expect(() => parseCsv('a,b\n"1,2')).toThrow(/tanda kutip/)
+  })
+})
+
+describe('parser JSON', () => {
+  it('array object, atau object dengan items; object bersarang diratakan', () => {
+    expect(parseJsonTable('[{"date":"2026-11-01","amount":1.5,"meta":{"site":"a.com"}}]')).toEqual({
+      headers: ['date', 'amount', 'meta.site'],
+      rows: [{ date: '2026-11-01', amount: '1.5', 'meta.site': 'a.com' }],
+    })
+    expect(parseJsonTable('{"items":[{"a":1},{"b":2}]}').headers).toEqual(['a', 'b'])
+    expect(() => parseJsonTable('{"x":1}')).toThrow(RevenueError)
+    expect(() => parseJsonTable('[1,2]')).toThrow(RevenueError)
+  })
+})
+
+describe('parser XLSX', () => {
+  it('membaca worksheet pertama: shared strings, inline string, angka, sel kosong di tengah', () => {
+    const file = zip({
+      'xl/workbook.xml': '<workbook xmlns:r="r"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>',
+      'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="ws" Target="worksheets/sheet1.xml"/></Relationships>',
+      'xl/sharedStrings.xml': '<sst><si><t>Date</t></si><si><t>Amount</t></si><si><t>Product</t></si><si><r><t>Kelas </t></r><r><t>&amp; Modul</t></r></si></sst>',
+      'xl/worksheets/sheet1.xml': '<worksheet><sheetData>'
+        + '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row>'
+        + '<row r="2"><c r="A2"><v>46327</v></c><c r="B2"><v>12.5</v></c><c r="C2" t="s"><v>3</v></c></row>'
+        + '<row r="3"><c r="A3" t="inlineStr"><is><t>2026-11-02</t></is></c><c r="C3" t="inlineStr"><is><t>E-book</t></is></c></row>'
+        + '</sheetData></worksheet>',
+    })
+    const table = parseImportFile('laporan.xlsx', file)
+    expect(table.format).toBe('xlsx')
+    expect(table.headers).toEqual(['Date', 'Amount', 'Product'])
+    expect(table.rows).toEqual([
+      { Date: '46327', Amount: '12.5', Product: 'Kelas & Modul' },
+      { Date: '2026-11-02', Amount: '', Product: 'E-book' },
+    ])
+    expect(parseDateText('46327', 'auto')).toBe('2026-11-01') // nomor seri Excel
+  })
+  it('.xls lama ditolak dengan arahan', () => {
+    expect(() => parseImportFile('lama.xls', new Uint8Array([0x50, 0x4b, 3, 4]))).toThrow(/xlsx atau CSV/)
+  })
+})
+
+describe('mapping kolom impor', () => {
+  it('usulan mapping dari nama kolom umum', () => {
+    expect(suggestMapping(['Payment ID', 'Created At', 'Product', 'Amount', 'Currency', 'Status'])).toMatchObject({
+      date: 'Created At', amount: 'Amount', currency: 'Currency', externalId: 'Payment ID', status: 'Status', description: 'Product',
+    })
+  })
+
+  it('tanggal: ISO, DD/MM, MM/DD; ambigu ditolak pada mode auto', () => {
+    expect(parseDateText('2026-11-01T10:00:00Z', 'auto')).toBe('2026-11-01')
+    expect(parseDateText('25/11/2026', 'auto')).toBe('2026-11-25')
+    expect(parseDateText('11/25/2026', 'auto')).toBe('2026-11-25')
+    expect(parseDateText('03/04/2026', 'auto')).toBeNull()
+    expect(parseDateText('03/04/2026', 'DD/MM/YYYY')).toBe('2026-04-03')
+    expect(parseDateText('31/02/2026', 'DD/MM/YYYY')).toBeNull()
+  })
+
+  const rows = [
+    { 'Payment ID': 'pay_1', 'Created At': '2026-11-01', Product: 'Pro', Amount: '$29.00', Currency: 'usd', Status: 'paid' },
+    { 'Payment ID': 'pay_2', 'Created At': '2026-11-02', Product: 'Pro', Amount: '29', Currency: 'USD', Status: 'refunded' },
+    { 'Payment ID': 'pay_1', 'Created At': '2026-11-01', Product: 'Pro', Amount: '29', Currency: 'USD', Status: 'paid' },
+    { 'Payment ID': 'pay_3', 'Created At': 'kemarin', Product: 'Pro', Amount: 'x', Currency: 'USD', Status: 'paid' },
+    { 'Payment ID': 'pay_4', 'Created At': '2026-11-03', Product: 'Pro', Amount: '29', Currency: 'USD', Status: 'failed' },
+  ]
+  const mapping = importMappingSchema.parse({ date: 'Created At', amount: 'Amount', currency: 'Currency', externalId: 'Payment ID', status: 'Status', description: 'Product' })
+
+  it('validasi per baris: inserted/duplikat/galat/status bukan pemasukan dilaporkan dengan nomor baris', () => {
+    const result = mapImportRows(rows, mapping, { sourceCode: 'whop', defaultCurrency: 'USD' })
+    expect(result.entries.map((e) => [e.row, e.entry.idempotencyKey, e.entry.grossAmount, e.entry.status])).toEqual([
+      [1, 'whop:ext:pay_1', '29', 'finalized'],
+      [2, 'whop:ext:pay_2:refund', '-29', 'refunded'],
+    ])
+    expect(result.entries[1]?.entry.note).toBeTruthy()
+    expect(result.duplicates).toEqual([
+      { row: 3, message: 'duplikat baris 1 di file yang sama' },
+      { row: 5, message: 'status "failed" bukan pemasukan; dilewati' },
+    ])
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]?.row).toBe(4)
+    expect(result.errors[0]?.message).toMatch(/tanggal "kemarin".*nominal/)
+  })
+
+  it('tanpa kolom ID: kunci dari hash isi baris (impor ulang file sama -> kunci sama)', () => {
+    const m = importMappingSchema.parse({ date: 'Created At', amount: 'Amount', currencyFixed: 'USD' })
+    const a = mapImportRows(rows.slice(0, 1), m, { sourceCode: 'whop', defaultCurrency: 'IDR' })
+    const b = mapImportRows(rows.slice(0, 1), m, { sourceCode: 'whop', defaultCurrency: 'IDR' })
+    expect(a.entries[0]?.entry.idempotencyKey).toMatch(/^whop:row:[0-9a-f]{32}$/)
+    expect(a.entries[0]?.entry.idempotencyKey).toBe(b.entries[0]?.entry.idempotencyKey)
+    expect(a.entries[0]?.entry.currency).toBe('USD')
+  })
+
+  it('kolom domain dipetakan ke properti; metrik angka dibaca', () => {
+    const m = importMappingSchema.parse({ date: 'd', amount: 'a', property: 'site', metrics: { impressions: 'imp' }, currencyFixed: 'USD' })
+    const result = mapImportRows([{ d: '2026-11-01', a: '1.5', site: 'https://www.beritakonoha.id/', imp: '1,200' }], m, { sourceCode: 'x', defaultCurrency: 'IDR' })
+    expect(result.entries[0]?.entry).toMatchObject({ propertyDomain: 'beritakonoha.id', metrics: { impressions: 1200 }, dimensions: { domain: 'https://www.beritakonoha.id/' } })
+  })
+})
+```
+
+`packages/core/src/revenue/revenue-repository.test.ts`
+
+```ts
+// Ledger pendapatan terhadap database dev (dilewati tanpa DATABASE_URL),
+// sebagai role aplikasi blog_app. Test memakai sumber dan situs uji sendiri
+// (kode unik per proses) yang dihapus di afterAll; data contoh dan sumber
+// bawaan tidak disentuh.
+import { createDatabase, eq, inArray, revenueFxRates, revenueLedgerEntries, revenueLedgerRevisions, revenueProperties, revenueSources, sql } from '@framework/db'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { EditorError } from '../editor/errors'
+import { createRepositories } from '../repositories'
+import { LYNK_SIGNATURE_HEADER, lynkSignature, sampleLynkPayload } from './adapters/lynk'
+import { importMappingSchema, mapImportRows } from './import/mapping'
+import { parseImportFile } from './import/parse-file'
+import { createRevenueService, MOCK_LYNK_MERCHANT_KEY } from './revenue-service'
+
+const run = `r${process.pid}x${Date.now().toString(36)}`
+const NOW = new Date('2026-11-22T05:00:00Z') // 12:00 WIB
+const DOMAIN_A = `${run}-a.test`
+const DOMAIN_B = `${run}-b.test`
+
+describe.skipIf(!process.env['DATABASE_URL'])('ledger pendapatan (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 4, applicationName: 'vitest-revenue' })
+  const repos = createRepositories(db, { now: () => NOW, revenue: { baseCurrency: 'IDR', timeZone: 'Asia/Jakarta' } })
+  const env: Record<string, string | undefined> = { REVENUE_MOCK: 'false' }
+  const service = createRevenueService({ revenue: repos.revenue, queries: repos.revenueQueries }, {
+    env,
+    fetch: async () => { throw new Error('jaringan tidak boleh dipakai di test') },
+    now: () => NOW,
+    mockSites: [{ domain: DOMAIN_A, weight: 1 }, { domain: DOMAIN_B, weight: 0.5 }],
+  })
+  const codes = { manual: `${run}_manual`, adsterra: `${run}_adsterra`, adsense: `${run}_adsense`, lynk: `${run}_lynk` }
+  const sourceIds: string[] = []
+  let propertyA = ''
+  const currency = 'XTS' // kode ISO untuk uji; kurs uji tidak memengaruhi USD
+
+  beforeAll(async () => {
+    const rows = await db.insert(revenueSources).values([
+      { code: codes.manual, name: 'Uji manual', connector: 'generic', integrationType: 'manual', defaultCurrency: 'IDR' },
+      { code: codes.adsterra, name: 'Uji Adsterra', connector: 'adsterra', integrationType: 'api', defaultCurrency: currency, credentialsEnv: 'UJI_ADSTERRA', lookbackDays: 3, config: { mock: true } },
+      { code: codes.adsense, name: 'Uji AdSense', connector: 'adsense', integrationType: 'api', defaultCurrency: currency, credentialsEnv: 'UJI_ADSENSE', lookbackDays: 2, config: { mock: true, currencyCode: currency, finalizeDay: 7 } },
+      { code: codes.lynk, name: 'Uji Lynk', connector: 'lynk', integrationType: 'webhook', defaultCurrency: 'IDR', credentialsEnv: 'UJI_LYNK', config: { timezone: 'Asia/Jakarta' } },
+    ]).returning({ id: revenueSources.id })
+    sourceIds.push(...rows.map((r) => r.id))
+    const p = await repos.revenue.createProperty({ code: `${run}-a`, name: 'Situs uji A', domain: `https://www.${DOMAIN_A}/` })
+    propertyA = p.id
+    expect(p.domain).toBe(DOMAIN_A)
+  })
+
+  afterAll(async () => {
+    await db.delete(revenueLedgerEntries).where(inArray(revenueLedgerEntries.sourceId, sourceIds))
+    await db.delete(revenueSources).where(inArray(revenueSources.id, sourceIds))
+    await db.delete(revenueProperties).where(sql`${revenueProperties.code} LIKE ${`${run}-%`}`)
+    await db.delete(revenueFxRates).where(eq(revenueFxRates.currency, currency))
+    await db.$client.end()
+  })
+
+  const source = (code: string) => repos.revenue.requireSource(code)
+
+  it('upsert idempoten: kunci sama -> unchanged; angka berubah -> update + revisi oleh trigger', async () => {
+    const s = await source(codes.manual)
+    const entry = { idempotencyKey: `${run}:k1`, reportDate: '2026-11-20', grossAmount: '150000', currency: 'IDR', status: 'estimated' as const, metrics: { orders: 1 } }
+    const first = await repos.revenue.upsertEntries(s, [entry], { channel: 'manual' })
+    expect(first.counts).toMatchObject({ inserted: 1, failed: 0 })
+    const again = await repos.revenue.upsertEntries(s, [{ ...entry, grossAmount: '150000.000' }], { channel: 'manual' })
+    expect(again.counts).toMatchObject({ unchanged: 1, inserted: 0 })
+    const revised = await repos.revenue.upsertEntries(s, [{ ...entry, grossAmount: '175000', status: 'finalized' }], { channel: 'manual' })
+    expect(revised.counts).toMatchObject({ updated: 1 })
+    const id = first.results[0]?.entryId as string
+    const [row] = await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.id, id))
+    expect(row).toMatchObject({ grossAmount: '175000.000000', normalizedAmount: '175000.00', fxRateToBase: '1.00000000', status: 'finalized', revision: 2 })
+    const revisions = await db.select().from(revenueLedgerRevisions).where(eq(revenueLedgerRevisions.entryId, id))
+    expect(revisions).toHaveLength(1)
+    expect(revisions[0]).toMatchObject({ revision: 1, grossAmount: '150000.000000', status: 'estimated' })
+    // Final tidak turun ke estimated (aturan aplikasi) ...
+    const downgrade = await repos.revenue.upsertEntries(s, [{ ...entry, grossAmount: '1' }], { channel: 'manual' })
+    expect(downgrade.counts.skipped).toBe(1)
+    // ... dan dijaga database untuk jalur mana pun.
+    await expect(db.update(revenueLedgerEntries).set({ status: 'estimated' }).where(eq(revenueLedgerEntries.id, id))).rejects.toThrow()
+    await expect(db.update(revenueLedgerEntries).set({ idempotencyKey: 'lain' }).where(eq(revenueLedgerEntries.id, id))).rejects.toThrow()
+    await expect(db.update(revenueLedgerRevisions).set({ status: 'x' }).where(eq(revenueLedgerRevisions.entryId, id))).rejects.toThrow()
+  })
+
+  it('baris tidak valid gagal sendiri (savepoint), baris lain tetap tersimpan', async () => {
+    const s = await source(codes.manual)
+    const result = await repos.revenue.upsertEntries(s, [
+      { idempotencyKey: `${run}:bad`, reportDate: '2026-02-30', grossAmount: '1', currency: 'IDR', status: 'finalized' },
+      { idempotencyKey: `${run}:ok`, reportDate: '2026-11-21', grossAmount: '1', currency: 'IDR', status: 'finalized' },
+      { idempotencyKey: `${run}:ref`, reportDate: '2026-11-21', grossAmount: '5', currency: 'IDR', status: 'refunded', note: 'x' },
+    ], { channel: 'manual' })
+    expect(result.counts).toMatchObject({ inserted: 1, failed: 2 })
+  })
+
+  it('kurs: tanpa kurs entri tersimpan tanpa konversi; recompute mengisinya memakai kurs terakhir <= tanggal', async () => {
+    const s = await source(codes.manual)
+    const result = await repos.revenue.upsertEntries(s, [
+      { idempotencyKey: `${run}:fx1`, reportDate: '2026-11-10', grossAmount: '2.5', currency, status: 'finalized' },
+      { idempotencyKey: `${run}:fx2`, reportDate: '2026-11-21', grossAmount: '1.154', currency, status: 'finalized' },
+    ], { channel: 'manual' })
+    expect(result.counts.inserted).toBe(2)
+    const [before] = await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.idempotencyKey, `${run}:fx1`))
+    expect(before?.normalizedAmount).toBeNull()
+
+    await repos.revenue.upsertFxRate({ currency, rateDate: '2026-11-01', rate: '16000' }, null)
+    await repos.revenue.upsertFxRate({ currency, rateDate: '2026-11-15', rate: '16250.5' }, null)
+    await expect(repos.revenue.upsertFxRate({ currency: 'IDR', rateDate: '2026-11-01', rate: '1' }, null)).rejects.toBeInstanceOf(EditorError)
+    expect(await repos.revenue.recomputeFx({ mode: 'missing' })).toBeGreaterThanOrEqual(2)
+    const rows = await db.select().from(revenueLedgerEntries).where(inArray(revenueLedgerEntries.idempotencyKey, [`${run}:fx1`, `${run}:fx2`])).orderBy(revenueLedgerEntries.reportDate)
+    expect(rows.map((r) => [r.fxRateToBase, r.normalizedAmount, r.revision])).toEqual([
+      ['16000.00000000', '40000.00', 1],
+      ['16250.50000000', '18753.08', 1], // mengisi kurs kosong bukan revisi
+    ])
+    // Koreksi kurs untuk rentang: tercatat sebagai revisi.
+    await repos.revenue.upsertFxRate({ currency, rateDate: '2026-11-15', rate: '16300' }, null)
+    expect(await repos.revenue.recomputeFx({ mode: 'range', currency, from: '2026-11-15', to: '2026-11-30' })).toBe(1)
+    const [fx2] = await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.idempotencyKey, `${run}:fx2`))
+    expect(fx2).toMatchObject({ normalizedAmount: '18810.20', revision: 2 })
+  })
+
+  it('input manual + adjustment wajib alasan; refund sebagian lalu sisa, tidak boleh melebihi', async () => {
+    await expect(repos.revenue.createManualEntry({ sourceCode: codes.manual, reportDate: '2026-11-21', amount: '-5000', currency: 'IDR', kind: 'adjustment', description: 'Koreksi' }, null)).rejects.toThrow(/Alasan/)
+    const adj = await repos.revenue.createManualEntry({ sourceCode: codes.manual, reportDate: '2026-11-21', amount: '-5000', currency: 'IDR', kind: 'adjustment', description: 'Koreksi selisih', note: 'Rekonsiliasi November' }, null)
+    expect(adj.entryId).toBeTruthy()
+    const deal = await repos.revenue.createManualEntry({ sourceCode: codes.manual, propertyId: propertyA, reportDate: '2026-11-21', amount: '2500000', currency: 'IDR', kind: 'income', description: 'Brand deal', externalId: `${run}-inv-1` }, null)
+    await expect(repos.revenue.createManualEntry({ sourceCode: codes.manual, reportDate: '2026-11-21', amount: '1', currency: 'IDR', kind: 'income', description: 'x', externalId: `${run}-inv-1` }, null)).rejects.toThrow(/sudah pernah/)
+    await repos.revenue.createRefund(deal.entryId, { amount: '500000', note: 'Pengembalian sebagian' }, null)
+    await expect(repos.revenue.createRefund(deal.entryId, { amount: '2500000', note: 'lebih' }, null)).rejects.toThrow(/melebihi/)
+    await repos.revenue.createRefund(deal.entryId, { note: 'Sisa' }, null)
+    await expect(repos.revenue.createRefund(deal.entryId, { note: 'lagi' }, null)).rejects.toThrow(/refund penuh/)
+    const detail = await repos.revenueQueries.getEntry(deal.entryId)
+    expect(detail.corrections.map((c) => (c as { grossAmount: string }).grossAmount)).toEqual(['-500000.000000', '-2000000.000000'])
+  })
+
+  it('webhook Lynk: tanda tangan, duplikat tidak menggandakan saldo, event uji tidak menulis ledger', async () => {
+    env['UJI_LYNK_MERCHANT_KEY'] = 'kunci-uji'
+    const payload = sampleLynkPayload({ refId: `${run}-order-1`, messageId: `${run}-msg-1`, grandTotal: 97000, price: 100000, title: 'Kelas Menulis', createdAt: '2026-11-22T09:15:00' })
+    const body = JSON.stringify(payload)
+    const sig = lynkSignature(payload, 'kunci-uji')
+
+    expect((await service.handleWebhook(codes.lynk, body, { [LYNK_SIGNATURE_HEADER]: 'a'.repeat(64) })).status).toBe(401)
+    const ok = await service.handleWebhook(codes.lynk, body, { [LYNK_SIGNATURE_HEADER]: sig })
+    expect(ok).toMatchObject({ status: 200, body: { status: 'processed' } })
+    // Pengiriman ulang (message_id baru, order sama) -> duplicate.
+    const retry = { ...payload, data: { ...payload.data, message_id: `${run}-msg-2` } }
+    const dup = await service.handleWebhook(codes.lynk, JSON.stringify(retry), { [LYNK_SIGNATURE_HEADER]: lynkSignature(retry, 'kunci-uji') })
+    expect(dup).toMatchObject({ status: 200, body: { status: 'duplicate', entryId: ok.body.entryId } })
+    const s = await source(codes.lynk)
+    const entries = await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.sourceId, s.id))
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ grossAmount: '97000.000000', normalizedAmount: '97000.00', reportDate: '2026-11-22', channelType: 'webhook', externalId: `${run}-order-1` })
+    expect(entries[0]?.occurredAt?.toISOString()).toBe('2026-11-22T02:15:00.000Z')
+
+    const tested = await service.sendTestWebhook(codes.lynk)
+    expect(tested).toMatchObject({ status: 200, body: { status: 'tested' } })
+    expect(await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.sourceId, s.id))).toHaveLength(1)
+
+    delete env['UJI_LYNK_MERCHANT_KEY']
+    expect((await service.handleWebhook(codes.lynk, body, { [LYNK_SIGNATURE_HEADER]: sig })).status).toBe(503)
+    expect((await service.handleWebhook(codes.lynk, '{', {})).status).toBe(400)
+    expect((await service.handleWebhook('tidak-ada', body, {})).status).toBe(404)
+
+    const detail = await repos.revenueQueries.sourceDetail(codes.lynk, { from: '2026-11-01', to: '2026-11-22' })
+    const statuses = (detail.webhooks as { status: string; test: boolean }[]).map((w) => `${w.status}${w.test ? ':test' : ''}`)
+    // Terbaru dulu: 400 (rejected), 503 (failed), uji, duplikat, sah, tanda tangan salah.
+    expect(statuses).toEqual(['rejected', 'failed', 'processed:test', 'duplicate', 'processed', 'rejected'])
+    expect(MOCK_LYNK_MERCHANT_KEY).toBe('mock-merchant-key')
+  })
+
+  it('sync Adsterra (mock): baris per tanggal x domain x placement, sync ulang unchanged, revisi angka -> updated', async () => {
+    const first = await service.sync(codes.adsterra, { trigger: 'manual' })
+    expect(first).toMatchObject({ status: 'success', mock: true, range: { start: '2026-11-18', end: '2026-11-22' } })
+    expect(first.counts).toMatchObject({ inserted: 5 * 2 * 2, failed: 0 })
+    const again = await service.sync(codes.adsterra, { trigger: 'manual' })
+    expect(again.counts).toMatchObject({ inserted: 0, unchanged: 20 })
+    env['REVENUE_MOCK_REVISION'] = '1'
+    const revised = await service.sync(codes.adsterra, { trigger: 'manual' })
+    delete env['REVENUE_MOCK_REVISION']
+    // Angka direvisi sumber: semua baris diperbarui, versi lama ke revisi.
+    expect(revised.counts).toMatchObject({ updated: 20, skipped: 0 })
+    const s = await source(codes.adsterra)
+    const rows = await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.sourceId, s.id))
+    // Tanpa kurs XTS untuk tanggal itu? Kurs 16000 berlaku sejak 1 Nov -> terkonversi.
+    expect(rows.every((r) => r.normalizedAmount !== null)).toBe(true)
+    expect(rows.filter((r) => r.propertyId === propertyA)).toHaveLength(10)
+    expect(rows.filter((r) => r.propertyId === null)).toHaveLength(10)
+    // Situs B dibuat belakangan: entri lamanya otomatis terhubung.
+    const b = await repos.revenue.createProperty({ code: `${run}-b`, name: 'Situs uji B', domain: DOMAIN_B })
+    expect(b.linkedEntries).toBe(10)
+  })
+
+  it('sync paralel untuk sumber yang sama ditolak (satu run berjalan per sumber)', async () => {
+    const results = await Promise.allSettled([service.sync(codes.adsense, { trigger: 'manual' }), service.sync(codes.adsense, { trigger: 'manual' })])
+    const rejected = results.filter((r) => r.status === 'rejected')
+    expect(rejected).toHaveLength(1)
+    expect(String((rejected[0] as PromiseRejectedResult).reason.message)).toMatch(/sedang berjalan/)
+  })
+
+  it('sync AdSense (mock): header-driven, mata uang dari laporan, kredensial tanpa mock wajib ada', async () => {
+    const summary = await service.sync(codes.adsense, { trigger: 'manual', from: '2026-10-30', to: '2026-11-22' })
+    expect(summary.status).toBe('success')
+    const s = await source(codes.adsense)
+    const rows = await db.select().from(revenueLedgerEntries).where(eq(revenueLedgerEntries.sourceId, s.id))
+    expect(new Set(rows.map((r) => r.currency))).toEqual(new Set([currency]))
+    expect(rows.find((r) => r.reportDate === '2026-10-31')?.status).toBe('finalized')
+    expect(rows.find((r) => r.reportDate === '2026-11-21')?.status).toBe('estimated')
+    // Matikan mock tanpa kredensial -> run gagal dengan pesan, tidak melempar.
+    await db.update(revenueSources).set({ config: { finalizeDay: 7 } }).where(eq(revenueSources.id, s.id))
+    const failed = await service.sync(codes.adsense, { trigger: 'manual' })
+    expect(failed.status).toBe('failed')
+    expect(failed.error).toMatch(/UJI_ADSENSE_CLIENT_ID/)
+  })
+
+  it('impor CSV: commit menulis ledger, impor ulang file sama = unchanged, batch tidak bisa di-commit dua kali', async () => {
+    const s = await source(codes.manual)
+    const csv = 'Payment ID,Date,Product,Amount,Currency,Status,Site\n'
+      + `${run}-p1,2026-11-19,Membership Pro,29.00,${currency},paid,${DOMAIN_A}\n`
+      + `${run}-p2,2026-11-20,Membership Pro,29.00,${currency},refunded,${DOMAIN_A}\n`
+      + `${run}-p3,bukan-tanggal,Membership Pro,29.00,${currency},paid,\n`
+    const commit = async () => {
+      const table = parseImportFile('whop.csv', new TextEncoder().encode(csv))
+      const batchId = await repos.revenue.createImportBatch({ sourceId: s.id, fileName: 'whop.csv', format: table.format, sha256: 'x', headers: table.headers, rows: table.rows, userId: null })
+      const mapping = importMappingSchema.parse({ date: 'Date', amount: 'Amount', currency: 'Currency', externalId: 'Payment ID', status: 'Status', description: 'Product', property: 'Site' })
+      const result = await repos.revenue.commitImportBatch(batchId, (b) => ({ ...mapImportRows(b.rows, mapping, { sourceCode: codes.manual, defaultCurrency: 'IDR' }), mapping }), null)
+      return { batchId, result }
+    }
+    const first = await commit()
+    expect(first.result.counts).toMatchObject({ inserted: 2, failed: 1 })
+    expect(first.result.errors[0]?.row).toBe(3)
+    const second = await commit()
+    expect(second.result.counts).toMatchObject({ inserted: 0, unchanged: 2, failed: 1 })
+    await expect(repos.revenue.commitImportBatch(first.batchId, () => ({ entries: [], errors: [], duplicates: [], mapping: {} }), null)).rejects.toThrow(/sudah di-commit/)
+    const batch = await repos.revenue.getImportBatch(first.batchId)
+    expect(batch).toMatchObject({ status: 'committed', rows: null, inserted: 2, failed: 1 })
+  })
+
+  it('overview dashboard: total, periode sebelumnya, per sumber, per situs, seri', async () => {
+    const sources = [codes.manual, codes.adsterra, codes.adsense, codes.lynk]
+    const o = await repos.revenueQueries.overview({ from: '2026-11-16', to: '2026-11-22', sources }, 'day')
+    expect(o.range).toMatchObject({ previousFrom: '2026-11-09', previousTo: '2026-11-15', today: '2026-11-22' })
+    expect(o.bySource.map((x) => x.code).sort()).toEqual([...sources].sort())
+    const sumSources = o.bySource.reduce((n, x) => n + Number(x.amount), 0)
+    expect(sumSources).toBeCloseTo(Number(o.total), 2)
+    const sumSeries = o.series.reduce((n, x) => n + Number(x.amount), 0)
+    expect(sumSeries).toBeCloseTo(Number(o.total), 2)
+    expect(o.byProperty.some((p) => p.propertyId === propertyA)).toBe(true)
+    const weekly = await repos.revenueQueries.overview({ from: '2026-11-01', to: '2026-11-22', sources }, 'month')
+    expect(new Set(weekly.series.map((x) => x.bucket))).toEqual(new Set(['2026-11-01']))
+    const onlyFinal = await repos.revenueQueries.overview({ from: '2026-11-16', to: '2026-11-22', sources, statuses: ['finalized'] }, 'day')
+    expect(onlyFinal.byStatus.map((x) => x.status)).toEqual(['finalized'])
+    const health = await repos.revenueQueries.health()
+    expect(health.find((h) => h.code === codes.adsense)?.lastRun?.status).toBe('failed')
+    const detail = await repos.revenueQueries.sourceDetail(codes.adsterra, { from: '2026-11-16', to: '2026-11-22' })
+    expect(Number(detail.metrics['impressions'])).toBeGreaterThan(0)
+    expect(detail.breakdowns.map((b) => b.key).sort()).toEqual(['domain', 'placement'])
+  })
+})
+```
+
+19. Tulis lapisan server. Semua route `/api/admin/revenue/*` lewat `defineRevenueHandler`: sesi admin, superadmin (selain itu 404), dan pemetaan galat. Info sumber untuk UI hanya berisi nama env yang belum diisi, tidak pernah nilainya:
+
+`apps/web/server/utils/revenue.ts`
+
+```ts
+// Dashboard pendapatan (ADR-011) di server: service per proses dan
+// pembungkus route /api/admin/revenue/*.
+//
+// Data pendapatan lintas situs, jadi hanya superadmin (users.is_superadmin)
+// yang boleh membaca/menulis. User lain mendapat 404 agar keberadaan fitur
+// tidak terbaca. Kredensial sumber hanya dibaca dari env di sini (server);
+// tidak ada route yang mengembalikan nilainya, hanya nama env var yang belum diisi.
+import { createRevenueService, EditorError, RevenueError, type RevenueService } from '@framework/core'
+import { createError, defineEventHandler, getQuery, type RequestEvent } from 'nuxt/server'
+import { requireAdmin, type AdminContext } from './admin'
+import { toHttpError } from './admin-api'
+import { useRepositories } from './database'
+
+let service: RevenueService | undefined
+
+export function useRevenueService(): RevenueService {
+  const repos = useRepositories()
+  service ??= createRevenueService({ revenue: repos.revenue, queries: repos.revenueQueries }, {
+    env: process.env,
+    fetch: (input, init) => fetch(input, init),
+    now: () => new Date(),
+  })
+  return service
+}
+
+export interface RevenueContext {
+  event: RequestEvent
+  admin: AdminContext
+  service: RevenueService
+  repos: ReturnType<typeof useRepositories>
+}
+
+/** Sesi admin + superadmin; selain itu 404. */
+export async function requireRevenueAdmin(event: RequestEvent): Promise<AdminContext> {
+  const admin = await requireAdmin(event)
+  if (!admin.user.isSuperadmin) throw createError({ statusCode: 404, statusMessage: 'Tidak ditemukan' })
+  return admin
+}
+
+export function defineRevenueHandler<T>(handler: (ctx: RevenueContext) => Promise<T>) {
+  return defineEventHandler(async (event) => {
+    const admin = await requireRevenueAdmin(event)
+    try {
+      return await handler({ event, admin, service: useRevenueService(), repos: useRepositories() })
+    } catch (error) {
+      if (error instanceof RevenueError) throw createError({ statusCode: 422, statusMessage: error.message, data: { kind: 'invalid', issues: [] } })
+      if (error instanceof Error && /rentang/.test(error.message) && !(error instanceof EditorError)) {
+        throw createError({ statusCode: 422, statusMessage: error.message, data: { kind: 'invalid', issues: [] } })
+      }
+      throw toHttpError(error)
+    }
+  })
+}
+
+const LIST = /^[a-z0-9_,]*$/
+
+/** Filter umum dari query string: from, to, sources=a,b, statuses=x,y, property. */
+export function readFilters(event: RequestEvent, today: string) {
+  const q = getQuery(event)
+  const text = (k: string) => (typeof q[k] === 'string' ? (q[k] as string) : '')
+  const list = (k: string) => (LIST.test(text(k)) ? text(k).split(',').filter(Boolean) : [])
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(text('from')) ? text('from') : addDaysIso(today, -29)
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(text('to')) ? text('to') : today
+  const property = text('property')
+  return {
+    from,
+    to,
+    sources: list('sources'),
+    statuses: list('statuses') as ('estimated' | 'finalized' | 'adjusted' | 'refunded')[],
+    propertyId: property === 'none' || /^[0-9a-f-]{36}$/i.test(property) ? property : null,
+  }
+}
+
+function addDaysIso(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+/** Info sumber untuk UI: tanpa nilai rahasia; hanya status kredensial, mode mock, dan URL webhook. */
+export function describeSource(svc: RevenueService, source: Parameters<RevenueService['credentialStatus']>[0], origin: string) {
+  return {
+    ...source,
+    mock: svc.isMock(source),
+    credentials: svc.credentialStatus(source),
+    webhookUrl: source.connector === 'lynk' ? `${origin}/api/webhooks/revenue/${source.code}` : null,
+    canSync: ['adsterra', 'adsense', 'headless'].includes(source.connector),
+  }
+}
+```
+
+`apps/web/server/api/admin/revenue/overview.get.ts`
+
+```ts
+// GET /api/admin/revenue/overview?from&to&sources&statuses&property&granularity
+// KPI, tren per sumber, per situs, per status, aktivitas terbaru, dan
+// kesehatan konektor dalam satu respons (satu filter untuk seluruh dashboard).
+import { getQuery, getRequestURL } from 'nuxt/server'
+import { defineRevenueHandler, describeSource, readFilters } from '../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos, service }) => {
+  const today = repos.revenueQueries.today()
+  const filters = readFilters(event, today)
+  const g = getQuery(event)['granularity']
+  const granularity = g === 'week' || g === 'month' ? g : 'day'
+  const origin = getRequestURL(event, { xForwardedProto: true }).origin
+  const [overview, recent, health, sources, properties] = await Promise.all([
+    repos.revenueQueries.overview(filters, granularity),
+    repos.revenueQueries.recent({ sources: filters.sources, propertyId: filters.propertyId }, 10),
+    repos.revenueQueries.health(),
+    repos.revenue.listSources(),
+    repos.revenue.listProperties(),
+  ])
+  return {
+    granularity,
+    overview,
+    recent,
+    health,
+    sources: sources.map((s) => describeSource(service, s, origin)),
+    properties,
+    settings: repos.revenue.settings,
+  }
+})
+```
+
+`apps/web/server/api/admin/revenue/sources/index.get.ts`
+
+```ts
+// GET /api/admin/revenue/sources: semua sumber + status kredensial (tanpa nilai), mode mock, URL webhook.
+import { getRequestURL } from 'nuxt/server'
+import { defineRevenueHandler, describeSource } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos, service }) => {
+  const origin = getRequestURL(event, { xForwardedProto: true }).origin
+  const [sources, properties] = await Promise.all([repos.revenue.listSources(), repos.revenue.listProperties()])
+  return { sources: sources.map((s) => describeSource(service, s, origin)), properties, settings: repos.revenue.settings, headlessEnabled: process.env['REVENUE_HEADLESS_ENABLED'] === 'true', schedulerEnabled: process.env['REVENUE_SCHEDULER'] === 'true' }
+})
+```
+
+`apps/web/server/api/admin/revenue/sources/[code].get.ts`
+
+```ts
+// GET /api/admin/revenue/sources/:code?from&to&property: detail satu sumber (metrik, tren, dimensi, run, webhook, impor).
+import { getRequestURL } from 'nuxt/server'
+import { param } from '../../../../utils/admin-api'
+import { defineRevenueHandler, describeSource, readFilters } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos, service }) => {
+  const code = param(event, 'code')
+  const source = await repos.revenue.requireSource(code)
+  const filters = readFilters(event, repos.revenueQueries.today())
+  const detail = await repos.revenueQueries.sourceDetail(code, { from: filters.from, to: filters.to, statuses: filters.statuses, propertyId: filters.propertyId })
+  return { source: describeSource(service, source, getRequestURL(event, { xForwardedProto: true }).origin), detail, range: service.defaultRange(source, repos.revenueQueries.today()) }
+})
+```
+
+`apps/web/server/api/admin/revenue/sources/[code].put.ts`
+
+```ts
+// PUT { name?, isActive?, defaultCurrency?, syncIntervalMinutes?, lookbackDays?, config?, updatedAt }.
+// config hanya non-rahasia (divalidasi per connector); kunci yang mirip rahasia ditolak.
+import { readBody } from 'nuxt/server'
+import { param } from '../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => repos.revenue.updateSource(param(event, 'code'), await readBody(event)))
+```
+
+`apps/web/server/api/admin/revenue/sources/index.post.ts`
+
+```ts
+// POST { code, name, connector: generic|headless, integrationType, defaultCurrency }: sumber lain (impor file/manual/headless).
+import { readBody } from 'nuxt/server'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => repos.revenue.createSource(await readBody(event)))
+```
+
+`apps/web/server/api/admin/revenue/sources/[code]/sync.post.ts`
+
+```ts
+// POST { from?, to? }: tarik data sekarang (Adsterra, AdSense, headless). Tanpa rentang = jendela lookback.
+import { readBody } from 'nuxt/server'
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, admin, service }) => {
+  const body = ((await readBody(event)) ?? {}) as { from?: unknown; to?: unknown }
+  const from = typeof body.from === 'string' && body.from ? body.from : undefined
+  const to = typeof body.to === 'string' && body.to ? body.to : undefined
+  return service.sync(param(event, 'code'), { from, to, trigger: 'manual', userId: admin.user.id })
+})
+```
+
+`apps/web/server/api/admin/revenue/sources/[code]/test.post.ts`
+
+```ts
+// POST: uji koneksi sumber (OAuth/API token/merchant key) tanpa menulis ledger.
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, service }) => service.testConnection(param(event, 'code')))
+```
+
+`apps/web/server/api/admin/revenue/sources/[code]/webhook-test.post.ts`
+
+```ts
+// POST: kirim event Lynk.id contoh bertanda tangan ke handler webhook (tidak menulis ledger).
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, service }) => (await service.sendTestWebhook(param(event, 'code'))).body)
+```
+
+`apps/web/server/api/admin/revenue/entries/index.get.ts`
+
+```ts
+// GET /api/admin/revenue/entries?from&to&sources&statuses&property&q&channel&page&pageSize
+import { getQuery } from 'nuxt/server'
+import { defineRevenueHandler, readFilters } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => {
+  const filters = readFilters(event, repos.revenueQueries.today())
+  const q = getQuery(event)
+  return repos.revenueQueries.listEntries(
+    { ...filters, q: typeof q['q'] === 'string' ? q['q'] : undefined, channel: typeof q['channel'] === 'string' ? q['channel'] : undefined },
+    { page: Number(q['page']) || 1, pageSize: Number(q['pageSize']) || 25 },
+  )
+})
+```
+
+`apps/web/server/api/admin/revenue/entries/index.post.ts`
+
+```ts
+// POST { sourceCode, kind: income|adjustment, reportDate, amount, currency, description, note?, propertyId?, externalId?, adjustsEntryId? }
+import { readBody } from 'nuxt/server'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, admin, repos }) => repos.revenue.createManualEntry(await readBody(event), admin.user.id))
+```
+
+`apps/web/server/api/admin/revenue/entries/[id].get.ts`
+
+```ts
+// GET: satu entri ledger + riwayat revisi + koreksi/refund yang merujuknya.
+import { param } from '../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => repos.revenueQueries.getEntry(param(event, 'id')))
+```
+
+`apps/web/server/api/admin/revenue/entries/[id]/refund.post.ts`
+
+```ts
+// POST { amount?, note }: catat refund (penuh bila amount kosong) sebagai entri negatif berstatus refunded.
+import { readBody } from 'nuxt/server'
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, admin, repos }) => repos.revenue.createRefund(param(event, 'id'), await readBody(event), admin.user.id))
+```
+
+`apps/web/server/api/admin/revenue/properties/index.get.ts`
+
+```ts
+// GET: situs penghasil pendapatan + site framework yang bisa ditautkan.
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ admin, repos }) => ({ properties: await repos.revenue.listProperties(), sites: admin.sites.map((s) => ({ id: s.id, code: s.code, name: s.name })) }))
+```
+
+`apps/web/server/api/admin/revenue/properties/index.post.ts`
+
+```ts
+// POST { code, name, domain?, siteId?, status? }: entri lama berdomain sama otomatis ditautkan.
+import { readBody } from 'nuxt/server'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => repos.revenue.createProperty(await readBody(event)))
+```
+
+`apps/web/server/api/admin/revenue/properties/[id].put.ts`
+
+```ts
+// PUT { code, name, domain?, siteId?, status, updatedAt }
+import { readBody } from 'nuxt/server'
+import { param } from '../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => repos.revenue.updateProperty(param(event, 'id'), await readBody(event)))
+```
+
+`apps/web/server/api/admin/revenue/fx/index.get.ts`
+
+```ts
+// GET: kurs ke mata uang utama + mata uang yang dipakai ledger tetapi belum punya kurs.
+import { sql } from '@framework/db'
+import { queryRows } from '@framework/core'
+import { useDatabase } from '../../../../utils/database'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ repos }) => {
+  const [rates, missing] = await Promise.all([
+    repos.revenue.listFxRates(),
+    queryRows<{ currency: string; entries: number; firstDate: string }>(useDatabase(), sql`
+      SELECT currency, count(*)::int AS entries, to_char(min(report_date), 'YYYY-MM-DD') AS "firstDate"
+        FROM revenue_ledger_entries WHERE normalized_amount IS NULL GROUP BY currency ORDER BY currency`),
+  ])
+  return { baseCurrency: repos.revenue.settings.baseCurrency, rates, missing }
+})
+```
+
+`apps/web/server/api/admin/revenue/fx/index.post.ts`
+
+```ts
+// POST { currency, rateDate, rate, note? }: tambah/ubah kurs (1 currency = rate mata uang utama).
+import { readBody } from 'nuxt/server'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, admin, repos }) => {
+  await repos.revenue.upsertFxRate(await readBody(event), admin.user.id)
+  return { ok: true }
+})
+```
+
+`apps/web/server/api/admin/revenue/fx/delete.post.ts`
+
+```ts
+// POST { currency, rateDate }: hapus satu kurs. Entri yang sudah dikonversi tidak berubah.
+import { readBody } from 'nuxt/server'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => {
+  const body = ((await readBody(event)) ?? {}) as { currency?: unknown; rateDate?: unknown }
+  await repos.revenue.deleteFxRate(String(body.currency ?? ''), String(body.rateDate ?? ''))
+  return { ok: true }
+})
+```
+
+`apps/web/server/api/admin/revenue/fx/recompute.post.ts`
+
+```ts
+// POST { mode: 'missing' } | { mode: 'range', currency, from, to }: isi/hitung ulang konversi.
+import { readBody } from 'nuxt/server'
+import { EditorError } from '@framework/core'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+
+export default defineRevenueHandler(async ({ event, repos }) => {
+  const body = ((await readBody(event)) ?? {}) as Record<string, unknown>
+  if (body['mode'] === 'range') {
+    const currency = String(body['currency'] ?? '')
+    const from = String(body['from'] ?? '')
+    const to = String(body['to'] ?? '')
+    if (!/^[A-Z]{3}$/.test(currency) || !DATE.test(from) || !DATE.test(to) || from > to) throw new EditorError('invalid', 'Isi mata uang dan rentang tanggal yang valid')
+    return { updated: await repos.revenue.recomputeFx({ mode: 'range', currency, from, to }) }
+  }
+  return { updated: await repos.revenue.recomputeFx({ mode: 'missing' }) }
+})
+```
+
+`apps/web/server/api/admin/revenue/runs.get.ts`
+
+```ts
+// GET: riwayat sync semua sumber dan impor file (log operasional).
+import { defineRevenueHandler } from '../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ repos }) => ({ runs: await repos.revenueQueries.listRuns(40), imports: await repos.revenueQueries.listImports(30) }))
+```
+
+20. Tulis route impor: unggah (parse di server, simpan sebagai batch `uploaded`), pratinjau (validasi semua baris dan hitung baris yang sudah ada di ledger dengan `inArray` per 5.000 kunci), commit, dan buang. Jangan mengoper array ke `ANY(${keys})` di template `sql`, karena Drizzle memecahnya menjadi tuple:
+
+`apps/web/server/api/admin/revenue/imports/index.post.ts`
+
+```ts
+// POST multipart (file, sourceCode): unggah CSV/Excel/JSON. File di-parse di
+// server lalu disimpan sebagai batch "uploaded"; belum ada yang masuk ledger.
+// Balasan: kolom, contoh baris, dan usulan mapping untuk wizard.
+import { createHash } from 'node:crypto'
+import { EditorError, MAX_IMPORT_BYTES, parseImportFile, suggestMapping } from '@framework/core'
+import { createError } from 'nuxt/server'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, admin, repos }) => {
+  const length = Number(event.req.headers.get('content-length'))
+  if (!Number.isFinite(length) || length <= 0) throw createError({ statusCode: 411, statusMessage: 'Content-Length wajib diisi' })
+  if (length > MAX_IMPORT_BYTES + 64 * 1024) throw createError({ statusCode: 413, statusMessage: `File maksimal ${MAX_IMPORT_BYTES / 1024 / 1024} MB` })
+  const form = await event.req.formData().catch(() => {
+    throw createError({ statusCode: 400, statusMessage: 'Body harus multipart/form-data' })
+  })
+  const file = form.get('file')
+  const sourceCode = String(form.get('sourceCode') ?? '')
+  if (!(file instanceof Blob)) throw new EditorError('invalid', 'Pilih file', [{ field: 'file', message: 'Pilih file CSV, Excel, atau JSON' }])
+  const source = await repos.revenue.requireSource(sourceCode)
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  const fileName = (file as File).name || 'impor'
+  const table = parseImportFile(fileName, bytes)
+  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  const batchId = await repos.revenue.createImportBatch({ sourceId: source.id, fileName, format: table.format, sha256, headers: table.headers, rows: table.rows, userId: admin.user.id })
+  return {
+    batchId,
+    fileName,
+    format: table.format,
+    headers: table.headers,
+    rowCount: table.rows.length,
+    sample: table.rows.slice(0, 8),
+    suggestion: { ...suggestMapping(table.headers), currencyFixed: source.defaultCurrency },
+    sameFile: await repos.revenue.findSameFile(source.id, sha256, batchId),
+  }
+})
+```
+
+`apps/web/server/api/admin/revenue/imports/[id]/preview.post.ts`
+
+```ts
+// POST { mapping }: validasi semua baris dengan mapping (tanpa menulis):
+// jumlah baris valid, galat per baris, duplikat, perkiraan baru vs sudah ada.
+import { importMappingSchema, mapImportRows, EditorError } from '@framework/core'
+import { readBody } from 'nuxt/server'
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => {
+  const batch = await repos.revenue.getImportBatch(param(event, 'id'))
+  if (batch.status !== 'uploaded' || !batch.rows) throw new EditorError('conflict', 'Batch ini sudah di-commit atau dibuang')
+  const body = ((await readBody(event)) ?? {}) as { mapping?: unknown }
+  const parsed = importMappingSchema.safeParse(body.mapping)
+  if (!parsed.success) throw new EditorError('invalid', 'Mapping belum lengkap', parsed.error.issues.map((i) => ({ field: `mapping.${i.path.join('.')}`, message: i.message })))
+  const missing = [parsed.data.date, parsed.data.amount, parsed.data.currency, parsed.data.externalId, parsed.data.status, parsed.data.description, parsed.data.property, ...Object.values(parsed.data.metrics), ...parsed.data.dimensions]
+    .filter((c): c is string => Boolean(c) && !(batch.headers as string[]).includes(c as string))
+  if (missing.length) throw new EditorError('invalid', `Kolom tidak ada di file: ${missing.join(', ')}`)
+  const source = await repos.revenue.getSourceById(batch.sourceId)
+  const result = mapImportRows(batch.rows as Record<string, string>[], parsed.data, { sourceCode: source?.code ?? 'impor', defaultCurrency: source?.defaultCurrency ?? 'IDR' })
+  const keys = result.entries.map((e) => e.entry.idempotencyKey)
+  const already = await repos.revenue.countExistingKeys(batch.sourceId, keys)
+  return {
+    rowCount: (batch.rows as unknown[]).length,
+    valid: result.entries.length,
+    willInsert: result.entries.length - already,
+    alreadyInLedger: already,
+    errors: result.errors.slice(0, 100),
+    errorCount: result.errors.length,
+    skipped: result.duplicates.slice(0, 100),
+    skippedCount: result.duplicates.length,
+    sample: result.entries.slice(0, 12).map((e) => ({ row: e.row, reportDate: e.entry.reportDate, grossAmount: e.entry.grossAmount, currency: e.entry.currency, status: e.entry.status, description: e.entry.description, externalId: e.entry.externalId, propertyDomain: e.entry.propertyDomain })),
+    currencies: [...new Set(result.entries.map((e) => e.entry.currency))],
+  }
+})
+```
+
+`apps/web/server/api/admin/revenue/imports/[id]/commit.post.ts`
+
+```ts
+// POST { mapping }: tulis batch ke ledger (satu transaksi, savepoint per baris).
+// Hasil: inserted / updated / unchanged / skipped / failed + galat per baris.
+import { EditorError, importMappingSchema, mapImportRows } from '@framework/core'
+import { readBody } from 'nuxt/server'
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, admin, repos }) => {
+  const id = param(event, 'id')
+  const body = ((await readBody(event)) ?? {}) as { mapping?: unknown }
+  const parsed = importMappingSchema.safeParse(body.mapping)
+  if (!parsed.success) throw new EditorError('invalid', 'Mapping belum lengkap', parsed.error.issues.map((i) => ({ field: `mapping.${i.path.join('.')}`, message: i.message })))
+  const mapping = parsed.data
+  const batch = await repos.revenue.getImportBatch(id)
+  const source = await repos.revenue.getSourceById(batch.sourceId)
+  return repos.revenue.commitImportBatch(id, (b) => ({
+    ...mapImportRows(b.rows, mapping, { sourceCode: source?.code ?? 'impor', defaultCurrency: source?.defaultCurrency ?? 'IDR' }),
+    mapping,
+  }), admin.user.id)
+})
+```
+
+`apps/web/server/api/admin/revenue/imports/[id]/discard.post.ts`
+
+```ts
+// POST: buang batch yang belum di-commit (baris hasil parse ikut dihapus).
+import { param } from '../../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => {
+  await repos.revenue.discardImportBatch(param(event, 'id'))
+  return { ok: true }
+})
+```
+
+`apps/web/server/api/admin/revenue/imports/[id].get.ts`
+
+```ts
+// GET: ringkasan satu batch impor (tanpa baris mentah) + galat per baris.
+import { param } from '../../../../utils/admin-api'
+import { defineRevenueHandler } from '../../../../utils/revenue'
+
+export default defineRevenueHandler(async ({ event, repos }) => {
+  const batch: Record<string, unknown> = { ...(await repos.revenue.getImportBatch(param(event, 'id'))) }
+  delete batch['rows']
+  return batch
+})
+```
+
+21. Tulis endpoint webhook publik. Endpoint ini harus bisa dijangkau di Host mana pun, jadi middleware site melewatinya. Pengecualiannya dicocokkan persis pada path yang dilihat router (setelah decode), bukan sebagai awalan, agar `/api/webhooks/revenue/%2e%2e/...` tidak menjadi jalan pintas ke route lain:
+
+`apps/web/server/api/webhooks/revenue/[code].post.ts`
+
+```ts
+// POST /api/webhooks/revenue/:code  -  webhook pembayaran (Lynk.id).
+//
+// Publik (tanpa sesi admin), tidak bergantung Host (middleware site
+// melewatinya), aman karena tanda tangan X-Lynk-Signature diverifikasi
+// dengan merchant key dari env. Body dibaca mentah dengan batas ukuran.
+// Balasan cepat: 200 untuk event yang diterima (termasuk duplikat), 401
+// tanda tangan salah, 503 bila merchant key belum dipasang (agar dikirim ulang).
+import { MAX_WEBHOOK_BYTES } from '@framework/core'
+import { createError, defineEventHandler, getRouterParam, setResponseStatus } from 'nuxt/server'
+import { log } from '../../../utils/log'
+import { useRevenueService } from '../../../utils/revenue'
+
+export default defineEventHandler(async (event) => {
+  const code = getRouterParam(event, 'code') ?? ''
+  if (!/^[a-z0-9_]{1,40}$/.test(code)) throw createError({ statusCode: 404, statusMessage: 'Not Found' })
+  event.res.headers.set('cache-control', 'no-store')
+  const length = Number(event.req.headers.get('content-length') ?? 0)
+  if (length > MAX_WEBHOOK_BYTES) throw createError({ statusCode: 413, statusMessage: 'Payload Too Large' })
+  const raw = await event.req.text()
+  const headers: Record<string, string> = {}
+  event.req.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value
+  })
+  const result = await useRevenueService().handleWebhook(code, raw, headers)
+  if (result.status >= 400) log('warn', 'webhook pendapatan ditolak', { source: code, status: result.status, reason: result.body.message })
+  setResponseStatus(event, result.status)
+  return result.body
+})
+```
+
+`apps/web/server/middleware/site.ts`
+
+```ts
+// Host request -> site, untuk setiap request (ADR-001).
+//
+//   site ditemukan  -> event.context.site / siteDomain; untuk request
+//                      halaman juga theme yang sudah diselesaikan
+//                      (event.context.theme) + view model (event.context.page),
+//                      atau redirect (permalink kanonik, tabel redirects)
+//   domain alias    -> 301 ke domain primary (path dan query dipertahankan)
+//   tidak dikenal   -> 404 netral, tanpa template dan tanpa nama site lain
+//
+// Admin (ADR-009): mode multi -> path admin hanya di ADMIN_HOST (path lain
+// di host itu diarahkan ke /admin, path admin di domain site 404); mode
+// single -> path admin di domain site SITE_CODE, tanpa view model.
+//
+// Host dibaca dari header Host, bukan X-Forwarded-Host: header itu bisa
+// dipalsukan klien. Reverse proxy di produksi wajib meneruskan Host asli.
+import { normalizeHost, resolveSiteRequest } from '@framework/core'
+import { defineEventHandler, getRequestHost, getRequestURL, sendRedirect, setResponseStatus, type RequestEvent } from 'nuxt/server'
+import { isAdminPath, routedPath, useAdminConfig } from '../utils/admin'
+import { NO_STORE, setPublicCache } from '../utils/cache-control'
+import { useRepositories } from '../utils/database'
+import { usePageBuilder } from '../utils/pages'
+import { resolveSiteTheme } from '../utils/templates'
+import { isPreviewPath, preparePreview } from '../utils/theme-preview'
+import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
+
+/** Route yang tidak butuh site: health check container dan aset build Nuxt. */
+const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/**
+ * Webhook pendapatan (ADR-011): tanpa site dan di Host mana pun, diamankan
+ * tanda tangan. Dicocokkan persis pada path yang dilihat router (setelah
+ * decode), bukan awalan, agar tidak bisa dipakai menembus route lain.
+ */
+const WEBHOOK_PATH = /^\/api\/webhooks\/revenue\/[a-z0-9_]{1,40}$/
+/** Route yang butuh site tetapi bukan halaman: dilayani server/routes, tanpa theme dan view model. */
+const NON_PAGE_PREFIXES = ['/api/', '/media/', '/sitemap.xml', '/robots.txt', '/rss.xml']
+
+export default defineEventHandler(async (event) => {
+  // X-Forwarded-Proto hanya memengaruhi skema URL redirect ke domain primary.
+  const url = getRequestURL(event, { xForwardedProto: true })
+  if (BYPASS_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+  if (WEBHOOK_PATH.test(routedPath(url.pathname))) return
+
+  const admin = useAdminConfig()
+  const adminPath = isAdminPath(url.pathname)
+  if (admin.enabled && admin.mode === 'multi' && normalizeHost(getRequestHost(event)) === admin.host) {
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
+    return sendRedirect(event, '/admin', 302)
+  }
+  if (adminPath && (!admin.enabled || admin.mode === 'multi')) return notFound(event)
+
+  const result = await resolveSiteRequest(useSiteMode(), useRepositories().sites, getRequestHost(event))
+
+  if (result.kind === 'site') {
+    const { site, matchedDomain, primaryDomain } = result.resolved
+    event.context.site = site
+    event.context.siteDomain = matchedDomain
+    // URL absolut (canonical, og:url, sitemap, RSS) selalu di domain primary.
+    // Port ikut bila request memakainya (dev :3000); di belakang proxy biasanya kosong.
+    event.context.siteOrigin = `${url.protocol}//${primaryDomain ?? matchedDomain}${url.port ? `:${url.port}` : ''}`
+    if (adminPath) return isPreviewPath(url.pathname) ? preparePreview(event) : adminNoStore(event)
+    if (NON_PAGE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) return
+
+    // Halaman publik: theme diselesaikan dulu (layout section menentukan data
+    // home, ADR-008), lalu view model dibangun di sini, bukan di Vue (ADR-007).
+    const theme = resolveSiteTheme(site, await useRepositories().sites.getActiveTheme(site.id))
+    const built = await usePageBuilder().build({
+      site,
+      pathname: url.pathname,
+      searchParams: url.searchParams,
+      origin: event.context.siteOrigin,
+      layouts: theme.layouts,
+    })
+    if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
+    for (const issue of built.issues) log('warn', 'page issue', { id: event.context.requestId, site: site.code, path: url.pathname, issue })
+    event.context.theme = theme
+    event.context.page = { status: built.status, ...built.page }
+    // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
+    setPublicCache(event, built.status)
+    return
+  }
+
+  if (result.kind === 'redirect') {
+    // API admin di domain alias (mode single): 301 mengubah POST menjadi GET
+    // dan Origin tidak lagi cocok, jadi jawab 404; halaman /admin tetap diarahkan.
+    if (adminPath && event.req.method !== 'GET' && event.req.method !== 'HEAD') return notFound(event)
+    url.hostname = result.toHost
+    return sendRedirect(event, url.toString(), 301)
+  }
+
+  return notFound(event)
+})
+
+/** Halaman admin (SPA) tidak pernah di-cache; API admin sudah diatur admin-guard. */
+function adminNoStore(event: RequestEvent): undefined {
+  event.res.headers.set('cache-control', NO_STORE)
+  return undefined
+}
+
+function notFound(event: RequestEvent) {
+  setResponseStatus(event, 404)
+  event.res.headers.set('content-type', 'text/plain; charset=utf-8')
+  event.res.headers.set('cache-control', 'no-store')
+  return 'Situs tidak ditemukan.\n'
+}
+```
+
+22. Tambahkan penjadwal (hanya bila `REVENUE_SCHEDULER=true`, satu replika) dan CLI untuk cron serta data contoh:
+
+`apps/web/server/plugins/revenue-scheduler.ts`
+
+```ts
+// Penjadwal tarik data pendapatan (ADR-011). Opt-in: REVENUE_SCHEDULER=true.
+//
+// Setiap menit memeriksa sumber yang sudah waktunya (sync_interval_minutes
+// sejak last_sync_at) lalu menjalankannya satu per satu. Aman bila tombol
+// "Sync sekarang" ditekan bersamaan: database hanya mengizinkan satu run
+// berjalan per sumber. Untuk lebih dari satu replika, matikan ini dan
+// jalankan `pnpm revenue:sync --due` dari cron/systemd timer di satu mesin.
+import { log } from '../utils/log'
+import { useRevenueService } from '../utils/revenue'
+
+const TICK_MS = 60_000
+
+export default defineNitroPlugin((nitroApp) => {
+  if (process.env['REVENUE_SCHEDULER'] !== 'true') return
+  let busy = false
+  const tick = async () => {
+    if (busy) return
+    busy = true
+    try {
+      const service = useRevenueService()
+      for (const source of await service.dueSources(new Date())) {
+        const result = await service.sync(source.code, { trigger: 'schedule' }).catch((error: unknown) => {
+          log('warn', 'sync pendapatan dilewati', { source: source.code, error })
+          return null
+        })
+        if (result) log(result.status === 'failed' ? 'warn' : 'info', 'sync pendapatan', { source: source.code, status: result.status, mock: result.mock, ...result.counts, error: result.error ?? undefined })
+      }
+    } catch (error) {
+      log('error', 'penjadwal pendapatan gagal', { error })
+    } finally {
+      busy = false
+    }
+  }
+  const timer = setInterval(() => void tick(), TICK_MS)
+  timer.unref()
+  log('info', 'penjadwal pendapatan aktif', { everySeconds: TICK_MS / 1000 })
+  nitroApp.hooks.hook('close', () => clearInterval(timer))
+})
+```
+
+`apps/web/scripts/revenue-sync.ts`
+
+```ts
+// Tarik data pendapatan dari CLI (ADR-011), untuk cron/systemd timer di
+// produksi (satu mesin) atau uji manual:
+//
+//   pnpm revenue:sync --due                         semua sumber yang sudah waktunya
+//   pnpm revenue:sync --source adsterra             satu sumber, jendela lookback
+//   pnpm revenue:sync --source adsense --from 2026-10-01 --to 2026-10-31
+//
+// Kredensial dari env (lihat .env.example, bagian Pendapatan). Exit code 1
+// bila ada run yang gagal, agar cron/monitoring bisa menangkapnya.
+import { parseArgs } from 'node:util'
+import { createRepositories, createRevenueService, revenueSettingsFromEnv } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv } from '@framework/db'
+
+const { values } = parseArgs({ options: { source: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' }, due: { type: 'boolean', default: false } } })
+if (!values.due && !values.source) {
+  console.error('pakai --due atau --source <kode>')
+  process.exit(2)
+}
+
+const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 2, applicationName: 'revenue-sync' })
+const repos = createRepositories(db, { revenue: revenueSettingsFromEnv(process.env) })
+const service = createRevenueService({ revenue: repos.revenue, queries: repos.revenueQueries }, { env: process.env, fetch: (input, init) => fetch(input, init), now: () => new Date() })
+
+let failed = 0
+try {
+  const codes = values.due ? (await service.dueSources(new Date())).map((s) => s.code) : [values.source as string]
+  if (!codes.length) console.log('tidak ada sumber yang perlu ditarik sekarang')
+  for (const code of codes) {
+    try {
+      const r = await service.sync(code, { trigger: 'cli', from: values.from, to: values.to })
+      const c = r.counts
+      console.log(`${code}: ${r.status}${r.mock ? ' (mock)' : ''} ${r.range.start}..${r.range.end} | ${r.rowsFetched} baris: ${c.inserted} baru, ${c.updated} diperbarui, ${c.unchanged} sama, ${c.skipped} dilewati, ${c.failed} gagal${r.error ? ` | ${r.error}` : ''}`)
+      if (r.status !== 'success') failed++
+    } catch (error) {
+      failed++
+      console.error(`${code}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+} finally {
+  await db.$client.end()
+}
+process.exit(failed ? 1 : 0)
+```
+
+`apps/web/scripts/revenue-demo.ts`
+
+```ts
+// Data CONTOH dashboard pendapatan (ADR-011) untuk database DEV: Adsterra,
+// Google AdSense, Lynk.id, dan Whop, beberapa bulan ke belakang sampai hari
+// ini. Semua angka fiktif dan dimasukkan LEWAT JALUR INGEST SUNGGUHAN:
+//
+//   Adsterra, AdSense  sync dengan fetch mock (bentuk respons API asli)
+//   Lynk.id            webhook payment.received bertanda tangan (+1 kirim ulang, +1 refund manual)
+//   Whop               impor file CSV (wizard yang sama dengan admin)
+//   Lainnya            input manual brand deal + adjustment
+//   Kurs USD->IDR      kurs contoh per bulan (bukan kurs resmi)
+//   Situs              Berita Konoha, Kabar Tekno, Resep Nusantara, Cek Bansos
+//
+//   pnpm revenue:demo                 pasang (ulang) untuk 120 hari terakhir
+//   pnpm revenue:demo --days 60       rentang lain (maks. 360)
+//   pnpm revenue:demo --remove        hapus semua data contoh
+//
+// Penanda data contoh: run sync mock dari skrip ini, refId Lynk "DEMO-",
+// ID pembayaran Whop "demo_pay_", ID eksternal manual "DEMO-", kurs dengan
+// catatan "Contoh". --remove hanya menghapus yang bertanda itu.
+import { parseArgs } from 'node:util'
+import { addDays, createRepositories, createRevenueService, dateInZone, LYNK_SIGNATURE_HEADER, lynkSignature, MOCK_LYNK_MERCHANT_KEY, importMappingSchema, mapImportRows, parseImportFile, revenueSettingsFromEnv, sampleLynkPayload, unitHash } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv, eq, inArray, revenueFxRates, revenueImportBatches, revenueLedgerEntries, revenueProperties, revenueSources, revenueSyncRuns, revenueWebhookEvents, sites, sql } from '@framework/db'
+
+const { values } = parseArgs({ options: { remove: { type: 'boolean', default: false }, days: { type: 'string', default: '120' } } })
+const days = Math.min(Math.max(Number(values.days) || 120, 7), 360)
+
+const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 4, applicationName: 'revenue-demo' })
+const settings = revenueSettingsFromEnv(process.env)
+const repos = createRepositories(db, { revenue: settings })
+// Selalu mock untuk skrip ini: tidak ada request ke jaringan.
+const env: Record<string, string | undefined> = { ...process.env, REVENUE_MOCK: 'true' }
+const service = createRevenueService({ revenue: repos.revenue, queries: repos.revenueQueries }, { env, fetch: () => Promise.reject(new Error('jaringan tidak dipakai')), now: () => new Date() })
+
+const PROPERTIES = [
+  { code: 'beritakonoha', name: 'Berita Konoha', domain: 'beritakonoha.id', siteCode: 'beritakonoha' },
+  { code: 'kabartekno', name: 'Kabar Tekno', domain: 'kabartekno.id', siteCode: 'kabar-tekno' },
+  { code: 'resepnusantara', name: 'Resep Nusantara', domain: 'resepnusantara.com', siteCode: null },
+  { code: 'cekbansos', name: 'Cek Bansos', domain: 'cekbansos.info', siteCode: null },
+]
+
+async function remove() {
+  const demoRuns = db.select({ id: revenueSyncRuns.id }).from(revenueSyncRuns).where(sql`${revenueSyncRuns.log}::text LIKE '%[data contoh]%'`)
+  const deleted = await db.delete(revenueLedgerEntries).where(sql`
+       ${revenueLedgerEntries.syncRunId} IN (${demoRuns})
+    OR ${revenueLedgerEntries.externalId} LIKE 'DEMO-%'
+    OR ${revenueLedgerEntries.externalId} LIKE 'demo_pay_%'
+    OR ${revenueLedgerEntries.adjustsEntryId} IS NOT NULL AND ${revenueLedgerEntries.note} LIKE '%(contoh)%'
+    OR ${revenueLedgerEntries.idempotencyKey} LIKE 'adjustment:%' AND ${revenueLedgerEntries.note} LIKE '%(contoh)%'`).returning({ id: revenueLedgerEntries.id })
+  // Refund contoh merujuk entri contoh; hapus yang tersisa (adjusts_entry_id sudah NULL setelah induknya terhapus).
+  await db.delete(revenueLedgerEntries).where(sql`${revenueLedgerEntries.status} = 'refunded' AND ${revenueLedgerEntries.note} LIKE '%(contoh)%'`)
+  await db.delete(revenueSyncRuns).where(sql`${revenueSyncRuns.log}::text LIKE '%[data contoh]%'`)
+  await db.delete(revenueWebhookEvents).where(sql`${revenueWebhookEvents.externalEventId} LIKE 'DEMO_%'`)
+  await db.delete(revenueImportBatches).where(sql`${revenueImportBatches.fileName} LIKE 'contoh-%'`)
+  await db.delete(revenueFxRates).where(sql`${revenueFxRates.note} LIKE 'Contoh%'`)
+  await db.delete(revenueProperties).where(inArray(revenueProperties.code, PROPERTIES.map((p) => p.code)))
+  const [lynk] = await db.select().from(revenueSources).where(eq(revenueSources.code, 'lynk'))
+  if (lynk && (lynk.config as Record<string, unknown>)['propertyId']) {
+    const config = { ...(lynk.config as Record<string, unknown>) }
+    delete config['propertyId']
+    await db.update(revenueSources).set({ config }).where(eq(revenueSources.id, lynk.id))
+  }
+  await db.update(revenueSources).set({ lastSyncAt: null, lastSyncStatus: null }).where(inArray(revenueSources.code, ['adsterra', 'adsense']))
+  console.log(`hapus  data contoh pendapatan: ${deleted.length} entri ledger (+ run, webhook, impor, kurs, situs contoh)`)
+}
+
+/** Tandai run sync terakhir sumber ini sebagai data contoh (untuk --remove). */
+async function markLastRun(runId: string) {
+  await db.execute(sql`UPDATE revenue_sync_runs SET log = log || '["[data contoh] dibuat pnpm revenue:demo"]'::jsonb WHERE id = ${runId}`)
+}
+
+async function install() {
+  await remove()
+  const today = dateInZone(new Date(), settings.timeZone)
+  const start = addDays(today, -(days - 1))
+
+  // ---------- situs ----------
+  const siteRows = await db.select({ id: sites.id, code: sites.code }).from(sites)
+  const propertyIds = new Map<string, string>()
+  for (const p of PROPERTIES) {
+    const created = await repos.revenue.createProperty({ code: p.code, name: p.name, domain: p.domain, siteId: siteRows.find((s) => s.code === p.siteCode)?.id ?? null })
+    propertyIds.set(p.code, created.id)
+  }
+  console.log(`situs  ${PROPERTIES.length} situs contoh`)
+
+  // ---------- kurs contoh USD -> IDR, per awal bulan ----------
+  if (settings.baseCurrency === 'IDR') {
+    const base = [16380, 16420, 16510, 16590, 16640, 16610, 16700, 16750, 16680, 16720, 16800, 16760, 16820]
+    let monthStart = `${start.slice(0, 7)}-01`
+    for (let i = 0; monthStart <= today; i++) {
+      await repos.revenue.upsertFxRate({ currency: 'USD', rateDate: monthStart, rate: String(base[i % base.length]), note: 'Contoh kurs (bukan kurs resmi)' }, null)
+      const [y, m] = monthStart.split('-').map(Number) as [number, number]
+      monthStart = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10)
+    }
+    console.log('kurs   USD->IDR contoh per bulan')
+  } else {
+    console.log(`kurs   dilewati (mata uang utama ${settings.baseCurrency}); isi kurs di admin`)
+  }
+
+  // ---------- Adsterra + AdSense: sync mock ----------
+  for (const code of ['adsterra', 'adsense']) {
+    const result = await service.sync(code, { trigger: 'cli', from: start, to: today })
+    await markLastRun(result.runId)
+    console.log(`sync   ${code}: ${result.status}, ${result.counts.inserted} baris baru${result.error ? `, galat: ${result.error}` : ''}`)
+  }
+
+  // ---------- Lynk.id: webhook bertanda tangan ----------
+  const lynk = await repos.revenue.requireSource('lynk')
+  await db.update(revenueSources).set({ config: { ...lynk.config, propertyId: propertyIds.get('beritakonoha') } }).where(eq(revenueSources.id, lynk.id))
+  const key = env[`${lynk.credentialsEnv}_MERCHANT_KEY`] || MOCK_LYNK_MERCHANT_KEY
+  const products = [
+    { title: 'E-book Panduan SKD CPNS 2026', price: 49000 },
+    { title: 'Paket Latihan Soal SKD (500 soal)', price: 99000 },
+    { title: 'Template Surat Lamaran & Pernyataan', price: 25000 },
+    { title: 'Kelas Online Menulis Berita Daerah', price: 149000 },
+  ]
+  let orders = 0
+  let firstOrderRef = ''
+  for (let d = start, n = 0; d <= today; d = addDays(d, 1), n++) {
+    const h = unitHash(`lynk:${d}`)
+    const count = Math.floor(h * 5) + (n > days / 2 ? 2 : 1) // makin ramai di paruh kedua
+    for (let i = 0; i < count; i++) {
+      const product = products[Math.floor(unitHash(`lynk:${d}:${i}:p`) * products.length)] ?? products[0]!
+      const fee = Math.round(product.price * 0.05 / 500) * 500
+      const refId = `DEMO-${d.replaceAll('-', '')}-${i}`
+      const hour = String(8 + Math.floor(unitHash(`lynk:${d}:${i}:h`) * 14)).padStart(2, '0')
+      const payload = sampleLynkPayload({ refId, messageId: `DEMO_${d}_${i}`, grandTotal: product.price - fee, price: product.price, title: product.title, createdAt: `${d}T${hour}:15:00` })
+      const res = await service.handleWebhook('lynk', JSON.stringify(payload), { [LYNK_SIGNATURE_HEADER]: lynkSignature(payload, key) })
+      if (res.status !== 200) throw new Error(`webhook contoh ditolak: ${res.status} ${res.body.message ?? ''}`)
+      if (!firstOrderRef) firstOrderRef = refId
+      orders++
+    }
+  }
+  // Satu pengiriman ulang (message_id beda, order sama) -> tercatat duplicate, saldo tidak bertambah.
+  const resend = sampleLynkPayload({ refId: firstOrderRef, messageId: 'DEMO_resend', grandTotal: 46500, price: 49000, title: 'E-book Panduan SKD CPNS 2026', createdAt: `${start}T09:15:00` })
+  await service.handleWebhook('lynk', JSON.stringify(resend), { [LYNK_SIGNATURE_HEADER]: lynkSignature(resend, key) })
+  const [refundTarget] = await db.select({ id: revenueLedgerEntries.id }).from(revenueLedgerEntries).where(eq(revenueLedgerEntries.externalId, firstOrderRef))
+  if (refundTarget) await repos.revenue.createRefund(refundTarget.id, { note: 'Pembeli salah beli produk (contoh)' }, null)
+  console.log(`lynk   ${orders} order lewat webhook (+1 kirim ulang, +1 refund)`)
+
+  // ---------- Whop: impor CSV ----------
+  const whop = await repos.revenue.requireSource('whop')
+  const plans = [
+    { name: 'Komunitas Pejuang CPNS Premium (bulanan)', amount: '9.00', site: 'beritakonoha.id' },
+    { name: 'Kelas Jurnalisme Data', amount: '29.00', site: 'kabartekno.id' },
+    { name: 'Resep Premium Nusantara (bulanan)', amount: '4.99', site: 'resepnusantara.com' },
+  ]
+  const lines = ['Payment ID,Created At,Product,Amount,Currency,Status,Site']
+  for (let d = start, n = 0; d <= today; d = addDays(d, 1), n++) {
+    const count = Math.floor(unitHash(`whop:${d}`) * 4) + (n > days / 3 ? 1 : 0)
+    for (let i = 0; i < count; i++) {
+      const plan = plans[Math.floor(unitHash(`whop:${d}:${i}`) * plans.length)] ?? plans[0]!
+      const r = unitHash(`whop:${d}:${i}:s`)
+      const status = r < 0.04 ? 'refunded' : r < 0.08 ? 'failed' : 'paid'
+      lines.push(`demo_pay_${d.replaceAll('-', '')}_${i},${d}T${String(10 + i).padStart(2, '0')}:05:00Z,"${plan.name}",${plan.amount},USD,${status},${plan.site}`)
+    }
+  }
+  const csv = new TextEncoder().encode(lines.join('\n'))
+  const table = parseImportFile('contoh-whop-payments.csv', csv)
+  const batchId = await repos.revenue.createImportBatch({ sourceId: whop.id, fileName: 'contoh-whop-payments.csv', format: table.format, sha256: 'contoh', headers: table.headers, rows: table.rows, userId: null })
+  const mapping = importMappingSchema.parse({ date: 'Created At', amount: 'Amount', currency: 'Currency', externalId: 'Payment ID', status: 'Status', description: 'Product', property: 'Site' })
+  const imported = await repos.revenue.commitImportBatch(batchId, (b) => ({ ...mapImportRows(b.rows, mapping, { sourceCode: whop.code, defaultCurrency: whop.defaultCurrency }), mapping }), null)
+  console.log(`whop   impor CSV ${table.rows.length} baris: ${imported.counts.inserted} masuk, ${imported.counts.skipped} dilewati (gagal/duplikat)`)
+
+  // ---------- Lainnya: brand deal + adjustment ----------
+  const dealDate = addDays(today, -12)
+  await repos.revenue.createManualEntry({ sourceCode: 'lainnya', kind: 'income', reportDate: dealDate, amount: '3500000', currency: 'IDR', description: 'Sponsor rubrik CPNS 1 bulan (contoh)', externalId: `DEMO-sponsor-${dealDate}`, propertyId: propertyIds.get('beritakonoha') }, null)
+  await repos.revenue.createManualEntry({ sourceCode: 'lainnya', kind: 'income', reportDate: addDays(today, -40), amount: '1750000', currency: 'IDR', description: 'Artikel bersponsor resep (contoh)', externalId: `DEMO-sponsor-resep`, propertyId: propertyIds.get('resepnusantara') }, null)
+  await repos.revenue.createManualEntry({ sourceCode: 'lainnya', kind: 'adjustment', reportDate: dealDate, amount: '-175000', currency: 'IDR', description: 'Potongan PPh sponsor', note: 'Rekonsiliasi bukti potong (contoh)', propertyId: propertyIds.get('beritakonoha') }, null)
+  console.log('manual 2 brand deal + 1 adjustment')
+
+  const o = await repos.revenueQueries.overview({ from: start, to: today }, 'month')
+  console.log(`selesai: total ${days} hari = ${Number(o.total).toLocaleString('id-ID')} ${o.baseCurrency}; buka http://admin.localhost:3000/admin`)
+}
+
+try {
+  if (values.remove) await remove()
+  else await install()
+} finally {
+  await db.$client.end()
+}
+```
+
+23. Tulis composable UI. Warna seri diambil dari palet kategorikal yang sudah divalidasi aman untuk buta warna (pasangan bersebelahan), diberikan menurut urutan sumber, bukan peringkat, sehingga warna AdSense tidak berubah saat filter berubah. Tiga warna terang berkontras rendah di permukaan putih, jadi setiap grafik punya legenda, tooltip, dan tampilan tabel:
+
+`apps/web/app/composables/useRevenue.ts`
+
+```ts
+// Dashboard pendapatan (ADR-011) di browser: akses API, format uang/tanggal,
+// preset rentang, dan warna seri per sumber. Data datang dari
+// /api/admin/revenue/* (hanya superadmin); uang tiba sebagai teks desimal.
+
+/**
+ * Warna seri: palet kategorikal tervalidasi (skill dataviz; CVD aman untuk
+ * pasangan bersebelahan), diberikan menurut URUTAN SUMBER (sort_order), bukan
+ * peringkat, sehingga warna AdSense tetap sama walau filter berubah.
+ */
+export const SERIES_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6', '#008300', '#e34948']
+/** Teks di atas isian warna: hitam di kuning, putih di lainnya. */
+export const SERIES_INK = ['#ffffff', '#ffffff', '#ffffff', '#0b0b0b', '#ffffff', '#ffffff', '#ffffff', '#ffffff']
+
+export interface SourceInfo {
+  id: string
+  code: string
+  name: string
+  connector: 'lynk' | 'adsterra' | 'adsense' | 'headless' | 'generic'
+  integrationType: 'webhook' | 'api' | 'csv_import' | 'headless' | 'manual'
+  isActive: boolean
+  defaultCurrency: string
+  config: Record<string, unknown>
+  credentialsEnv: string | null
+  syncIntervalMinutes: number | null
+  lookbackDays: number
+  sortOrder: number
+  lastSyncAt: string | null
+  lastSyncStatus: string | null
+  updatedAt: string
+  mock: boolean
+  credentials: { required: string[]; missing: string[]; configured: boolean }
+  webhookUrl: string | null
+  canSync: boolean
+}
+
+export interface PropertyInfo {
+  id: string
+  code: string
+  name: string
+  domain: string | null
+  siteId: string | null
+  siteCode: string | null
+  status: 'ACTIVE' | 'ARCHIVED'
+  updatedAt: string
+}
+
+export type LedgerStatus = 'estimated' | 'finalized' | 'adjusted' | 'refunded'
+
+export const STATUS_TEXT: Record<LedgerStatus, string> = {
+  estimated: 'Sementara',
+  finalized: 'Final',
+  adjusted: 'Koreksi',
+  refunded: 'Refund',
+}
+
+export const CHANNEL_TEXT: Record<string, string> = {
+  webhook: 'Webhook',
+  api: 'API',
+  csv_import: 'Impor file',
+  headless: 'Otomasi browser',
+  manual: 'Manual',
+}
+
+/** $fetch ke /api/admin/revenue/<path>; 401 -> login, 404 (bukan superadmin) dibiarkan ke pemanggil. */
+export async function revenueApi<T>(path: string, options: Parameters<typeof $fetch>[1] = {}): Promise<T> {
+  try {
+    return (await $fetch<T>(`/api/admin/revenue/${path.replace(/^\//, '')}`, options as never)) as T
+  } catch (e) {
+    if (apiStatus(e) === 401) {
+      useAdminMe().value = null
+      await navigateTo('/admin/login')
+    }
+    throw e
+  }
+}
+
+/** Sumber & situs untuk navigasi rail; dimuat sekali, disegarkan setelah perubahan. */
+export function useRevenueNav() {
+  return useState<{ sources: SourceInfo[]; properties: PropertyInfo[]; settings: { baseCurrency: string; timeZone: string }; headlessEnabled: boolean; schedulerEnabled: boolean } | null>('revenue-nav', () => null)
+}
+
+export async function refreshRevenueNav() {
+  useRevenueNav().value = await revenueApi('sources')
+}
+
+export function colorFor(code: string, sources: Pick<SourceInfo, 'code'>[]): string {
+  const i = sources.findIndex((s) => s.code === code)
+  return SERIES_COLORS[(i < 0 ? sources.length : i) % SERIES_COLORS.length] as string
+}
+
+export function inkFor(code: string, sources: Pick<SourceInfo, 'code'>[]): string {
+  const i = sources.findIndex((s) => s.code === code)
+  return SERIES_INK[(i < 0 ? sources.length : i) % SERIES_INK.length] as string
+}
+
+// ---------- angka ----------
+
+const nf = new Map<string, Intl.NumberFormat>()
+function formatter(key: string, make: () => Intl.NumberFormat) {
+  let f = nf.get(key)
+  if (!f) {
+    f = make()
+    nf.set(key, f)
+  }
+  return f
+}
+
+/** 'Rp 1.234.567' / 'US$ 12,50'. IDR tanpa desimal, lainnya 2 desimal (USD kecil: hingga 3). */
+export function formatMoney(value: string | number | null | undefined, currency: string, opts: { precise?: boolean } = {}): string {
+  if (value === null || value === undefined || value === '') return '-'
+  const n = Number(value)
+  // 3 desimal hanya bila nilainya memang punya digit ketiga (mis. revenue Adsterra 1.154).
+  const third = opts.precise && Math.abs(n) < 10 && Math.round(n * 1000) % 10 !== 0
+  const digits = currency === 'IDR' || currency === 'JPY' ? 0 : third ? 3 : 2
+  return formatter(`m:${currency}:${digits}`, () => new Intl.NumberFormat('id-ID', { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits })).format(n)
+}
+
+/** Ringkas untuk sumbu dan label: 'Rp 1,2 jt', 'Rp 980 rb'. */
+export function formatMoneyCompact(value: number, currency: string): string {
+  return formatter(`c:${currency}`, () => new Intl.NumberFormat('id-ID', { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 })).format(value)
+}
+
+export function formatNumber(value: string | number | null | undefined, digits = 0): string {
+  if (value === null || value === undefined || value === '') return '-'
+  return formatter(`n:${digits}`, () => new Intl.NumberFormat('id-ID', { maximumFractionDigits: digits, minimumFractionDigits: 0 })).format(Number(value))
+}
+
+/** Perubahan relatif; null bila pembanding nol. */
+export function changeRatio(current: string | number, previous: string | number): number | null {
+  const c = Number(current)
+  const p = Number(previous)
+  if (!p) return null
+  return (c - p) / Math.abs(p)
+}
+
+export function formatChange(ratio: number | null): string {
+  if (ratio === null) return 'tanpa pembanding'
+  const pct = formatter('pct', () => new Intl.NumberFormat('id-ID', { style: 'percent', maximumFractionDigits: 1, signDisplay: 'exceptZero' })).format(ratio)
+  return pct
+}
+
+// ---------- tanggal ----------
+
+const df = new Map<string, Intl.DateTimeFormat>()
+
+/** '1 Nov' atau '1 Nov 2026' dari tanggal kalender (tanpa geser zona waktu). */
+export function formatDay(iso: string, withYear = false): string {
+  const [y, m, d] = iso.split('-').map(Number) as [number, number, number]
+  const key = withYear ? 'y' : 'n'
+  let f = df.get(key)
+  if (!f) {
+    f = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', ...(withYear && { year: 'numeric' }), timeZone: 'UTC' })
+    df.set(key, f)
+  }
+  return f.format(new Date(Date.UTC(y, m - 1, d)))
+}
+
+export function formatRange(from: string, to: string): string {
+  if (from === to) return formatDay(from, true)
+  const sameYear = from.slice(0, 4) === to.slice(0, 4)
+  return `${formatDay(from, !sameYear)} – ${formatDay(to, true)}`
+}
+
+export function formatTime(iso: string | null | undefined): string {
+  if (!iso) return '-'
+  return new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
+}
+
+/** "3 menit lalu", "2 jam lalu", "kemarin". */
+export function formatAgo(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return 'belum pernah'
+  const diff = Math.max(0, now - new Date(iso).getTime())
+  const minutes = Math.round(diff / 60_000)
+  if (minutes < 1) return 'baru saja'
+  if (minutes < 60) return `${minutes} menit lalu`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} jam lalu`
+  const days = Math.round(hours / 24)
+  return days === 1 ? 'kemarin' : `${days} hari lalu`
+}
+
+export function addDaysIso(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+export function todayIn(timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+}
+
+export type PresetKey = '7d' | '30d' | '90d' | 'mtd' | 'last-month' | 'ytd' | 'custom'
+
+export const PRESETS: { key: PresetKey; label: string }[] = [
+  { key: '7d', label: '7 hari' },
+  { key: '30d', label: '30 hari' },
+  { key: '90d', label: '90 hari' },
+  { key: 'mtd', label: 'Bulan ini' },
+  { key: 'last-month', label: 'Bulan lalu' },
+  { key: 'ytd', label: 'Tahun ini' },
+]
+
+export function presetRange(key: PresetKey, today: string): { from: string; to: string } {
+  const monthStart = `${today.slice(0, 7)}-01`
+  switch (key) {
+    case '7d': return { from: addDaysIso(today, -6), to: today }
+    case '90d': return { from: addDaysIso(today, -89), to: today }
+    case 'mtd': return { from: monthStart, to: today }
+    case 'last-month': {
+      const end = addDaysIso(monthStart, -1)
+      return { from: `${end.slice(0, 7)}-01`, to: end }
+    }
+    case 'ytd': return { from: `${today.slice(0, 4)}-01-01`, to: today }
+    default: return { from: addDaysIso(today, -29), to: today }
+  }
+}
+
+/** Semua bucket (hari/minggu Senin/bulan) dalam rentang, sama dengan date_trunc PostgreSQL. */
+export function bucketsFor(from: string, to: string, granularity: 'day' | 'week' | 'month'): string[] {
+  const out: string[] = []
+  if (granularity === 'month') {
+    let d = `${from.slice(0, 7)}-01`
+    while (d <= to) {
+      out.push(d)
+      const [y, m] = d.split('-').map(Number) as [number, number]
+      d = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10)
+    }
+    return out
+  }
+  if (granularity === 'week') {
+    const start = new Date(`${from}T00:00:00Z`)
+    const dow = (start.getUTCDay() + 6) % 7
+    let d = addDaysIso(from, -dow)
+    while (d <= to) {
+      out.push(d)
+      d = addDaysIso(d, 7)
+    }
+    return out
+  }
+  for (let d = from; d <= to; d = addDaysIso(d, 1)) out.push(d)
+  return out
+}
+
+export function bucketLabel(bucket: string, granularity: 'day' | 'week' | 'month'): string {
+  if (granularity === 'month') {
+    const [y, m] = bucket.split('-').map(Number) as [number, number]
+    return new Intl.DateTimeFormat('id-ID', { month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(y, m - 1, 1)))
+  }
+  if (granularity === 'week') return `Minggu ${formatDay(bucket)}`
+  return formatDay(bucket)
+}
+```
+
+24. Tulis komponen grafik tanpa library. Kolom bertumpuk: lebar maksimal 24px, ujung data membulat, celah 2px antar-segmen, crosshair yang mencari bucket terdekat, tooltip yang menampilkan semua seri, dan navigasi dengan tombol panah. Batang komposisi 28px menampilkan porsi di dalam blok bila muat:
+
+`apps/web/app/components/revenue/StackedColumns.vue`
+
+```vue
+<!--
+  Kolom bertumpuk per sumber (skill dataviz): kolom <= 24px, ujung data
+  membulat 4px dan rata di baseline, celah 2px warna permukaan antar-segmen,
+  grid hairline, satu sumbu. Hover/fokus: crosshair mencari bucket terdekat,
+  tooltip menampilkan SEMUA seri (nilai dulu, nama kemudian). Nilai negatif
+  (refund/koreksi) bertumpuk ke bawah dari garis nol.
+  Tanpa library: SVG yang mengikuti lebar wadah (ResizeObserver).
+-->
+<script setup lang="ts">
+export interface ColumnSeries {
+  key: string
+  name: string
+  color: string
+  values: number[]
+}
+
+const props = withDefaults(defineProps<{
+  labels: string[]
+  series: ColumnSeries[]
+  currency: string
+  height?: number
+  /** Nama grafik untuk pembaca layar. */
+  title: string
+}>(), { height: 260 })
+
+const wrap = ref<HTMLElement | null>(null)
+const width = ref(720)
+let observer: ResizeObserver | null = null
+onMounted(() => {
+  if (!wrap.value) return
+  width.value = wrap.value.clientWidth || 720
+  observer = new ResizeObserver((entries) => {
+    const w = entries[0]?.contentRect.width
+    if (w) width.value = w
+  })
+  observer.observe(wrap.value)
+})
+onBeforeUnmount(() => observer?.disconnect())
+
+const M = { top: 12, right: 8, bottom: 26, left: 68 }
+const GAP = 2
+
+const n = computed(() => props.labels.length)
+const plotW = computed(() => Math.max(10, width.value - M.left - M.right))
+const plotH = computed(() => props.height - M.top - M.bottom)
+const band = computed(() => plotW.value / Math.max(1, n.value))
+const barW = computed(() => Math.max(2, Math.min(24, band.value * 0.68)))
+
+const totals = computed(() => props.labels.map((_, i) => {
+  let pos = 0
+  let neg = 0
+  for (const s of props.series) {
+    const v = s.values[i] ?? 0
+    if (v >= 0) pos += v
+    else neg += v
+  }
+  return { pos, neg, net: pos + neg }
+}))
+
+/** Angka "bulat" untuk tick: 1, 2, 2.5, 5 x 10^k. */
+function niceStep(range: number, count: number): number {
+  const raw = range / Math.max(1, count)
+  const pow = 10 ** Math.floor(Math.log10(raw || 1))
+  const steps = [1, 2, 2.5, 5, 10]
+  return (steps.find((s) => s * pow >= raw) ?? 10) * pow
+}
+
+const scale = computed(() => {
+  const max = Math.max(0, ...totals.value.map((t) => t.pos))
+  const min = Math.min(0, ...totals.value.map((t) => t.neg))
+  const step = niceStep(max - min || 1, 4)
+  const top = Math.ceil(max / step) * step || step
+  const bottom = Math.floor(min / step) * step
+  const ticks: number[] = []
+  for (let v = bottom; v <= top + step / 2; v += step) ticks.push(Math.round(v * 1e6) / 1e6)
+  const y = (v: number) => M.top + plotH.value - ((v - bottom) / (top - bottom)) * plotH.value
+  return { top, bottom, ticks, y }
+})
+
+interface Seg { key: string; x: number; y: number; h: number; color: string; round: 'top' | 'bottom' | null }
+
+/** Segmen per bucket; segmen terluar (atas untuk positif, bawah untuk negatif) dibulatkan. */
+const segments = computed<Seg[]>(() => {
+  const out: Seg[] = []
+  const { y } = scale.value
+  props.labels.forEach((_, i) => {
+    const x = M.left + band.value * i + (band.value - barW.value) / 2
+    let pos = 0
+    let neg = 0
+    const pending: Seg[] = []
+    let lastPos: Seg | null = null
+    let lastNeg: Seg | null = null
+    for (const s of props.series) {
+      const v = s.values[i] ?? 0
+      if (!v) continue
+      if (v > 0) {
+        const y0 = y(pos)
+        const y1 = y(pos + v)
+        const seg: Seg = { key: s.key, x, y: y1, h: Math.max(0, y0 - y1 - (pos > 0 ? GAP : 0)), color: s.color, round: null }
+        pos += v
+        lastPos = seg
+        pending.push(seg)
+      } else {
+        const y0 = y(neg)
+        const y1 = y(neg + v)
+        const seg: Seg = { key: s.key, x, y: y0 + (neg < 0 ? GAP : 0), h: Math.max(0, y1 - y0 - (neg < 0 ? GAP : 0)), color: s.color, round: null }
+        neg += v
+        lastNeg = seg
+        pending.push(seg)
+      }
+    }
+    if (lastPos) lastPos.round = 'top'
+    if (lastNeg) lastNeg.round = 'bottom'
+    out.push(...pending)
+  })
+  return out
+})
+
+/** Path persegi dengan dua sudut membulat di ujung data saja (baseline tetap siku). */
+function segPath(s: Seg): string {
+  const r = Math.min(4, barW.value / 2, s.h)
+  const { x, y, h } = s
+  const w = barW.value
+  if (s.round === 'top' && r > 0) return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`
+  if (s.round === 'bottom' && r > 0) return `M${x},${y}V${y + h - r}Q${x},${y + h} ${x + r},${y + h}H${x + w - r}Q${x + w},${y + h} ${x + w},${y + h - r}V${y}Z`
+  return `M${x},${y}h${w}v${h}h${-w}Z`
+}
+
+/** Label sumbu X yang tidak bertabrakan: kira-kira satu per 80px. */
+const xLabels = computed(() => {
+  const every = Math.max(1, Math.ceil(n.value / Math.max(1, Math.floor(plotW.value / 80))))
+  return props.labels.map((label, i) => ({ label, i, x: M.left + band.value * (i + 0.5) })).filter((l) => l.i % every === 0 || l.i === n.value - 1 && n.value <= 14)
+})
+
+const active = ref<number | null>(null)
+
+function onMove(e: PointerEvent) {
+  const svg = e.currentTarget as SVGSVGElement
+  const rect = svg.getBoundingClientRect()
+  const x = ((e.clientX - rect.left) / rect.width) * width.value
+  const i = Math.floor((x - M.left) / band.value)
+  active.value = i >= 0 && i < n.value ? i : null
+}
+
+function onKey(e: KeyboardEvent) {
+  if (!n.value) return
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    e.preventDefault()
+    const cur = active.value ?? (e.key === 'ArrowRight' ? -1 : n.value)
+    active.value = Math.min(n.value - 1, Math.max(0, cur + (e.key === 'ArrowRight' ? 1 : -1)))
+  } else if (e.key === 'Home') {
+    active.value = 0
+  } else if (e.key === 'End') {
+    active.value = n.value - 1
+  } else if (e.key === 'Escape') {
+    active.value = null
+  }
+}
+
+const tooltip = computed(() => {
+  const i = active.value
+  if (i === null) return null
+  const rows = props.series
+    .map((s) => ({ key: s.key, name: s.name, color: s.color, value: s.values[i] ?? 0 }))
+    .filter((r) => r.value !== 0)
+    .sort((a, b) => b.value - a.value)
+  const cx = M.left + band.value * (i + 0.5)
+  return { i, label: props.labels[i] ?? '', rows, total: totals.value[i]?.net ?? 0, cx, left: cx > width.value * 0.6 }
+})
+
+const summary = computed(() => {
+  const sum = totals.value.reduce((acc, t) => acc + t.net, 0)
+  return `${props.title}: ${n.value} titik, total ${formatMoney(sum, props.currency)}. Gunakan panah kiri/kanan untuk membaca per titik.`
+})
+</script>
+
+<template>
+  <div
+    ref="wrap"
+    class="rv-chart"
+  >
+    <svg
+      :viewBox="`0 0 ${width} ${height}`"
+      :width="width"
+      :height="height"
+      role="img"
+      tabindex="0"
+      :aria-label="summary"
+      @pointermove="onMove"
+      @pointerleave="active = null"
+      @keydown="onKey"
+      @blur="active = null"
+    >
+      <g class="rv-chart__grid">
+        <template
+          v-for="t in scale.ticks"
+          :key="t"
+        >
+          <line
+            :x1="M.left"
+            :x2="width - M.right"
+            :y1="scale.y(t)"
+            :y2="scale.y(t)"
+            :class="{ 'is-zero': t === 0 }"
+          />
+          <text
+            :x="M.left - 8"
+            :y="scale.y(t)"
+            text-anchor="end"
+            dominant-baseline="middle"
+          >{{ formatMoneyCompact(t, currency) }}</text>
+        </template>
+      </g>
+      <rect
+        v-if="tooltip"
+        class="rv-chart__band"
+        :x="M.left + band * tooltip.i"
+        :y="M.top"
+        :width="band"
+        :height="plotH"
+      />
+      <path
+        v-for="(s, k) in segments"
+        :key="k"
+        :d="segPath(s)"
+        :fill="s.color"
+      />
+      <line
+        v-if="tooltip"
+        class="rv-chart__cross"
+        :x1="tooltip.cx"
+        :x2="tooltip.cx"
+        :y1="M.top"
+        :y2="M.top + plotH"
+      />
+      <g class="rv-chart__x">
+        <text
+          v-for="l in xLabels"
+          :key="l.i"
+          :x="l.x"
+          :y="height - 6"
+          text-anchor="middle"
+        >{{ l.label }}</text>
+      </g>
+    </svg>
+    <div
+      v-if="tooltip"
+      class="rv-tip"
+      :class="{ 'rv-tip--left': tooltip.left }"
+      :style="{ left: `${tooltip.cx}px` }"
+      role="status"
+    >
+      <div class="rv-tip__head">
+        {{ tooltip.label }}
+      </div>
+      <div class="rv-tip__total">
+        {{ formatMoney(tooltip.total, currency) }}
+      </div>
+      <ul v-if="series.length > 1">
+        <li
+          v-for="r in tooltip.rows"
+          :key="r.key"
+        >
+          <span
+            class="rv-tip__key"
+            :style="{ background: r.color }"
+          />
+          <strong>{{ formatMoney(r.value, currency) }}</strong>
+          <span>{{ r.name }}</span>
+        </li>
+        <li
+          v-if="!tooltip.rows.length"
+          class="muted"
+        >
+          Tidak ada pemasukan
+        </li>
+      </ul>
+    </div>
+  </div>
+</template>
+```
+
+`apps/web/app/components/revenue/SegmentedBar.vue`
+
+```vue
+<!--
+  Komposisi pendapatan per sumber sebagai satu batang 28px (skill dataviz,
+  "tall segmented bar"): lebar sebanding nilai, porsi tercetak di dalam blok
+  bila muat, nama ada di legenda (urutan sama dengan blok). Hover/fokus
+  setiap blok memberi nama, jumlah, dan porsi.
+-->
+<script setup lang="ts">
+export interface BarPart {
+  key: string
+  name: string
+  value: number
+  color: string
+  ink: string
+}
+
+const props = defineProps<{ parts: BarPart[]; currency: string }>()
+
+const positive = computed(() => props.parts.filter((p) => p.value > 0))
+const total = computed(() => positive.value.reduce((n, p) => n + p.value, 0))
+const pct = new Intl.NumberFormat('id-ID', { style: 'percent', maximumFractionDigits: 0 })
+
+const blocks = computed(() => positive.value.map((p) => {
+  const share = total.value ? p.value / total.value : 0
+  return { ...p, share, label: pct.format(share), wide: share >= 0.07 }
+}))
+
+const ariaLabel = computed(() => `Komposisi per sumber: ${blocks.value.map((b) => `${b.name} ${b.label}`).join(', ')}`)
+</script>
+
+<template>
+  <div class="rv-seg">
+    <div
+      class="rv-seg__bar"
+      role="img"
+      :aria-label="ariaLabel"
+    >
+      <span
+        v-for="b in blocks"
+        :key="b.key"
+        class="rv-seg__part"
+        tabindex="0"
+        :style="{ flexGrow: b.value, background: b.color, color: b.ink }"
+        :title="`${b.name}: ${formatMoney(b.value, currency)} (${b.label})`"
+        :aria-label="`${b.name}: ${formatMoney(b.value, currency)}, ${b.label}`"
+      >
+        <span v-if="b.wide">{{ b.label }}</span>
+      </span>
+      <span
+        v-if="!blocks.length"
+        class="rv-seg__empty"
+      >Belum ada pemasukan di rentang ini</span>
+    </div>
+    <ul class="rv-legend">
+      <li
+        v-for="b in blocks"
+        :key="b.key"
+      >
+        <span
+          class="rv-legend__swatch"
+          :style="{ background: b.color }"
+        />
+        <span>{{ b.name }}</span>
+        <span class="rv-legend__value">{{ formatMoney(b.value, currency) }}</span>
+      </li>
+    </ul>
+  </div>
+</template>
+```
+
+25. Tulis dashboard dan tabel entri. Satu baris filter mengatur semua angka di bawahnya, dan saat memuat ulang bingkai lama tetap tampil dengan opasitas rendah (tanpa kedipan):
+
+`apps/web/app/components/revenue/DashboardOverview.vue`
+
+```vue
+<!--
+  Dashboard pendapatan (ADR-011). Satu baris filter di atas mengatur semua
+  angka di bawahnya (rentang, sumber, status, situs). Urutan baca:
+    1. total periode + perubahan vs periode sebelumnya + komposisi per sumber
+    2. hari ini, bulan ini, angka sementara, rata-rata harian
+    3. tren per sumber (grafik atau tabel)
+    4. per situs | kesehatan konektor
+    5. aktivitas terbaru
+  Dipakai /admin (semua situs) dan /admin/revenue/sites/:code (satu situs).
+-->
+<script setup lang="ts">
+const props = defineProps<{ property?: PropertyInfo | null }>()
+
+interface Overview {
+  granularity: 'day' | 'week' | 'month'
+  overview: {
+    range: { from: string; to: string; previousFrom: string; previousTo: string; today: string }
+    baseCurrency: string
+    total: string
+    previousTotal: string
+    entries: number
+    today: string
+    yesterday: string
+    monthToDate: string
+    previousMonthToDate: string
+    byStatus: { status: LedgerStatus; amount: string; entries: number }[]
+    bySource: { code: string; name: string; amount: string; previousAmount: string; entries: number }[]
+    byProperty: { propertyId: string | null; code: string | null; name: string; domain: string | null; amount: string; previousAmount: string; entries: number }[]
+    series: { bucket: string; sourceCode: string; amount: string }[]
+    unconverted: { currency: string; entries: number; grossAmount: string }[]
+  }
+  recent: { id: string; sourceCode: string; sourceName: string; channelType: string; reportDate: string; grossAmount: string; currency: string; normalizedAmount: string | null; status: LedgerStatus; description: string | null; propertyName: string | null; updatedAt: string }[]
+  health: { code: string; name: string; connector: string; integrationType: string; isActive: boolean; syncIntervalMinutes: number | null; lastSyncAt: string | null; lastSyncStatus: string | null; lastRun: { status: string; startedAt: string; finishedAt: string | null; errorMessage: string | null; mock: boolean } | null; lastWebhook: { status: string; receivedAt: string; error: string | null } | null; webhookFailures24h: number; lastImport: { status: string; createdAt: string; fileName: string } | null }[]
+  sources: SourceInfo[]
+  properties: PropertyInfo[]
+  settings: { baseCurrency: string; timeZone: string }
+}
+
+const nav = useRevenueNav()
+const timeZone = computed(() => nav.value?.settings.timeZone ?? 'Asia/Jakarta')
+const today = computed(() => todayIn(timeZone.value))
+
+const preset = ref<PresetKey>('30d')
+const range = reactive(presetRange('30d', today.value))
+const selectedSources = ref<string[]>([])
+const statusFilter = ref<'' | 'finalized' | 'estimated'>('')
+const propertyFilter = ref<string>('')
+const granularity = ref<'auto' | 'day' | 'week' | 'month'>('auto')
+const view = ref<'chart' | 'table'>('chart')
+
+function choosePreset(key: PresetKey) {
+  preset.value = key
+  Object.assign(range, presetRange(key, today.value))
+}
+
+const effectiveGranularity = computed(() => {
+  if (granularity.value !== 'auto') return granularity.value
+  const days = (Date.parse(range.to) - Date.parse(range.from)) / 86_400_000 + 1
+  return days <= 62 ? 'day' : days <= 200 ? 'week' : 'month'
+})
+
+const query = computed(() => ({
+  from: range.from,
+  to: range.to,
+  sources: selectedSources.value.join(','),
+  statuses: statusFilter.value === 'finalized' ? 'finalized,adjusted,refunded' : statusFilter.value === 'estimated' ? 'estimated' : '',
+  property: props.property?.id ?? propertyFilter.value,
+  granularity: effectiveGranularity.value,
+}))
+
+const { data, error, pending, refresh } = await useAsyncData(
+  () => `revenue-overview-${JSON.stringify(query.value)}`,
+  () => revenueApi<Overview>('overview', { query: query.value }),
+  { server: false, watch: [query] },
+)
+// Bingkai lama dipertahankan saat memuat ulang (tanpa kedipan).
+const last = shallowRef<Overview | null>(null)
+watch(data, (d) => {
+  if (d) last.value = d
+}, { immediate: true })
+const o = computed(() => last.value?.overview ?? null)
+const sources = computed(() => last.value?.sources ?? nav.value?.sources ?? [])
+const currency = computed(() => o.value?.baseCurrency ?? 'IDR')
+
+const change = computed(() => (o.value ? changeRatio(o.value.total, o.value.previousTotal) : null))
+const mtdChange = computed(() => (o.value ? changeRatio(o.value.monthToDate, o.value.previousMonthToDate) : null))
+const todayChange = computed(() => (o.value ? changeRatio(o.value.today, o.value.yesterday) : null))
+const estimated = computed(() => o.value?.byStatus.find((s) => s.status === 'estimated'))
+const days = computed(() => (o.value ? (Date.parse(o.value.range.to) - Date.parse(o.value.range.from)) / 86_400_000 + 1 : 1))
+
+const parts = computed(() => (o.value?.bySource ?? []).map((s) => ({
+  key: s.code, name: s.name, value: Number(s.amount), color: colorFor(s.code, sources.value), ink: inkFor(s.code, sources.value),
+})))
+
+const buckets = computed(() => (o.value ? bucketsFor(o.value.range.from, o.value.range.to, last.value?.granularity ?? 'day') : []))
+const chartSeries = computed(() => {
+  const ov = o.value
+  if (!ov) return []
+  const index = new Map(buckets.value.map((b, i) => [b, i]))
+  return ov.bySource
+    .filter((s) => Number(s.amount) !== 0 || ov.series.some((p) => p.sourceCode === s.code))
+    .map((s) => {
+      const values = buckets.value.map(() => 0)
+      for (const p of ov.series) if (p.sourceCode === s.code) {
+        const i = index.get(p.bucket)
+        if (i !== undefined) values[i] = (values[i] ?? 0) + Number(p.amount)
+      }
+      return { key: s.code, name: s.name, color: colorFor(s.code, sources.value), values }
+    })
+})
+const labels = computed(() => buckets.value.map((b) => bucketLabel(b, last.value?.granularity ?? 'day')))
+
+const propertyMax = computed(() => Math.max(1, ...(o.value?.byProperty ?? []).map((p) => Number(p.amount))))
+
+type HealthRow = Overview['health'][number]
+function healthState(h: HealthRow): { tone: 'good' | 'warning' | 'critical' | 'off'; label: string; detail: string } {
+  const source = sources.value.find((s) => s.code === h.code)
+  if (!h.isActive) return { tone: 'off', label: 'Nonaktif', detail: 'Tidak ditarik dan tidak menerima webhook' }
+  if (h.integrationType === 'webhook') {
+    if (h.webhookFailures24h > 0) return { tone: 'critical', label: 'Webhook ditolak', detail: `${h.webhookFailures24h} kiriman gagal/ditolak dalam 24 jam` }
+    if (source && !source.mock && !source.credentials.configured) return { tone: 'warning', label: 'Belum dikonfigurasi', detail: `Isi ${source.credentials.missing.join(', ')}` }
+    return h.lastWebhook ? { tone: 'good', label: 'Menerima', detail: `Event terakhir ${formatAgo(h.lastWebhook.receivedAt)}` } : { tone: 'warning', label: 'Belum ada event', detail: 'Belum pernah menerima webhook' }
+  }
+  if (h.lastRun?.status === 'failed') return { tone: 'critical', label: 'Sync gagal', detail: h.lastRun.errorMessage ?? 'Lihat log' }
+  if (source?.canSync && !source.mock && !source.credentials.configured) return { tone: 'warning', label: 'Belum dikonfigurasi', detail: `Isi ${source.credentials.missing.join(', ')}` }
+  if (h.lastRun) return { tone: h.lastRun.status === 'partial' ? 'warning' : 'good', label: h.lastRun.status === 'partial' ? 'Sebagian gagal' : h.lastRun.mock ? 'OK (mock)' : 'OK', detail: `Sync ${formatAgo(h.lastRun.finishedAt ?? h.lastRun.startedAt)}` }
+  if (h.lastImport) return { tone: 'good', label: 'Impor file', detail: `Terakhir ${formatAgo(h.lastImport.createdAt)}` }
+  return { tone: 'off', label: 'Manual', detail: 'Diisi lewat input manual atau impor file' }
+}
+const TONE_ICON = { good: '✓', warning: '!', critical: '×', off: '–' } as const
+
+// ---------- aksi ----------
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const syncing = ref(false)
+async function syncAll() {
+  syncing.value = true
+  message.value = null
+  const targets = sources.value.filter((s) => s.canSync && s.isActive)
+  const results: string[] = []
+  for (const s of targets) {
+    try {
+      const r = await revenueApi<{ status: string; counts: { inserted: number; updated: number }; error: string | null }>(`sources/${s.code}/sync`, { method: 'POST', body: {} })
+      results.push(r.status === 'failed' ? `${s.name}: gagal (${r.error})` : `${s.name}: ${r.counts.inserted} baru, ${r.counts.updated} diperbarui`)
+    } catch (e) {
+      results.push(`${s.name}: ${apiErrorMessage(e)}`)
+    }
+  }
+  syncing.value = false
+  message.value = { kind: results.some((r) => r.includes('gagal') || r.includes('berjalan')) ? 'error' : 'ok', text: results.join('; ') || 'Tidak ada sumber API yang aktif.' }
+  await Promise.all([refresh(), refreshRevenueNav()])
+}
+
+const sourcesOpen = ref(false)
+function toggleSource(code: string) {
+  selectedSources.value = selectedSources.value.includes(code) ? selectedSources.value.filter((c) => c !== code) : [...selectedSources.value, code]
+}
+const sourceSummary = computed(() => {
+  if (!selectedSources.value.length) return 'Semua sumber'
+  if (selectedSources.value.length === 1) return sources.value.find((s) => s.code === selectedSources.value[0])?.name ?? '1 sumber'
+  return `${selectedSources.value.length} sumber`
+})
+</script>
+
+<template>
+  <div
+    class="rv"
+    :class="{ 'is-loading': pending && last }"
+  >
+    <header class="adm-head">
+      <div>
+        <h1>{{ property ? property.name : 'Pendapatan semua situs' }}</h1>
+        <p
+          v-if="property"
+          class="muted rv-sub"
+        >
+          {{ property.domain ?? 'tanpa domain' }}<template v-if="property.siteCode">
+            , dilayani framework (site {{ property.siteCode }})
+          </template>
+        </p>
+      </div>
+      <div class="adm-head__actions">
+        <NuxtLink
+          to="/admin/revenue/entries?baru=1"
+          class="btn"
+        >
+          Catat pemasukan
+        </NuxtLink>
+        <NuxtLink
+          to="/admin/revenue/import"
+          class="btn"
+        >
+          Impor file
+        </NuxtLink>
+        <button
+          type="button"
+          class="btn btn--primary"
+          :disabled="syncing"
+          @click="syncAll"
+        >
+          {{ syncing ? 'Menarik data…' : 'Tarik data API sekarang' }}
+        </button>
+      </div>
+    </header>
+
+    <p
+      v-if="message"
+      class="notice"
+      :class="{ 'notice--error': message.kind === 'error' }"
+      role="status"
+    >
+      {{ message.text }}
+    </p>
+
+    <div
+      class="rv-filters"
+      role="group"
+      aria-label="Filter dashboard"
+    >
+      <div
+        class="adm-segmented rv-presets"
+        role="radiogroup"
+        aria-label="Rentang tanggal"
+      >
+        <button
+          v-for="p in PRESETS"
+          :key="p.key"
+          type="button"
+          role="radio"
+          :aria-checked="preset === p.key"
+          :class="{ 'is-on': preset === p.key }"
+          @click="choosePreset(p.key)"
+        >
+          {{ p.label }}
+        </button>
+      </div>
+      <label class="rv-date">
+        <span class="sr-only">Dari</span>
+        <input
+          v-model="range.from"
+          type="date"
+          :max="range.to"
+          @change="preset = 'custom'"
+        >
+      </label>
+      <span
+        class="muted"
+        aria-hidden="true"
+      >s.d.</span>
+      <label class="rv-date">
+        <span class="sr-only">Sampai</span>
+        <input
+          v-model="range.to"
+          type="date"
+          :min="range.from"
+          :max="today"
+          @change="preset = 'custom'"
+        >
+      </label>
+      <details
+        class="rv-pop"
+        :open="sourcesOpen"
+        @toggle="sourcesOpen = ($event.target as HTMLDetailsElement).open"
+      >
+        <summary class="btn">
+          {{ sourceSummary }}
+        </summary>
+        <div class="rv-pop__panel">
+          <label
+            v-for="s in sources"
+            :key="s.code"
+            class="check"
+          >
+            <input
+              type="checkbox"
+              :checked="selectedSources.includes(s.code)"
+              @change="toggleSource(s.code)"
+            >
+            <span
+              class="rv-dot"
+              :style="{ background: colorFor(s.code, sources) }"
+            />
+            {{ s.name }}
+          </label>
+          <button
+            v-if="selectedSources.length"
+            type="button"
+            class="btn btn--ghost btn--small"
+            @click="selectedSources = []"
+          >
+            Tampilkan semua
+          </button>
+        </div>
+      </details>
+      <label>
+        <span class="sr-only">Status angka</span>
+        <select v-model="statusFilter">
+          <option value="">Semua status</option>
+          <option value="finalized">Final + koreksi</option>
+          <option value="estimated">Sementara saja</option>
+        </select>
+      </label>
+      <label v-if="!property">
+        <span class="sr-only">Situs</span>
+        <select v-model="propertyFilter">
+          <option value="">Semua situs</option>
+          <option
+            v-for="p in last?.properties ?? []"
+            :key="p.id"
+            :value="p.id"
+          >{{ p.name }}</option>
+          <option value="none">Belum dipetakan</option>
+        </select>
+      </label>
+    </div>
+
+    <p
+      v-if="error && !last"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+
+    <template v-if="o">
+      <section
+        class="rv-hero"
+        aria-labelledby="rv-total"
+      >
+        <div class="rv-hero__figure">
+          <h2
+            id="rv-total"
+            class="rv-hero__label"
+          >
+            Total {{ formatRange(o.range.from, o.range.to) }}
+          </h2>
+          <p class="rv-hero__value">
+            {{ formatMoney(o.total, currency) }}
+          </p>
+          <p class="rv-hero__meta">
+            <span
+              class="rv-delta"
+              :class="change === null ? '' : change >= 0 ? 'is-up' : 'is-down'"
+            >{{ formatChange(change) }}</span>
+            <span class="muted">dibanding {{ formatRange(o.range.previousFrom, o.range.previousTo) }} ({{ formatMoney(o.previousTotal, currency) }})</span>
+          </p>
+        </div>
+        <RevenueSegmentedBar
+          :parts="parts"
+          :currency="currency"
+        />
+        <p
+          v-for="u in o.unconverted"
+          :key="u.currency"
+          class="notice rv-warn"
+          role="note"
+        >
+          {{ formatNumber(u.entries) }} entri {{ u.currency }} ({{ formatMoney(u.grossAmount, u.currency) }}) belum masuk total karena kurs {{ u.currency }} → {{ currency }} belum diisi.
+          <NuxtLink to="/admin/revenue/fx">Isi kurs</NuxtLink>
+        </p>
+      </section>
+
+      <section
+        class="rv-stats"
+        aria-label="Ringkasan"
+      >
+        <div class="rv-stat">
+          <h3>Hari ini</h3>
+          <p class="rv-stat__value">
+            {{ formatMoney(o.today, currency) }}
+          </p>
+          <p class="rv-stat__note">
+            <span :class="['rv-delta', todayChange === null ? '' : todayChange >= 0 ? 'is-up' : 'is-down']">{{ formatChange(todayChange) }}</span> vs kemarin
+          </p>
+        </div>
+        <div class="rv-stat">
+          <h3>Bulan ini</h3>
+          <p class="rv-stat__value">
+            {{ formatMoney(o.monthToDate, currency) }}
+          </p>
+          <p class="rv-stat__note">
+            <span :class="['rv-delta', mtdChange === null ? '' : mtdChange >= 0 ? 'is-up' : 'is-down']">{{ formatChange(mtdChange) }}</span> vs bulan lalu di tanggal yang sama
+          </p>
+        </div>
+        <div class="rv-stat">
+          <h3>Masih sementara</h3>
+          <p class="rv-stat__value">
+            {{ formatMoney(estimated?.amount ?? 0, currency) }}
+          </p>
+          <p class="rv-stat__note">
+            {{ formatNumber(estimated?.entries ?? 0) }} entri bisa berubah saat laporan sumber final
+          </p>
+        </div>
+        <div class="rv-stat">
+          <h3>Rata-rata per hari</h3>
+          <p class="rv-stat__value">
+            {{ formatMoney(Number(o.total) / days, currency) }}
+          </p>
+          <p class="rv-stat__note">
+            {{ formatNumber(o.entries) }} entri dalam {{ days }} hari
+          </p>
+        </div>
+      </section>
+
+      <section
+        class="rv-section"
+        aria-labelledby="rv-trend"
+      >
+        <div class="rv-section__head">
+          <h2 id="rv-trend">
+            Tren per sumber
+          </h2>
+          <div
+            class="adm-segmented"
+            role="radiogroup"
+            aria-label="Satuan waktu"
+          >
+            <button
+              v-for="g in [['auto', 'Otomatis'], ['day', 'Harian'], ['week', 'Mingguan'], ['month', 'Bulanan']] as const"
+              :key="g[0]"
+              type="button"
+              role="radio"
+              :aria-checked="granularity === g[0]"
+              :class="{ 'is-on': granularity === g[0] }"
+              @click="granularity = g[0]"
+            >
+              {{ g[1] }}
+            </button>
+          </div>
+          <div
+            class="adm-segmented"
+            role="radiogroup"
+            aria-label="Tampilan"
+          >
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="view === 'chart'"
+              :class="{ 'is-on': view === 'chart' }"
+              @click="view = 'chart'"
+            >
+              Grafik
+            </button>
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="view === 'table'"
+              :class="{ 'is-on': view === 'table' }"
+              @click="view = 'table'"
+            >
+              Tabel
+            </button>
+          </div>
+        </div>
+        <ul
+          v-if="chartSeries.length > 1"
+          class="rv-legend"
+        >
+          <li
+            v-for="s in chartSeries"
+            :key="s.key"
+          >
+            <span
+              class="rv-legend__swatch"
+              :style="{ background: s.color }"
+            />{{ s.name }}
+          </li>
+        </ul>
+        <RevenueStackedColumns
+          v-if="view === 'chart'"
+          :labels="labels"
+          :series="chartSeries"
+          :currency="currency"
+          title="Tren pendapatan per sumber"
+        />
+        <div
+          v-else
+          class="table-scroll"
+        >
+          <table class="table rv-num">
+            <thead>
+              <tr>
+                <th>Periode</th>
+                <th
+                  v-for="s in chartSeries"
+                  :key="s.key"
+                >
+                  {{ s.name }}
+                </th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(label, i) in labels"
+                :key="label"
+              >
+                <td class="nowrap">
+                  {{ label }}
+                </td>
+                <td
+                  v-for="s in chartSeries"
+                  :key="s.key"
+                >
+                  {{ formatMoney(s.values[i] ?? 0, currency) }}
+                </td>
+                <td><strong>{{ formatMoney(chartSeries.reduce((n, s) => n + (s.values[i] ?? 0), 0), currency) }}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="rv-split">
+        <section
+          v-if="!property"
+          class="rv-section"
+          aria-labelledby="rv-sites"
+        >
+          <div class="rv-section__head">
+            <h2 id="rv-sites">
+              Per situs
+            </h2>
+            <NuxtLink
+              to="/admin/revenue/sites"
+              class="rv-more"
+            >
+              Kelola situs
+            </NuxtLink>
+          </div>
+          <table class="table rv-num">
+            <thead>
+              <tr>
+                <th>Situs</th>
+                <th>Pendapatan</th>
+                <th class="hide-sm">
+                  Perubahan
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in o.byProperty"
+                :key="p.propertyId ?? 'none'"
+              >
+                <td>
+                  <NuxtLink
+                    v-if="p.code"
+                    :to="`/admin/revenue/sites/${p.code}`"
+                  >
+                    {{ p.name }}
+                  </NuxtLink>
+                  <span
+                    v-else
+                    class="muted"
+                  >{{ p.name }}</span>
+                  <span
+                    class="rv-meter"
+                    aria-hidden="true"
+                  ><span :style="{ width: `${Math.max(0, Number(p.amount)) / propertyMax * 100}%` }" /></span>
+                </td>
+                <td class="nowrap">
+                  {{ formatMoney(p.amount, currency) }}
+                </td>
+                <td class="hide-sm nowrap">
+                  <span :class="['rv-delta', changeRatio(p.amount, p.previousAmount) === null ? '' : (changeRatio(p.amount, p.previousAmount) ?? 0) >= 0 ? 'is-up' : 'is-down']">{{ formatChange(changeRatio(p.amount, p.previousAmount)) }}</span>
+                </td>
+              </tr>
+              <tr v-if="!o.byProperty.length">
+                <td
+                  colspan="3"
+                  class="muted"
+                >
+                  Belum ada pemasukan di rentang ini.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section
+          v-if="property"
+          class="rv-section"
+          aria-labelledby="rv-by-source"
+        >
+          <div class="rv-section__head">
+            <h2 id="rv-by-source">
+              Per sumber
+            </h2>
+          </div>
+          <table class="table rv-num">
+            <thead>
+              <tr>
+                <th>Sumber</th>
+                <th>Pendapatan</th>
+                <th>Perubahan</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="s in o.bySource.filter((x) => Number(x.amount) || Number(x.previousAmount))"
+                :key="s.code"
+              >
+                <td>
+                  <span
+                    class="rv-dot"
+                    :style="{ background: colorFor(s.code, sources) }"
+                  />
+                  <NuxtLink :to="`/admin/revenue/sources/${s.code}`">{{ s.name }}</NuxtLink>
+                </td>
+                <td class="nowrap">
+                  {{ formatMoney(s.amount, currency) }}
+                </td>
+                <td class="nowrap">
+                  <span :class="['rv-delta', changeRatio(s.amount, s.previousAmount) === null ? '' : (changeRatio(s.amount, s.previousAmount) ?? 0) >= 0 ? 'is-up' : 'is-down']">{{ formatChange(changeRatio(s.amount, s.previousAmount)) }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section
+          class="rv-section"
+          aria-labelledby="rv-health"
+        >
+          <div class="rv-section__head">
+            <h2 id="rv-health">
+              Kesehatan konektor
+            </h2>
+            <NuxtLink
+              to="/admin/revenue/connections"
+              class="rv-more"
+            >
+              Koneksi &amp; log
+            </NuxtLink>
+          </div>
+          <ul class="rv-health">
+            <li
+              v-for="h in last?.health ?? []"
+              :key="h.code"
+            >
+              <span
+                class="rv-status"
+                :class="`rv-status--${healthState(h).tone}`"
+              >
+                <span aria-hidden="true">{{ TONE_ICON[healthState(h).tone] }}</span>
+                {{ healthState(h).label }}
+              </span>
+              <NuxtLink :to="`/admin/revenue/sources/${h.code}`">{{ h.name }}</NuxtLink>
+              <span class="muted rv-health__detail">{{ healthState(h).detail }}</span>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <section
+        class="rv-section"
+        aria-labelledby="rv-recent"
+      >
+        <div class="rv-section__head">
+          <h2 id="rv-recent">
+            Aktivitas terbaru
+          </h2>
+          <NuxtLink
+            to="/admin/revenue/entries"
+            class="rv-more"
+          >
+            Semua transaksi
+          </NuxtLink>
+        </div>
+        <div class="table-scroll">
+          <table class="table rv-num">
+            <thead>
+              <tr>
+                <th>Masuk</th>
+                <th>Sumber</th>
+                <th>Keterangan</th>
+                <th>Tanggal laporan</th>
+                <th>Nominal</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="r in last?.recent ?? []"
+                :key="r.id"
+              >
+                <td class="nowrap muted">
+                  {{ formatAgo(r.updatedAt) }}
+                </td>
+                <td class="nowrap">
+                  <span
+                    class="rv-dot"
+                    :style="{ background: colorFor(r.sourceCode, sources) }"
+                  />{{ r.sourceName }}
+                  <div class="muted rv-small">
+                    {{ CHANNEL_TEXT[r.channelType] ?? r.channelType }}
+                  </div>
+                </td>
+                <td>
+                  <NuxtLink :to="`/admin/revenue/entries?entri=${r.id}`">
+                    {{ r.description ?? '-' }}
+                  </NuxtLink>
+                  <span
+                    v-if="r.propertyName"
+                    class="muted"
+                  > ({{ r.propertyName }})</span>
+                </td>
+                <td class="nowrap">
+                  {{ formatDay(r.reportDate, true) }}
+                </td>
+                <td class="nowrap">
+                  {{ formatMoney(r.grossAmount, r.currency, { precise: true }) }}
+                  <div
+                    v-if="r.currency !== currency"
+                    class="muted rv-small"
+                  >
+                    {{ r.normalizedAmount === null ? 'belum dikonversi' : formatMoney(r.normalizedAmount, currency) }}
+                  </div>
+                </td>
+                <td>
+                  <span :class="['rv-badge', `rv-badge--${r.status}`]">{{ STATUS_TEXT[r.status] }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </template>
+  </div>
+</template>
+```
+
+`apps/web/app/components/revenue/EntriesTable.vue`
+
+```vue
+<!--
+  Tabel entri ledger dengan halaman (dipakai halaman Transaksi dan detail
+  sumber). Klik baris membuka panel detail: angka asli + kurs, metrik,
+  dimensi, riwayat revisi, koreksi/refund, payload mentah, dan aksi refund.
+-->
+<script setup lang="ts">
+const props = withDefaults(defineProps<{
+  sources?: string[]
+  from: string
+  to: string
+  statuses?: string
+  property?: string
+  q?: string
+  channel?: string
+  pageSize?: number
+  /** Buka detail entri ini saat dimuat (?entri=<id>). */
+  openId?: string | null
+}>(), { sources: () => [], statuses: '', property: '', q: '', channel: '', pageSize: 25, openId: null })
+
+const emit = defineEmits<{ changed: [] }>()
+
+interface Entry { id: string; sourceCode: string; sourceName: string; channelType: string; reportDate: string; occurredAt: string | null; grossAmount: string; currency: string; normalizedAmount: string | null; status: LedgerStatus; description: string | null; propertyName: string | null; revision: number; externalId: string | null; dimensions: Record<string, string> }
+interface PageData { items: Entry[]; page: number; total: number; totalPages: number }
+
+const nav = useRevenueNav()
+const base = computed(() => nav.value?.settings.baseCurrency ?? 'IDR')
+const allSources = computed(() => nav.value?.sources ?? [])
+const page = ref(1)
+const query = computed(() => ({ from: props.from, to: props.to, sources: props.sources.join(','), statuses: props.statuses, property: props.property, q: props.q, channel: props.channel, page: page.value, pageSize: props.pageSize }))
+watch(() => [props.from, props.to, props.sources.join(), props.statuses, props.property, props.q, props.channel], () => {
+  page.value = 1
+})
+
+// Dipanggil halaman induk setelah input manual; diisi setelah data dimuat.
+let reload: () => Promise<void> = async () => {}
+defineExpose({ refresh: () => reload() })
+
+const { data, error, refresh, pending } = await useAsyncData(
+  () => `revenue-entries-${JSON.stringify(query.value)}`,
+  () => revenueApi<PageData>('entries', { query: query.value }),
+  { server: false, watch: [query] },
+)
+
+/** Situs (atau domain belum dipetakan), placement, revisi dalam satu baris. */
+function entryContext(e: Entry): string {
+  const parts: string[] = []
+  if (e.propertyName) parts.push(e.propertyName)
+  else if (e.dimensions.domain) parts.push(`${e.dimensions.domain} (belum dipetakan)`)
+  if (e.dimensions.placement) parts.push(`placement ${e.dimensions.placement}`)
+  if (e.revision > 1) parts.push(`revisi ${e.revision}`)
+  return parts.join(', ')
+}
+
+// ---------- detail ----------
+interface EntryDetail {
+  entry: Record<string, unknown> & { id: string; sourceName: string; channelType: string; idempotencyKey: string; externalId: string | null; reportDate: string; occurredAt: string | null; grossAmount: string; currency: string; fxRateToBase: string | null; baseCurrency: string; normalizedAmount: string | null; status: LedgerStatus; metrics: Record<string, number>; dimensions: Record<string, string>; description: string | null; note: string | null; rawPayload: unknown; adjustsEntryId: string | null; createdByName: string | null; revision: number; createdAt: string; updatedAt: string; propertyName: string | null }
+  revisions: { revision: number; grossAmount: string; currency: string; fxRateToBase: string | null; normalizedAmount: string | null; status: LedgerStatus; replacedAt: string }[]
+  corrections: { id: string; status: LedgerStatus; grossAmount: string; currency: string; note: string | null; reportDate: string; createdAt: string }[]
+}
+const dialog = ref<HTMLDialogElement | null>(null)
+const detail = ref<EntryDetail | null>(null)
+const detailError = ref<string | null>(null)
+const refund = reactive({ open: false, amount: '', note: '', busy: false, error: '' })
+
+async function openEntry(id: string) {
+  detail.value = null
+  detailError.value = null
+  refund.open = false
+  dialog.value?.showModal()
+  try {
+    detail.value = await revenueApi<EntryDetail>(`entries/${id}`)
+  } catch (e) {
+    detailError.value = apiErrorMessage(e)
+  }
+}
+onMounted(() => {
+  if (props.openId) void openEntry(props.openId)
+})
+
+async function submitRefund() {
+  if (!detail.value) return
+  refund.busy = true
+  refund.error = ''
+  try {
+    await revenueApi(`entries/${detail.value.entry.id}/refund`, { method: 'POST', body: { amount: refund.amount.trim() || null, note: refund.note } })
+    refund.open = false
+    refund.amount = ''
+    refund.note = ''
+    await Promise.all([openEntry(detail.value.entry.id), refresh()])
+    emit('changed')
+  } catch (e) {
+    refund.error = apiErrorMessage(e)
+  } finally {
+    refund.busy = false
+  }
+}
+
+const canRefund = computed(() => {
+  const e = detail.value?.entry
+  return Boolean(e && (e.status === 'finalized' || e.status === 'estimated') && Number(e.grossAmount) > 0)
+})
+
+reload = refresh
+</script>
+
+<template>
+  <div :class="{ 'is-loading': pending && data }">
+    <p
+      v-if="error"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <div class="table-scroll">
+      <table class="table rv-num">
+        <thead>
+          <tr>
+            <th>Tanggal</th>
+            <th>Sumber</th>
+            <th>Keterangan</th>
+            <th>Nominal</th>
+            <th class="hide-sm">
+              {{ base }}
+            </th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="e in data?.items ?? []"
+            :key="e.id"
+          >
+            <td class="nowrap">
+              {{ formatDay(e.reportDate, true) }}
+            </td>
+            <td class="nowrap">
+              <span
+                class="rv-dot"
+                :style="{ background: colorFor(e.sourceCode, allSources) }"
+              />{{ e.sourceName }}
+              <div class="muted rv-small">
+                {{ CHANNEL_TEXT[e.channelType] ?? e.channelType }}
+              </div>
+            </td>
+            <td>
+              <button
+                type="button"
+                class="table__title rv-linkbtn"
+                @click="openEntry(e.id)"
+              >
+                {{ e.description ?? e.externalId ?? 'Tanpa keterangan' }}
+              </button>
+              <div class="muted rv-small">
+                {{ entryContext(e) }}
+              </div>
+            </td>
+            <td class="nowrap">
+              {{ formatMoney(e.grossAmount, e.currency, { precise: true }) }}
+            </td>
+            <td class="nowrap hide-sm">
+              {{ e.normalizedAmount === null ? 'belum dikonversi' : formatMoney(e.normalizedAmount, base) }}
+            </td>
+            <td>
+              <span :class="['rv-badge', `rv-badge--${e.status}`]">{{ STATUS_TEXT[e.status] }}</span>
+            </td>
+          </tr>
+          <tr v-if="data && !data.items.length">
+            <td
+              colspan="6"
+              class="muted"
+            >
+              Tidak ada entri untuk filter ini.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div
+      v-if="data && data.totalPages > 1"
+      class="pager"
+    >
+      <button
+        type="button"
+        class="btn btn--small"
+        :disabled="page <= 1"
+        @click="page--"
+      >
+        Sebelumnya
+      </button>
+      <span class="muted">Halaman {{ data.page }} dari {{ data.totalPages }} ({{ formatNumber(data.total) }} entri)</span>
+      <button
+        type="button"
+        class="btn btn--small"
+        :disabled="page >= data.totalPages"
+        @click="page++"
+      >
+        Berikutnya
+      </button>
+    </div>
+
+    <dialog
+      ref="dialog"
+      class="adm-dialog rv-drawer"
+      aria-labelledby="entri-judul"
+      @close="detail = null"
+    >
+      <div class="stack">
+        <div class="adm-head">
+          <h2 id="entri-judul">
+            Detail entri
+          </h2>
+          <div class="adm-head__actions">
+            <button
+              type="button"
+              class="btn btn--small"
+              @click="dialog?.close()"
+            >
+              Tutup
+            </button>
+          </div>
+        </div>
+        <p
+          v-if="detailError"
+          class="notice notice--error"
+        >
+          {{ detailError }}
+        </p>
+        <p
+          v-else-if="!detail"
+          class="muted"
+        >
+          Memuat…
+        </p>
+        <template v-else>
+          <div>
+            <p class="rv-hero__value rv-drawer__amount">
+              {{ formatMoney(detail.entry.grossAmount, detail.entry.currency, { precise: true }) }}
+            </p>
+            <p class="muted">
+              {{ detail.entry.description }}
+            </p>
+            <span :class="['rv-badge', `rv-badge--${detail.entry.status}`]">{{ STATUS_TEXT[detail.entry.status] }}</span>
+          </div>
+          <div class="rv-conn">
+            <dl>
+              <dt>Sumber</dt>
+              <dd>{{ detail.entry.sourceName }} ({{ CHANNEL_TEXT[detail.entry.channelType] }})</dd>
+              <dt>Situs</dt>
+              <dd>{{ detail.entry.propertyName ?? 'Belum dipetakan' }}</dd>
+              <dt>Tanggal laporan</dt>
+              <dd>{{ formatDay(detail.entry.reportDate, true) }}</dd>
+              <dt v-if="detail.entry.occurredAt">
+                Waktu transaksi
+              </dt>
+              <dd v-if="detail.entry.occurredAt">
+                {{ formatTime(detail.entry.occurredAt) }}
+              </dd>
+              <dt>Dalam {{ detail.entry.baseCurrency }}</dt>
+              <dd>
+                {{ detail.entry.normalizedAmount === null ? `belum dikonversi (kurs ${detail.entry.currency} belum ada)` : formatMoney(detail.entry.normalizedAmount, detail.entry.baseCurrency) }}
+                <span
+                  v-if="detail.entry.fxRateToBase && detail.entry.currency !== detail.entry.baseCurrency"
+                  class="muted"
+                > (kurs {{ formatNumber(detail.entry.fxRateToBase, 4) }})</span>
+              </dd>
+              <dt>ID eksternal</dt>
+              <dd class="mono">
+                {{ detail.entry.externalId ?? '-' }}
+              </dd>
+              <dt>Kunci idempotensi</dt>
+              <dd class="mono">
+                {{ detail.entry.idempotencyKey }}
+              </dd>
+              <template
+                v-for="(v, k) in detail.entry.dimensions"
+                :key="`d-${k}`"
+              >
+                <dt>{{ k }}</dt>
+                <dd>{{ v }}</dd>
+              </template>
+              <template
+                v-for="(v, k) in detail.entry.metrics"
+                :key="`m-${k}`"
+              >
+                <dt>{{ k }}</dt>
+                <dd>{{ formatNumber(v, 3) }}</dd>
+              </template>
+              <dt v-if="detail.entry.note">
+                Catatan audit
+              </dt>
+              <dd v-if="detail.entry.note">
+                {{ detail.entry.note }}
+              </dd>
+              <dt>Dicatat</dt>
+              <dd>{{ formatTime(detail.entry.createdAt) }}{{ detail.entry.createdByName ? ` oleh ${detail.entry.createdByName}` : '' }}; revisi {{ detail.entry.revision }}</dd>
+            </dl>
+          </div>
+
+          <section v-if="detail.revisions.length">
+            <h3>Riwayat angka</h3>
+            <table class="table rv-num">
+              <thead>
+                <tr>
+                  <th>Revisi</th>
+                  <th>Nominal</th>
+                  <th>Status</th>
+                  <th>Diganti</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="r in detail.revisions"
+                  :key="r.revision"
+                >
+                  <td>{{ r.revision }}</td>
+                  <td>{{ formatMoney(r.grossAmount, r.currency, { precise: true }) }}</td>
+                  <td>{{ STATUS_TEXT[r.status] }}</td>
+                  <td>{{ formatTime(r.replacedAt) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section v-if="detail.corrections.length">
+            <h3>Koreksi dan refund</h3>
+            <ul>
+              <li
+                v-for="c in detail.corrections"
+                :key="c.id"
+              >
+                {{ STATUS_TEXT[c.status] }} {{ formatMoney(c.grossAmount, c.currency) }}, {{ formatDay(c.reportDate, true) }}: {{ c.note }}
+              </li>
+            </ul>
+          </section>
+
+          <section v-if="canRefund">
+            <button
+              v-if="!refund.open"
+              type="button"
+              class="btn btn--danger"
+              @click="refund.open = true"
+            >
+              Catat refund
+            </button>
+            <form
+              v-else
+              class="stack"
+              @submit.prevent="submitRefund"
+            >
+              <label class="field">
+                <span>Nominal refund ({{ detail.entry.currency }})</span>
+                <input
+                  v-model="refund.amount"
+                  type="text"
+                  inputmode="decimal"
+                  placeholder="Kosongkan untuk refund penuh"
+                >
+              </label>
+              <label class="field">
+                <span>Alasan (wajib, tersimpan sebagai catatan audit)</span>
+                <textarea
+                  v-model="refund.note"
+                  required
+                />
+              </label>
+              <p
+                v-if="refund.error"
+                class="field__error"
+              >
+                {{ refund.error }}
+              </p>
+              <div class="rv-actions">
+                <button
+                  type="submit"
+                  class="btn btn--danger"
+                  :disabled="refund.busy"
+                >
+                  Simpan refund
+                </button>
+                <button
+                  type="button"
+                  class="btn btn--ghost"
+                  @click="refund.open = false"
+                >
+                  Batal
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <details v-if="detail.entry.rawPayload">
+            <summary>Payload mentah (audit)</summary>
+            <pre class="rv-pre">{{ JSON.stringify(detail.entry.rawPayload, null, 2) }}</pre>
+          </details>
+        </template>
+      </div>
+    </dialog>
+  </div>
+</template>
+```
+
+26. Tulis layout konsol dan jadikan `/admin` dashboard. User yang bukan superadmin langsung diarahkan ke Admin Blog. Di layout admin konten, tambahkan tautan kembali ke dashboard untuk superadmin:
+
+`apps/web/app/layouts/console.vue`
+
+```vue
+<!--
+  Kerangka konsol pendapatan (ADR-011): tampilan awal setelah login untuk
+  superadmin. Rail kiri: Dashboard, sumber pemasukan, situs, operasional;
+  tombol "Admin Blog" membuka admin konten (layout admin, ADR-009).
+  User yang bukan superadmin langsung diarahkan ke Admin Blog.
+-->
+<script setup lang="ts">
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '../assets/admin.css'
+import '../assets/revenue.css'
+
+const me = useAdminMe()
+const nav = useRevenueNav()
+const route = useRoute()
+const error = ref<string | null>(null)
+
+await ensureAdminMe().catch((e) => {
+  error.value = apiErrorMessage(e)
+})
+
+const blogHome = computed(() => (me.value?.sites[0] ? `/admin/${me.value.sites[0].code}/articles` : null))
+
+if (me.value && !me.value.user.isSuperadmin) {
+  if (blogHome.value) await navigateTo(blogHome.value, { replace: true })
+} else if (me.value) {
+  await refreshRevenueNav().catch((e) => {
+    error.value = apiErrorMessage(e)
+  })
+}
+
+const sources = computed(() => nav.value?.sources ?? [])
+const properties = computed(() => (nav.value?.properties ?? []).filter((p) => p.status === 'ACTIVE'))
+
+const health = computed(() => {
+  const map = new Map<string, 'ok' | 'warn' | 'off'>()
+  for (const s of sources.value) {
+    if (!s.isActive) map.set(s.code, 'off')
+    else if (s.lastSyncStatus === 'failed' || (s.canSync && !s.mock && !s.credentials.configured)) map.set(s.code, 'warn')
+    else map.set(s.code, 'ok')
+  }
+  return map
+})
+
+async function logout() {
+  try {
+    await $fetch('/api/admin/logout', { method: 'POST' })
+  } catch (e) {
+    error.value = `Gagal keluar: ${apiErrorMessage(e)}. Sesi masih aktif; coba lagi.`
+    return
+  }
+  me.value = null
+  nav.value = null
+  await navigateTo('/admin/login')
+}
+
+const isActive = (path: string) => route.path === path
+useHead({ title: 'Pendapatan', htmlAttrs: { lang: 'id' } })
+</script>
+
+<template>
+  <div class="adm">
+    <p
+      v-if="error"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+    <div
+      v-else-if="me && me.user.isSuperadmin"
+      class="adm-shell"
+    >
+      <aside class="adm-rail rv-rail">
+        <div class="rv-rail__brand">
+          <span
+            class="rv-rail__mark"
+            aria-hidden="true"
+          />
+          <span>Konsol pemilik</span>
+        </div>
+        <nav
+          class="adm-nav"
+          aria-label="Pendapatan"
+        >
+          <NuxtLink
+            to="/admin"
+            :class="{ 'router-link-active': isActive('/admin') }"
+          >
+            Dashboard
+          </NuxtLink>
+          <NuxtLink to="/admin/revenue/entries">
+            Transaksi
+          </NuxtLink>
+        </nav>
+
+        <nav
+          class="adm-nav rv-rail__group"
+          aria-labelledby="rail-sumber"
+        >
+          <h2 id="rail-sumber">
+            Sumber pemasukan
+          </h2>
+          <NuxtLink
+            v-for="s in sources"
+            :key="s.code"
+            :to="`/admin/revenue/sources/${s.code}`"
+          >
+            <span
+              class="rv-dot"
+              :style="{ background: colorFor(s.code, sources) }"
+              aria-hidden="true"
+            />
+            {{ s.name }}
+            <span
+              v-if="health.get(s.code) === 'warn'"
+              class="rv-flag"
+              title="Perlu dicek: sync gagal atau kredensial belum diisi"
+            ><span aria-hidden="true">!</span><span class="sr-only">perlu dicek</span></span>
+            <span
+              v-else-if="health.get(s.code) === 'off'"
+              class="rv-flag rv-flag--off"
+              title="Nonaktif"
+            ><span aria-hidden="true">–</span><span class="sr-only">nonaktif</span></span>
+          </NuxtLink>
+        </nav>
+
+        <nav
+          class="adm-nav rv-rail__group"
+          aria-labelledby="rail-situs"
+        >
+          <h2 id="rail-situs">
+            Situs
+          </h2>
+          <NuxtLink
+            v-for="p in properties"
+            :key="p.code"
+            :to="`/admin/revenue/sites/${p.code}`"
+          >
+            {{ p.name }}
+          </NuxtLink>
+          <NuxtLink
+            to="/admin/revenue/sites"
+            class="rv-rail__manage"
+            :class="{ 'router-link-active': isActive('/admin/revenue/sites') }"
+          >
+            Kelola situs
+          </NuxtLink>
+        </nav>
+
+        <nav
+          class="adm-nav rv-rail__group"
+          aria-labelledby="rail-operasional"
+        >
+          <h2 id="rail-operasional">
+            Operasional
+          </h2>
+          <NuxtLink to="/admin/revenue/import">
+            Impor file
+          </NuxtLink>
+          <NuxtLink to="/admin/revenue/connections">
+            Koneksi &amp; log
+          </NuxtLink>
+          <NuxtLink to="/admin/revenue/fx">
+            Kurs
+          </NuxtLink>
+        </nav>
+
+        <div class="adm-rail__user">
+          <NuxtLink
+            v-if="blogHome"
+            :to="blogHome"
+            class="btn rv-rail__blog"
+          >
+            Admin Blog
+          </NuxtLink>
+          <div>{{ me.user.displayName }}</div>
+          <div class="muted">
+            {{ me.user.email }}
+          </div>
+          <button
+            type="button"
+            class="btn btn--ghost btn--small"
+            @click="logout"
+          >
+            Keluar
+          </button>
+        </div>
+      </aside>
+      <main class="adm-main">
+        <slot />
+      </main>
+    </div>
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/index.vue`
+
+```vue
+<!--
+  /admin: tampilan awal setelah login. Superadmin melihat dashboard
+  pendapatan semua situs (ADR-011); user lain diarahkan layout console ke
+  Admin Blog (artikel site pertama yang boleh dikelola).
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+</script>
+
+<template>
+  <RevenueDashboardOverview />
+</template>
+```
+
+`apps/web/app/layouts/admin.vue`
+
+```vue
+<!--
+  Kerangka admin (ADR-009): rail kiri berisi pemilih site, navigasi, dan
+  user; isi halaman di kanan. Hanya dipakai halaman /admin/:site/... (SPA).
+  Superadmin punya tautan kembali ke dashboard pendapatan (ADR-011).
+-->
+<script setup lang="ts">
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '../assets/admin.css'
+
+const me = useAdminMe()
+const site = useAdminSite()
+const route = useRoute()
+const error = ref<string | null>(null)
+
+await ensureAdminMe().catch((e) => {
+  error.value = apiErrorMessage(e)
+})
+
+const nav = [
+  { to: 'queue', label: 'Antrian terbit' },
+  { to: 'articles', label: 'Artikel' },
+  { to: 'pages', label: 'Halaman' },
+  { to: 'categories', label: 'Kategori' },
+  { to: 'tags', label: 'Tag' },
+  { to: 'menus', label: 'Menu' },
+  { to: 'media', label: 'Media' },
+  { to: 'theme', label: 'Tema' },
+  { to: 'settings', label: 'Pengaturan' },
+]
+
+/** Ganti site: tetap di bagian yang sama (mis. Artikel), di site lain. */
+function switchSite(code: string) {
+  const section = String(route.path.split('/')[3] ?? 'articles')
+  const keep = nav.some((n) => n.to === section) ? section : 'articles'
+  return navigateTo(`/admin/${code}/${keep}`)
+}
+
+/** Pindah ke login hanya bila server benar-benar menghapus sesi. */
+async function logout() {
+  try {
+    await $fetch('/api/admin/logout', { method: 'POST' })
+  } catch (e) {
+    error.value = `Gagal keluar: ${apiErrorMessage(e)}. Sesi masih aktif; coba lagi.`
+    return
+  }
+  me.value = null
+  await navigateTo('/admin/login')
+}
+
+const queueCount = useQueueCount()
+// Jumlah antrian diperbarui setiap pindah halaman (mis. setelah approve).
+watch(() => route.path, () => { if (me.value) void refreshQueueCount() }, { immediate: true })
+useHead({ title: () => (site.value ? `Admin · ${site.value.name}` : 'Admin'), htmlAttrs: { lang: 'id' } })
+</script>
+
+<template>
+  <div class="adm">
+    <p
+      v-if="error"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+    <div
+      v-else-if="me"
+      class="adm-shell"
+    >
+      <aside class="adm-rail">
+        <NuxtLink
+          v-if="me.user.isSuperadmin"
+          to="/admin"
+          class="adm-rail__back"
+        >
+          Dashboard pendapatan
+        </NuxtLink>
+        <div class="adm-rail__site">
+          <label for="pilih-site">Site</label>
+          <select
+            id="pilih-site"
+            :value="site?.code ?? ''"
+            @change="switchSite(($event.target as HTMLSelectElement).value)"
+          >
+            <option
+              v-for="s in me.sites"
+              :key="s.id"
+              :value="s.code"
+            >
+              {{ s.name }}
+            </option>
+          </select>
+        </div>
+        <nav
+          class="adm-nav"
+          aria-label="Admin"
+        >
+          <NuxtLink
+            v-for="item in nav"
+            :key="item.to"
+            :to="site ? `/admin/${site.code}/${item.to}` : '/admin'"
+          >
+            {{ item.label }}
+            <span
+              v-if="item.to === 'queue' && queueCount"
+              class="count"
+              :aria-label="`${queueCount} menunggu`"
+            >{{ queueCount }}</span>
+          </NuxtLink>
+        </nav>
+        <div class="adm-rail__user">
+          <div>{{ me.user.displayName }}</div>
+          <div class="muted">
+            {{ me.user.email }}
+          </div>
+          <button
+            type="button"
+            class="btn btn--ghost btn--small"
+            @click="logout"
+          >
+            Keluar
+          </button>
+        </div>
+      </aside>
+      <main class="adm-main">
+        <p
+          v-if="!site"
+          class="notice notice--error"
+        >
+          Site tidak ditemukan atau Anda tidak punya akses.
+        </p>
+        <slot v-else />
+      </main>
+    </div>
+  </div>
+</template>
+```
+
+27. Tulis halaman-halamannya: detail sumber, detail situs, kelola situs, transaksi (dengan input manual dan adjustment), wizard impor, koneksi & log, dan kurs:
+
+`apps/web/app/pages/admin/revenue/sources/[code].vue`
+
+```vue
+<!--
+  Detail satu sumber pemasukan (ADR-011). Bagian umum: total, tren harian,
+  breakdown per dimensi, transaksi terbaru. Bagian khusus per connector:
+    Adsterra  impressions, clicks, CTR, eCPM; riwayat tarik API
+    AdSense   page views, clicks, page RPM; status OAuth; riwayat sync
+    Lynk.id   order, rata-rata order; URL + status webhook; event masuk
+    lainnya   jumlah entri; riwayat impor file
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+interface Run { id: string; channelType: string; trigger: string; status: string; mock: boolean; rangeStart: string; rangeEnd: string; startedAt: string; finishedAt: string | null; rowsFetched: number; inserted: number; updated: number; unchanged: number; skipped: number; failed: number; errorMessage: string | null; log: string[] }
+interface WebhookEvent { id: string; receivedAt: string; eventType: string | null; externalEventId: string | null; signatureValid: boolean; status: string; error: string | null; test: boolean; ledgerEntryId: string | null }
+interface ImportRow { id: string; fileName: string; fileFormat: string; status: string; rowCount: number; inserted: number; updated: number; unchanged: number; skipped: number; failed: number; createdAt: string }
+interface Detail {
+  source: SourceInfo
+  range: { start: string; end: string }
+  detail: {
+    range: { from: string; to: string; previousFrom: string; previousTo: string }
+    baseCurrency: string
+    total: string
+    gross: string | null
+    currencies: string[]
+    entries: number
+    previousTotal: string
+    metrics: Record<string, string>
+    daily: { date: string; amount: string; gross: string; status: string; entries: number }[]
+    breakdowns: { key: string; rows: { value: string; amount: string; gross: string; entries: number; metrics: Record<string, number> }[] }[]
+    runs: Run[]
+    webhooks: WebhookEvent[]
+    imports: ImportRow[]
+  }
+}
+
+const route = useRoute()
+const code = computed(() => String(route.params['code']))
+const nav = useRevenueNav()
+const today = computed(() => todayIn(nav.value?.settings.timeZone ?? 'Asia/Jakarta'))
+
+const preset = ref<PresetKey>('30d')
+const range = reactive(presetRange('30d', today.value))
+function choosePreset(key: PresetKey) {
+  preset.value = key
+  Object.assign(range, presetRange(key, today.value))
+}
+
+const query = computed(() => ({ from: range.from, to: range.to }))
+const { data, error, refresh, pending } = await useAsyncData(
+  () => `revenue-source-${code.value}-${range.from}-${range.to}`,
+  () => revenueApi<Detail>(`sources/${code.value}`, { query: query.value }),
+  { server: false, watch: [query, code] },
+)
+const last = shallowRef<Detail | null>(null)
+watch(data, (d) => {
+  if (d) last.value = d
+}, { immediate: true })
+watch(code, () => {
+  last.value = null
+})
+
+const source = computed(() => last.value?.source ?? null)
+const d = computed(() => last.value?.detail ?? null)
+const currency = computed(() => d.value?.baseCurrency ?? 'IDR')
+const sources = computed(() => nav.value?.sources ?? [])
+const color = computed(() => colorFor(code.value, sources.value))
+const change = computed(() => (d.value ? changeRatio(d.value.total, d.value.previousTotal) : null))
+const nativeCurrency = computed(() => (d.value?.currencies.length === 1 ? d.value.currencies[0] ?? null : null))
+
+const m = (key: string) => Number(d.value?.metrics[key] ?? 0)
+const gross = computed(() => Number(d.value?.gross ?? 0))
+
+/** KPI khusus per connector; nilai uang dalam mata uang asli sumber. */
+const kpis = computed(() => {
+  const s = source.value
+  if (!s || !d.value) return []
+  const cur = nativeCurrency.value ?? s.defaultCurrency
+  if (s.connector === 'adsterra') {
+    const imp = m('impressions')
+    const clicks = m('clicks')
+    return [
+      { label: 'Impressions', value: formatNumber(imp) },
+      { label: 'Clicks', value: formatNumber(clicks) },
+      { label: 'CTR', value: imp ? `${formatNumber((clicks / imp) * 100, 2)}%` : '-' },
+      { label: 'eCPM', value: imp ? formatMoney((gross.value / imp) * 1000, cur, { precise: true }) : '-', note: 'revenue / impressions x 1000' },
+    ]
+  }
+  if (s.connector === 'adsense') {
+    const pv = m('pageViews')
+    const clicks = m('clicks')
+    return [
+      { label: 'Page views', value: formatNumber(pv) },
+      { label: 'Clicks', value: formatNumber(clicks) },
+      { label: 'Impressions', value: formatNumber(m('impressions')) },
+      { label: 'Page RPM', value: pv ? formatMoney((gross.value / pv) * 1000, cur) : '-', note: 'estimated earnings / page views x 1000' },
+    ]
+  }
+  if (s.connector === 'lynk') {
+    const orders = m('orders')
+    return [
+      { label: 'Order', value: formatNumber(orders) },
+      { label: 'Item terjual', value: formatNumber(m('items')) },
+      { label: 'Rata-rata per order', value: orders ? formatMoney(gross.value / orders, cur) : '-', note: 'nominal bersih (grandTotal)' },
+      { label: 'Potongan biaya', value: formatMoney(Math.abs(m('convenienceFee')), cur), note: 'convenienceFee' },
+    ]
+  }
+  return [{ label: 'Entri', value: formatNumber(d.value.entries) }]
+})
+
+const daily = computed(() => {
+  if (!d.value) return { labels: [] as string[], values: [] as number[] }
+  const map = new Map(d.value.daily.map((x) => [x.date, Number(x.amount)]))
+  const dates = bucketsFor(d.value.range.from, d.value.range.to, 'day')
+  return { labels: dates.map((x) => formatDay(x)), values: dates.map((x) => map.get(x) ?? 0) }
+})
+
+const DIMENSION_TEXT: Record<string, string> = { domain: 'Domain', placement: 'Placement', country: 'Negara', sub_id: 'Sub ID', product: 'Produk' }
+const breakdownKey = ref<string>('')
+watch(d, (v) => {
+  if (v && !v.breakdowns.some((b) => b.key === breakdownKey.value)) breakdownKey.value = v.breakdowns[0]?.key ?? ''
+}, { immediate: true })
+const breakdown = computed(() => d.value?.breakdowns.find((b) => b.key === breakdownKey.value) ?? null)
+
+// ---------- aksi ----------
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref<string | null>(null)
+const syncRange = reactive({ from: '', to: '' })
+
+async function act(name: string, fn: () => Promise<string>) {
+  busy.value = name
+  message.value = null
+  try {
+    message.value = { kind: 'ok', text: await fn() }
+  } catch (e) {
+    message.value = { kind: 'error', text: apiErrorMessage(e) }
+  } finally {
+    busy.value = null
+  }
+}
+
+const syncNow = (custom = false) => act('sync', async () => {
+  const body = custom && syncRange.from && syncRange.to ? { from: syncRange.from, to: syncRange.to } : {}
+  const r = await revenueApi<{ status: string; mock: boolean; range: { start: string; end: string }; counts: { inserted: number; updated: number; unchanged: number; skipped: number; failed: number }; error: string | null }>(`sources/${code.value}/sync`, { method: 'POST', body })
+  await Promise.all([refresh(), refreshRevenueNav()])
+  if (r.status === 'failed') throw new Error(r.error ?? 'Sync gagal')
+  const c = r.counts
+  return `Sync ${formatRange(r.range.start, r.range.end)}${r.mock ? ' (mock)' : ''}: ${c.inserted} baru, ${c.updated} diperbarui, ${c.unchanged} sama, ${c.skipped} dilewati, ${c.failed} gagal.`
+}).catch(() => {})
+
+const testConnection = () => act('test', async () => {
+  const r = await revenueApi<{ ok: boolean; mock: boolean; message: string }>(`sources/${code.value}/test`, { method: 'POST' })
+  if (!r.ok) throw new Error(r.message)
+  return `${r.mock ? 'Mode mock. ' : ''}${r.message}`
+})
+
+const testWebhook = () => act('webhook', async () => {
+  const r = await revenueApi<{ ok: boolean; status: string; message?: string }>(`sources/${code.value}/webhook-test`, { method: 'POST' })
+  await refresh()
+  if (!r.ok) throw new Error(r.message ?? r.status)
+  return r.message ?? 'Event uji diterima.'
+})
+
+async function copy(text: string) {
+  await navigator.clipboard?.writeText(text).catch(() => {})
+  message.value = { kind: 'ok', text: 'URL webhook disalin.' }
+}
+
+const RUN_TEXT: Record<string, string> = { running: 'Berjalan', success: 'Berhasil', partial: 'Sebagian gagal', failed: 'Gagal' }
+const HOOK_TEXT: Record<string, string> = { processed: 'Diproses', duplicate: 'Duplikat', ignored: 'Diabaikan', rejected: 'Ditolak', failed: 'Gagal' }
+const runTone = (s: string) => (s === 'success' ? 'good' : s === 'partial' || s === 'running' ? 'warning' : 'critical')
+const hookTone = (s: string) => (s === 'processed' || s === 'duplicate' ? 'good' : s === 'ignored' ? 'off' : 'critical')
+const openLog = ref<string | null>(null)
+
+useHead({ title: () => (source.value ? `${source.value.name} · Pendapatan` : 'Sumber pendapatan') })
+</script>
+
+<template>
+  <div
+    class="rv"
+    :class="{ 'is-loading': pending && last }"
+  >
+    <p
+      v-if="error && !last"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <template v-if="source && d">
+      <header class="adm-head">
+        <div>
+          <h1>
+            <span
+              class="rv-dot"
+              :style="{ background: color }"
+            />{{ source.name }}
+          </h1>
+          <p class="muted rv-sub">
+            {{ CHANNEL_TEXT[source.integrationType] }}<template v-if="source.mock">
+              , mode mock (data contoh dari adapter)
+            </template><template v-if="!source.isActive">
+              , nonaktif
+            </template>
+          </p>
+        </div>
+        <div class="adm-head__actions">
+          <button
+            v-if="source.connector === 'lynk'"
+            type="button"
+            class="btn"
+            :disabled="busy !== null"
+            @click="testWebhook"
+          >
+            {{ busy === 'webhook' ? 'Mengirim…' : 'Kirim event uji' }}
+          </button>
+          <button
+            v-if="source.connector !== 'generic'"
+            type="button"
+            class="btn"
+            :disabled="busy !== null"
+            @click="testConnection"
+          >
+            {{ busy === 'test' ? 'Menguji…' : 'Uji koneksi' }}
+          </button>
+          <NuxtLink
+            v-if="source.connector === 'generic'"
+            :to="`/admin/revenue/import?sumber=${source.code}`"
+            class="btn"
+          >
+            Impor file
+          </NuxtLink>
+          <NuxtLink
+            :to="`/admin/revenue/entries?baru=1&sumber=${source.code}`"
+            class="btn"
+          >
+            Catat manual
+          </NuxtLink>
+          <button
+            v-if="source.canSync"
+            type="button"
+            class="btn btn--primary"
+            :disabled="busy !== null"
+            @click="syncNow(false)"
+          >
+            {{ busy === 'sync' ? 'Menarik data…' : 'Tarik data sekarang' }}
+          </button>
+        </div>
+      </header>
+
+      <p
+        v-if="message"
+        class="notice"
+        :class="{ 'notice--error': message.kind === 'error' }"
+        role="status"
+      >
+        {{ message.text }}
+      </p>
+
+      <div
+        class="rv-filters"
+        role="group"
+        aria-label="Rentang tanggal"
+      >
+        <div
+          class="adm-segmented"
+          role="radiogroup"
+          aria-label="Rentang"
+        >
+          <button
+            v-for="p in PRESETS"
+            :key="p.key"
+            type="button"
+            role="radio"
+            :aria-checked="preset === p.key"
+            :class="{ 'is-on': preset === p.key }"
+            @click="choosePreset(p.key)"
+          >
+            {{ p.label }}
+          </button>
+        </div>
+        <label class="rv-date"><span class="sr-only">Dari</span><input
+          v-model="range.from"
+          type="date"
+          :max="range.to"
+          @change="preset = 'custom'"
+        ></label>
+        <span class="muted">s.d.</span>
+        <label class="rv-date"><span class="sr-only">Sampai</span><input
+          v-model="range.to"
+          type="date"
+          :min="range.from"
+          @change="preset = 'custom'"
+        ></label>
+      </div>
+
+      <section class="rv-kpis rv-num">
+        <div>
+          <h3>Pendapatan ({{ currency }})</h3>
+          <p>{{ formatMoney(d.total, currency) }}</p>
+          <small><span :class="['rv-delta', change === null ? '' : change >= 0 ? 'is-up' : 'is-down']">{{ formatChange(change) }}</span> vs periode sebelumnya</small>
+        </div>
+        <div v-if="nativeCurrency && nativeCurrency !== currency">
+          <h3>Nominal asli ({{ nativeCurrency }})</h3>
+          <p>{{ formatMoney(d.gross, nativeCurrency) }}</p>
+          <small>sebelum konversi kurs</small>
+        </div>
+        <div
+          v-for="k in kpis"
+          :key="k.label"
+        >
+          <h3>{{ k.label }}</h3>
+          <p>{{ k.value }}</p>
+          <small v-if="k.note">{{ k.note }}</small>
+        </div>
+      </section>
+
+      <section
+        class="rv-section"
+        aria-labelledby="src-trend"
+      >
+        <div class="rv-section__head">
+          <h2 id="src-trend">
+            Pendapatan harian ({{ currency }})
+          </h2>
+        </div>
+        <RevenueStackedColumns
+          :labels="daily.labels"
+          :series="[{ key: source.code, name: source.name, color, values: daily.values }]"
+          :currency="currency"
+          :height="220"
+          :title="`Pendapatan harian ${source.name}`"
+        />
+      </section>
+
+      <section
+        v-if="d.breakdowns.length"
+        class="rv-section"
+        aria-labelledby="src-breakdown"
+      >
+        <div class="rv-section__head">
+          <h2 id="src-breakdown">
+            Rincian
+          </h2>
+          <div
+            class="adm-segmented"
+            role="radiogroup"
+            aria-label="Dimensi"
+          >
+            <button
+              v-for="b in d.breakdowns"
+              :key="b.key"
+              type="button"
+              role="radio"
+              :aria-checked="breakdownKey === b.key"
+              :class="{ 'is-on': breakdownKey === b.key }"
+              @click="breakdownKey = b.key"
+            >
+              {{ DIMENSION_TEXT[b.key] ?? b.key }}
+            </button>
+          </div>
+        </div>
+        <div
+          v-if="breakdown"
+          class="table-scroll"
+        >
+          <table class="table rv-num">
+            <thead>
+              <tr>
+                <th>{{ DIMENSION_TEXT[breakdown.key] ?? breakdown.key }}</th>
+                <th>Pendapatan</th>
+                <th v-if="nativeCurrency && nativeCurrency !== currency">
+                  {{ nativeCurrency }}
+                </th>
+                <th v-if="source.connector === 'adsterra' || source.connector === 'adsense'">
+                  Impressions
+                </th>
+                <th v-if="source.connector === 'adsterra' || source.connector === 'adsense'">
+                  Clicks
+                </th>
+                <th v-if="source.connector === 'adsense'">
+                  Page views
+                </th>
+                <th v-if="source.connector === 'lynk'">
+                  Order
+                </th>
+                <th>Entri</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in breakdown.rows"
+                :key="row.value"
+              >
+                <td>
+                  {{ row.value }}
+                  <span
+                    class="rv-meter"
+                    aria-hidden="true"
+                  ><span :style="{ width: `${Math.max(0, Number(row.amount)) / Math.max(1, ...breakdown.rows.map((r) => Number(r.amount))) * 100}%`, background: color }" /></span>
+                </td>
+                <td class="nowrap">
+                  {{ formatMoney(row.amount, currency) }}
+                </td>
+                <td
+                  v-if="nativeCurrency && nativeCurrency !== currency"
+                  class="nowrap"
+                >
+                  {{ formatMoney(row.gross, nativeCurrency) }}
+                </td>
+                <td v-if="source.connector === 'adsterra' || source.connector === 'adsense'">
+                  {{ formatNumber(row.metrics.impressions) }}
+                </td>
+                <td v-if="source.connector === 'adsterra' || source.connector === 'adsense'">
+                  {{ formatNumber(row.metrics.clicks) }}
+                </td>
+                <td v-if="source.connector === 'adsense'">
+                  {{ formatNumber(row.metrics.pageViews) }}
+                </td>
+                <td v-if="source.connector === 'lynk'">
+                  {{ formatNumber(row.metrics.orders) }}
+                </td>
+                <td>{{ formatNumber(row.entries) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="rv-split">
+        <section
+          class="rv-section"
+          aria-labelledby="src-conn"
+        >
+          <div class="rv-section__head">
+            <h2 id="src-conn">
+              {{ source.connector === 'lynk' ? 'Webhook' : source.canSync ? 'Koneksi API' : 'Cara pengisian' }}
+            </h2>
+            <NuxtLink
+              :to="`/admin/revenue/connections#${source.code}`"
+              class="rv-more"
+            >
+              Pengaturan
+            </NuxtLink>
+          </div>
+          <div class="rv-conn">
+            <dl>
+              <template v-if="source.connector === 'lynk'">
+                <dt>URL webhook</dt>
+                <dd>
+                  <code class="mono">{{ source.webhookUrl }}</code>
+                  <button
+                    type="button"
+                    class="btn btn--ghost btn--small"
+                    @click="copy(source.webhookUrl ?? '')"
+                  >
+                    Salin
+                  </button>
+                </dd>
+                <dt>Tanda tangan</dt>
+                <dd>Header X-Lynk-Signature, diverifikasi dengan merchant key</dd>
+                <dt>Event terakhir</dt>
+                <dd>{{ d.webhooks[0] ? `${HOOK_TEXT[d.webhooks[0].status] ?? d.webhooks[0].status}, ${formatAgo(d.webhooks[0].receivedAt)}` : 'Belum ada' }}</dd>
+              </template>
+              <template v-if="source.connector === 'adsense'">
+                <dt>Akun</dt>
+                <dd class="mono">
+                  {{ source.config.accountId ?? (source.mock ? 'accounts/pub-0000000000000000 (mock)' : 'belum diisi') }}
+                </dd>
+                <dt>Status OAuth</dt>
+                <dd>{{ source.mock ? 'Mode mock (tanpa OAuth)' : source.credentials.configured ? 'Client ID, secret, dan refresh token terpasang' : 'Belum lengkap' }}</dd>
+                <dt>Final setelah</dt>
+                <dd>tanggal {{ source.config.finalizeDay ?? 7 }} bulan berikutnya</dd>
+              </template>
+              <template v-if="source.canSync">
+                <dt>Jadwal</dt>
+                <dd>{{ source.syncIntervalMinutes ? `setiap ${source.syncIntervalMinutes} menit` : 'manual' }}{{ nav?.schedulerEnabled ? '' : ' (penjadwal server mati)' }}</dd>
+                <dt>Jendela ulang</dt>
+                <dd>{{ source.lookbackDays }} hari terakhir ditarik ulang (angka bisa direvisi sumber)</dd>
+                <dt>Sync terakhir</dt>
+                <dd>{{ source.lastSyncAt ? `${RUN_TEXT[source.lastSyncStatus ?? ''] ?? source.lastSyncStatus}, ${formatAgo(source.lastSyncAt)}` : 'Belum pernah' }}</dd>
+              </template>
+              <template v-if="source.credentials.required.length">
+                <dt>Kredensial (env server)</dt>
+                <dd>
+                  <div
+                    v-for="name in source.credentials.required"
+                    :key="name"
+                  >
+                    <span :class="['rv-status', source.credentials.missing.includes(name) ? 'rv-status--warning' : 'rv-status--good']">
+                      <span aria-hidden="true">{{ source.credentials.missing.includes(name) ? '!' : '✓' }}</span>
+                      {{ source.credentials.missing.includes(name) ? 'Belum diisi' : 'Terpasang' }}
+                    </span>
+                    <code class="mono">{{ name }}</code>
+                  </div>
+                </dd>
+              </template>
+              <template v-if="source.connector === 'generic'">
+                <dt>Diisi lewat</dt>
+                <dd>Impor file CSV/Excel/JSON atau input manual</dd>
+              </template>
+            </dl>
+            <form
+              v-if="source.canSync"
+              class="rv-actions"
+              @submit.prevent="syncNow(true)"
+            >
+              <label class="rv-date"><span class="sr-only">Tarik ulang dari</span><input
+                v-model="syncRange.from"
+                type="date"
+                required
+              ></label>
+              <label class="rv-date"><span class="sr-only">sampai</span><input
+                v-model="syncRange.to"
+                type="date"
+                required
+              ></label>
+              <button
+                type="submit"
+                class="btn btn--small"
+                :disabled="busy !== null"
+              >
+                Tarik ulang rentang ini
+              </button>
+            </form>
+          </div>
+        </section>
+
+        <section
+          class="rv-section"
+          aria-labelledby="src-log"
+        >
+          <div class="rv-section__head">
+            <h2 id="src-log">
+              {{ source.connector === 'lynk' ? 'Event masuk' : source.canSync ? 'Riwayat tarik data' : 'Riwayat impor' }}
+            </h2>
+          </div>
+          <div class="table-scroll">
+            <table
+              v-if="source.connector === 'lynk'"
+              class="table rv-num"
+            >
+              <thead>
+                <tr>
+                  <th>Diterima</th>
+                  <th>Status</th>
+                  <th>Message ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="w in d.webhooks.slice(0, 12)"
+                  :key="w.id"
+                >
+                  <td class="nowrap">
+                    {{ formatTime(w.receivedAt) }}
+                  </td>
+                  <td>
+                    <span :class="['rv-status', `rv-status--${hookTone(w.status)}`]">{{ HOOK_TEXT[w.status] ?? w.status }}{{ w.test ? ' (uji)' : '' }}</span>
+                    <div
+                      v-if="w.error"
+                      class="muted rv-small"
+                    >
+                      {{ w.error }}
+                    </div>
+                  </td>
+                  <td class="mono rv-small">
+                    {{ w.externalEventId ?? '-' }}
+                  </td>
+                </tr>
+                <tr v-if="!d.webhooks.length">
+                  <td
+                    colspan="3"
+                    class="muted"
+                  >
+                    Belum ada webhook. Pasang URL di dashboard Lynk.id, lalu tekan Kirim event uji.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <table
+              v-else-if="source.canSync"
+              class="table rv-num"
+            >
+              <thead>
+                <tr>
+                  <th>Mulai</th>
+                  <th>Status</th>
+                  <th>Rentang</th>
+                  <th>Hasil</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template
+                  v-for="r in d.runs.slice(0, 10)"
+                  :key="r.id"
+                >
+                  <tr>
+                    <td class="nowrap">
+                      {{ formatTime(r.startedAt) }}
+                      <div class="muted rv-small">
+                        {{ r.trigger === 'schedule' ? 'jadwal' : r.trigger === 'cli' ? 'CLI' : 'manual' }}{{ r.mock ? ', mock' : '' }}
+                      </div>
+                    </td>
+                    <td>
+                      <span :class="['rv-status', `rv-status--${runTone(r.status)}`]">{{ RUN_TEXT[r.status] ?? r.status }}</span>
+                    </td>
+                    <td class="nowrap rv-small">
+                      {{ formatRange(r.rangeStart, r.rangeEnd) }}
+                    </td>
+                    <td class="rv-small">
+                      {{ r.inserted }} baru, {{ r.updated }} diperbarui, {{ r.unchanged }} sama<template v-if="r.failed">
+                        , {{ r.failed }} gagal
+                      </template>
+                      <button
+                        type="button"
+                        class="btn btn--ghost btn--small"
+                        :aria-expanded="openLog === r.id"
+                        @click="openLog = openLog === r.id ? null : r.id"
+                      >
+                        Log
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="openLog === r.id">
+                    <td colspan="4">
+                      <p
+                        v-if="r.errorMessage"
+                        class="notice notice--error"
+                      >
+                        {{ r.errorMessage }}
+                      </p>
+                      <pre class="rv-log">{{ r.log.join('\n') }}</pre>
+                    </td>
+                  </tr>
+                </template>
+                <tr v-if="!d.runs.length">
+                  <td
+                    colspan="4"
+                    class="muted"
+                  >
+                    Belum pernah ditarik.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <table
+              v-else
+              class="table rv-num"
+            >
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Status</th>
+                  <th>Hasil</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="b in d.imports.slice(0, 10)"
+                  :key="b.id"
+                >
+                  <td>
+                    {{ b.fileName }}
+                    <div class="muted rv-small">
+                      {{ formatTime(b.createdAt) }}
+                    </div>
+                  </td>
+                  <td>{{ b.status === 'committed' ? 'Masuk ledger' : b.status === 'uploaded' ? 'Belum di-commit' : b.status === 'discarded' ? 'Dibuang' : 'Gagal' }}</td>
+                  <td class="rv-small">
+                    {{ b.inserted }} baru, {{ b.updated }} diperbarui, {{ b.unchanged }} sama, {{ b.skipped }} dilewati, {{ b.failed }} galat
+                  </td>
+                </tr>
+                <tr v-if="!d.imports.length">
+                  <td
+                    colspan="3"
+                    class="muted"
+                  >
+                    Belum ada impor.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section
+        class="rv-section"
+        aria-labelledby="src-entries"
+      >
+        <div class="rv-section__head">
+          <h2 id="src-entries">
+            Transaksi dan laporan
+          </h2>
+          <NuxtLink
+            :to="`/admin/revenue/entries?sumber=${source.code}`"
+            class="rv-more"
+          >
+            Buka di Transaksi
+          </NuxtLink>
+        </div>
+        <RevenueEntriesTable
+          :sources="[source.code]"
+          :from="range.from"
+          :to="range.to"
+          :page-size="10"
+        />
+      </section>
+    </template>
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/revenue/sites/[code].vue`
+
+```vue
+<!-- Detail satu situs: dashboard yang sama, difilter ke situs ini (ADR-011). -->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+const route = useRoute()
+const nav = useRevenueNav()
+const property = computed(() => nav.value?.properties.find((p) => p.code === route.params['code']) ?? null)
+useHead({ title: () => (property.value ? `${property.value.name} · Pendapatan` : 'Situs') })
+</script>
+
+<template>
+  <RevenueDashboardOverview
+    v-if="property"
+    :key="property.id"
+    :property="property"
+  />
+  <p
+    v-else
+    class="notice notice--error"
+  >
+    Situs tidak ditemukan. <NuxtLink to="/admin/revenue/sites">
+      Kelola situs
+    </NuxtLink>
+  </p>
+</template>
+```
+
+`apps/web/app/pages/admin/revenue/sites/index.vue`
+
+```vue
+<!--
+  Kelola situs penghasil pendapatan (ADR-011), termasuk situs yang tidak
+  dilayani framework ini. Domain dipakai untuk memetakan laporan iklan
+  (Adsterra/AdSense per domain) dan kolom domain di file impor; entri lama
+  berdomain sama otomatis terhubung saat situs dibuat atau domainnya diubah.
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+interface Data { properties: PropertyInfo[]; sites: { id: string; code: string; name: string }[] }
+const { data, refresh } = await useAsyncData('revenue-properties', () => revenueApi<Data>('properties'), { server: false })
+
+const empty = () => ({ id: '', code: '', name: '', domain: '', siteId: '', status: 'ACTIVE' as 'ACTIVE' | 'ARCHIVED', updatedAt: '' })
+const form = reactive(empty())
+const errors = ref<Record<string, string>>({})
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref(false)
+
+function edit(p: PropertyInfo) {
+  Object.assign(form, { id: p.id, code: p.code, name: p.name, domain: p.domain ?? '', siteId: p.siteId ?? '', status: p.status, updatedAt: p.updatedAt })
+  message.value = null
+}
+
+async function save() {
+  busy.value = true
+  errors.value = {}
+  message.value = null
+  const body = { code: form.code, name: form.name, domain: form.domain || null, siteId: form.siteId || null, status: form.status }
+  try {
+    const r = form.id
+      ? await revenueApi<{ linkedEntries: number }>(`properties/${form.id}`, { method: 'PUT', body: { ...body, updatedAt: form.updatedAt } })
+      : await revenueApi<{ linkedEntries: number }>('properties', { method: 'POST', body })
+    message.value = { kind: 'ok', text: `Situs disimpan.${r.linkedEntries ? ` ${r.linkedEntries} entri lama berdomain sama kini terhubung.` : ''}` }
+    Object.assign(form, empty())
+    await Promise.all([refresh(), refreshRevenueNav()])
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    message.value = { kind: 'error', text: apiStatus(e) === 409 ? 'Situs ini sudah diubah di tempat lain. Muat ulang.' : apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+const err = (f: string) => fieldError(errors.value, f)
+
+function suggestCode() {
+  if (!form.id && !form.code && form.name) form.code = form.name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50)
+}
+
+useHead({ title: 'Kelola situs · Pendapatan' })
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Situs</h1>
+    </header>
+    <div class="adm-split">
+      <section>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Situs</th>
+              <th>Domain</th>
+              <th>Site framework</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="p in data?.properties ?? []"
+              :key="p.id"
+              :class="{ 'is-selected': form.id === p.id }"
+            >
+              <td>
+                <NuxtLink :to="`/admin/revenue/sites/${p.code}`">
+                  {{ p.name }}
+                </NuxtLink>
+                <span
+                  v-if="p.status === 'ARCHIVED'"
+                  class="muted"
+                > (diarsipkan)</span>
+              </td>
+              <td class="mono">
+                {{ p.domain ?? '-' }}
+              </td>
+              <td>{{ p.siteCode ?? 'di luar framework' }}</td>
+              <td>
+                <button
+                  type="button"
+                  class="btn btn--small"
+                  @click="edit(p)"
+                >
+                  Ubah
+                </button>
+              </td>
+            </tr>
+            <tr v-if="data && !data.properties.length">
+              <td
+                colspan="4"
+                class="muted"
+              >
+                Belum ada situs. Tambahkan situs agar pendapatan bisa dilihat per web.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="adm-panel">
+        <h2>{{ form.id ? 'Ubah situs' : 'Tambah situs' }}</h2>
+        <form
+          class="stack"
+          @submit.prevent="save"
+        >
+          <label class="field">
+            <span>Nama</span>
+            <input
+              v-model="form.name"
+              type="text"
+              required
+              maxlength="120"
+              :aria-invalid="Boolean(err('name'))"
+              @blur="suggestCode"
+            >
+          </label>
+          <label class="field">
+            <span>Kode</span>
+            <input
+              v-model="form.code"
+              type="text"
+              required
+              pattern="[a-z0-9]+(-[a-z0-9]+)*"
+              :aria-invalid="Boolean(err('code'))"
+            >
+            <span class="field__hint">Dipakai di URL, mis. /admin/revenue/sites/{{ form.code || 'kode' }}</span>
+            <span
+              v-if="err('code')"
+              class="field__error"
+            >{{ err('code') }}</span>
+          </label>
+          <label class="field">
+            <span>Domain</span>
+            <input
+              v-model="form.domain"
+              type="text"
+              placeholder="contoh.com"
+              :aria-invalid="Boolean(err('domain'))"
+            >
+            <span class="field__hint">Sama dengan nama domain di laporan Adsterra/AdSense (www. diabaikan).</span>
+            <span
+              v-if="err('domain')"
+              class="field__error"
+            >{{ err('domain') }}</span>
+          </label>
+          <label class="field">
+            <span>Site di framework ini</span>
+            <select v-model="form.siteId">
+              <option value="">Tidak ada (situs luar)</option>
+              <option
+                v-for="s in data?.sites ?? []"
+                :key="s.id"
+                :value="s.id"
+              >{{ s.name }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Status</span>
+            <select v-model="form.status">
+              <option value="ACTIVE">Aktif</option>
+              <option value="ARCHIVED">Diarsipkan (tidak tampil di menu)</option>
+            </select>
+          </label>
+          <p
+            v-if="message"
+            class="notice"
+            :class="{ 'notice--error': message.kind === 'error' }"
+            role="status"
+          >
+            {{ message.text }}
+          </p>
+          <div class="rv-actions">
+            <button
+              type="submit"
+              class="btn btn--primary"
+              :disabled="busy"
+            >
+              {{ form.id ? 'Simpan perubahan' : 'Tambah situs' }}
+            </button>
+            <button
+              v-if="form.id"
+              type="button"
+              class="btn btn--ghost"
+              @click="Object.assign(form, empty())"
+            >
+              Batal
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/revenue/entries.vue`
+
+```vue
+<!--
+  Transaksi: seluruh ledger dengan filter dan pencarian, plus form input
+  manual (pemasukan non-API seperti brand deal) dan adjustment rekonsiliasi.
+  Adjustment wajib alasan; semua input tercatat dengan pembuatnya.
+  ?baru=1 membuka form; ?sumber=<kode> memilih sumber; ?entri=<id> membuka detail.
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+const route = useRoute()
+const nav = useRevenueNav()
+const today = computed(() => todayIn(nav.value?.settings.timeZone ?? 'Asia/Jakarta'))
+const sources = computed(() => nav.value?.sources ?? [])
+const properties = computed(() => (nav.value?.properties ?? []).filter((p) => p.status === 'ACTIVE'))
+
+const preset = ref<PresetKey>('90d')
+const range = reactive(presetRange('90d', today.value))
+function choosePreset(key: PresetKey) {
+  preset.value = key
+  Object.assign(range, presetRange(key, today.value))
+}
+const filter = reactive({
+  source: typeof route.query['sumber'] === 'string' ? route.query['sumber'] : '',
+  status: '',
+  channel: '',
+  q: '',
+})
+const q = ref('')
+let timer: ReturnType<typeof setTimeout> | undefined
+watch(() => filter.q, (v) => {
+  clearTimeout(timer)
+  timer = setTimeout(() => {
+    q.value = v
+  }, 300)
+})
+
+const table = ref<{ refresh: () => Promise<void> } | null>(null)
+
+// ---------- form manual ----------
+const formOpen = ref(route.query['baru'] === '1')
+const form = reactive({
+  kind: 'income' as 'income' | 'adjustment',
+  sourceCode: typeof route.query['sumber'] === 'string' ? route.query['sumber'] : 'lainnya',
+  reportDate: today.value,
+  amount: '',
+  currency: nav.value?.settings.baseCurrency ?? 'IDR',
+  status: 'finalized' as 'finalized' | 'estimated',
+  description: '',
+  note: '',
+  propertyId: '',
+  externalId: '',
+})
+watch(() => form.sourceCode, (c) => {
+  const s = sources.value.find((x) => x.code === c)
+  if (s) form.currency = s.defaultCurrency
+})
+const errors = ref<Record<string, string>>({})
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref(false)
+
+async function submit() {
+  busy.value = true
+  errors.value = {}
+  message.value = null
+  try {
+    await revenueApi('entries', {
+      method: 'POST',
+      body: {
+        ...form,
+        amount: form.amount.trim().replace(',', '.'),
+        propertyId: form.propertyId || null,
+        externalId: form.externalId.trim() || null,
+        note: form.note.trim() || null,
+      },
+    })
+    message.value = { kind: 'ok', text: form.kind === 'adjustment' ? 'Adjustment dicatat.' : 'Pemasukan dicatat.' }
+    Object.assign(form, { amount: '', description: '', note: '', externalId: '' })
+    await table.value?.refresh()
+  } catch (e) {
+    errors.value = apiFieldErrors(e)
+    message.value = { kind: 'error', text: apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+const err = (f: string) => fieldError(errors.value, f)
+
+useHead({ title: 'Transaksi · Pendapatan' })
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Transaksi</h1>
+      <div class="adm-head__actions">
+        <button
+          type="button"
+          class="btn btn--primary"
+          :aria-expanded="formOpen"
+          @click="formOpen = !formOpen"
+        >
+          {{ formOpen ? 'Tutup form' : 'Catat pemasukan atau adjustment' }}
+        </button>
+      </div>
+    </header>
+
+    <section
+      v-if="formOpen"
+      class="adm-panel rv-form"
+      aria-labelledby="form-manual"
+    >
+      <h2 id="form-manual">
+        Input manual
+      </h2>
+      <div
+        class="adm-segmented"
+        role="radiogroup"
+        aria-label="Jenis"
+      >
+        <button
+          type="button"
+          role="radio"
+          :aria-checked="form.kind === 'income'"
+          :class="{ 'is-on': form.kind === 'income' }"
+          @click="form.kind = 'income'"
+        >
+          Pemasukan
+        </button>
+        <button
+          type="button"
+          role="radio"
+          :aria-checked="form.kind === 'adjustment'"
+          :class="{ 'is-on': form.kind === 'adjustment' }"
+          @click="form.kind = 'adjustment'"
+        >
+          Adjustment (koreksi)
+        </button>
+      </div>
+      <p class="field__hint">
+        {{ form.kind === 'income'
+          ? 'Untuk pemasukan tanpa API, mis. brand deal, sponsor, transfer langsung.'
+          : 'Untuk koreksi rekonsiliasi: nominal boleh negatif, alasan wajib. Entri asli tidak diubah.' }}
+      </p>
+      <form
+        class="stack"
+        @submit.prevent="submit"
+      >
+        <div class="row">
+          <label class="field">
+            <span>Sumber</span>
+            <select v-model="form.sourceCode">
+              <option
+                v-for="s in sources"
+                :key="s.code"
+                :value="s.code"
+              >{{ s.name }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Situs</span>
+            <select v-model="form.propertyId">
+              <option value="">Tidak spesifik</option>
+              <option
+                v-for="p in properties"
+                :key="p.id"
+                :value="p.id"
+              >{{ p.name }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Tanggal laporan</span>
+            <input
+              v-model="form.reportDate"
+              type="date"
+              required
+              :aria-invalid="Boolean(err('reportDate'))"
+            >
+            <span
+              v-if="err('reportDate')"
+              class="field__error"
+            >{{ err('reportDate') }}</span>
+          </label>
+        </div>
+        <div class="row">
+          <label class="field">
+            <span>Nominal</span>
+            <input
+              v-model="form.amount"
+              type="text"
+              inputmode="decimal"
+              required
+              :placeholder="form.kind === 'income' ? '1500000' : '-150000'"
+              :aria-invalid="Boolean(err('amount'))"
+            >
+            <span class="field__hint">Titik untuk desimal, tanpa pemisah ribuan.</span>
+            <span
+              v-if="err('amount')"
+              class="field__error"
+            >{{ err('amount') }}</span>
+          </label>
+          <label class="field">
+            <span>Mata uang</span>
+            <input
+              v-model="form.currency"
+              type="text"
+              maxlength="3"
+              required
+              :aria-invalid="Boolean(err('currency'))"
+            >
+          </label>
+          <label
+            v-if="form.kind === 'income'"
+            class="field"
+          >
+            <span>Status angka</span>
+            <select v-model="form.status">
+              <option value="finalized">Final (sudah diterima)</option>
+              <option value="estimated">Sementara (belum diterima)</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Keterangan</span>
+          <input
+            v-model="form.description"
+            type="text"
+            required
+            maxlength="500"
+            :aria-invalid="Boolean(err('description'))"
+          >
+          <span
+            v-if="err('description')"
+            class="field__error"
+          >{{ err('description') }}</span>
+        </label>
+        <div class="row">
+          <label class="field">
+            <span>{{ form.kind === 'adjustment' ? 'Alasan (wajib)' : 'Catatan (opsional)' }}</span>
+            <textarea
+              v-model="form.note"
+              :required="form.kind === 'adjustment'"
+              :aria-invalid="Boolean(err('note'))"
+            />
+            <span
+              v-if="err('note')"
+              class="field__error"
+            >{{ err('note') }}</span>
+          </label>
+          <label
+            v-if="form.kind === 'income'"
+            class="field"
+          >
+            <span>No. invoice/ID (opsional)</span>
+            <input
+              v-model="form.externalId"
+              type="text"
+              maxlength="200"
+              :aria-invalid="Boolean(err('externalId'))"
+            >
+            <span class="field__hint">Mencegah pemasukan yang sama tercatat dua kali.</span>
+            <span
+              v-if="err('externalId')"
+              class="field__error"
+            >{{ err('externalId') }}</span>
+          </label>
+        </div>
+        <p
+          v-if="message"
+          class="notice"
+          :class="{ 'notice--error': message.kind === 'error' }"
+          role="status"
+        >
+          {{ message.text }}
+        </p>
+        <div class="rv-actions">
+          <button
+            type="submit"
+            class="btn btn--primary"
+            :disabled="busy"
+          >
+            {{ form.kind === 'adjustment' ? 'Catat adjustment' : 'Catat pemasukan' }}
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <div
+      class="rv-filters"
+      role="group"
+      aria-label="Filter transaksi"
+    >
+      <div
+        class="adm-segmented"
+        role="radiogroup"
+        aria-label="Rentang"
+      >
+        <button
+          v-for="p in PRESETS"
+          :key="p.key"
+          type="button"
+          role="radio"
+          :aria-checked="preset === p.key"
+          :class="{ 'is-on': preset === p.key }"
+          @click="choosePreset(p.key)"
+        >
+          {{ p.label }}
+        </button>
+      </div>
+      <label class="rv-date"><span class="sr-only">Dari</span><input
+        v-model="range.from"
+        type="date"
+        @change="preset = 'custom'"
+      ></label>
+      <span class="muted">s.d.</span>
+      <label class="rv-date"><span class="sr-only">Sampai</span><input
+        v-model="range.to"
+        type="date"
+        @change="preset = 'custom'"
+      ></label>
+      <label><span class="sr-only">Sumber</span><select v-model="filter.source">
+        <option value="">Semua sumber</option>
+        <option
+          v-for="s in sources"
+          :key="s.code"
+          :value="s.code"
+        >{{ s.name }}</option>
+      </select></label>
+      <label><span class="sr-only">Status</span><select v-model="filter.status">
+        <option value="">Semua status</option>
+        <option value="estimated">Sementara</option>
+        <option value="finalized">Final</option>
+        <option value="adjusted">Koreksi</option>
+        <option value="refunded">Refund</option>
+      </select></label>
+      <label><span class="sr-only">Jalur</span><select v-model="filter.channel">
+        <option value="">Semua jalur</option>
+        <option
+          v-for="(label, key) in CHANNEL_TEXT"
+          :key="key"
+          :value="key"
+        >{{ label }}</option>
+      </select></label>
+      <label><span class="sr-only">Cari</span><input
+        v-model="filter.q"
+        type="search"
+        placeholder="Cari keterangan, ID, domain"
+      ></label>
+    </div>
+
+    <RevenueEntriesTable
+      ref="table"
+      :sources="filter.source ? [filter.source] : []"
+      :statuses="filter.status"
+      :channel="filter.channel"
+      :q="q"
+      :from="range.from"
+      :to="range.to"
+      :open-id="typeof route.query.entri === 'string' ? route.query.entri : null"
+    />
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/revenue/import.vue`
+
+```vue
+<!--
+  Wizard impor CSV / Excel (.xlsx) / JSON (ADR-011):
+    1. pilih sumber + unggah file (di-parse di server, belum masuk ledger)
+    2. petakan kolom, lalu pratinjau: baris valid, galat per baris,
+       duplikat, perkiraan baru vs sudah ada di ledger
+    3. commit: hasil inserted / updated / unchanged / skipped / failed
+  Impor ulang file yang sama aman (kunci idempotensi per baris).
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+interface Upload { batchId: string; fileName: string; format: string; headers: string[]; rowCount: number; sample: Record<string, string>[]; suggestion: Record<string, unknown>; sameFile: { id: string; fileName: string; status: string; createdAt: string }[] }
+interface Preview { rowCount: number; valid: number; willInsert: number; alreadyInLedger: number; errors: { row: number; message: string }[]; errorCount: number; skipped: { row: number; message: string }[]; skippedCount: number; sample: { row: number; reportDate: string; grossAmount: string; currency: string; status: string; description: string | null; externalId: string | null; propertyDomain: string | null }[]; currencies: string[] }
+interface Result { counts: { inserted: number; updated: number; unchanged: number; skipped: number; failed: number }; errors: { row: number; message: string }[]; skipped: { row: number; message: string }[] }
+
+const route = useRoute()
+const nav = useRevenueNav()
+const sources = computed(() => nav.value?.sources ?? [])
+const properties = computed(() => (nav.value?.properties ?? []).filter((p) => p.status === 'ACTIVE'))
+
+const step = ref<1 | 2 | 3>(1)
+const sourceCode = ref(typeof route.query['sumber'] === 'string' ? route.query['sumber'] : 'whop')
+const file = ref<File | null>(null)
+const over = ref(false)
+const busy = ref(false)
+const error = ref<string | null>(null)
+const upload = ref<Upload | null>(null)
+const preview = ref<Preview | null>(null)
+const result = ref<Result | null>(null)
+
+const mapping = reactive({
+  date: '', amount: '', currency: '', currencyFixed: 'USD', externalId: '', status: '', statusFixed: 'finalized' as 'finalized' | 'estimated',
+  description: '', property: '', propertyId: '', dateFormat: 'auto' as 'auto' | 'YYYY-MM-DD' | 'DD/MM/YYYY' | 'MM/DD/YYYY', decimalSeparator: '.' as '.' | ',',
+  impressions: '', clicks: '', orders: '',
+})
+
+function pickFile(f: File | null | undefined) {
+  file.value = f ?? null
+  error.value = null
+}
+
+async function send() {
+  if (!file.value) return
+  busy.value = true
+  error.value = null
+  try {
+    const body = new FormData()
+    body.set('file', file.value)
+    body.set('sourceCode', sourceCode.value)
+    upload.value = await revenueApi<Upload>('imports', { method: 'POST', body })
+    const s = upload.value.suggestion as Record<string, string | Record<string, string>>
+    const metrics = (s['metrics'] ?? {}) as Record<string, string>
+    Object.assign(mapping, {
+      date: s['date'] ?? '', amount: s['amount'] ?? '', currency: s['currency'] ?? '', currencyFixed: s['currencyFixed'] ?? 'USD',
+      externalId: s['externalId'] ?? '', status: s['status'] ?? '', description: s['description'] ?? '', property: s['property'] ?? '',
+      impressions: metrics['impressions'] ?? '', clicks: metrics['clicks'] ?? '', orders: metrics['orders'] ?? '',
+    })
+    // Tebak pemisah desimal dari contoh nominal ('1.234,56' -> koma).
+    const sampleAmount = upload.value.sample.map((r) => r[mapping.amount] ?? '').find(Boolean) ?? ''
+    mapping.decimalSeparator = /,\d{1,2}$/.test(sampleAmount) ? ',' : '.'
+    preview.value = null
+    step.value = 2
+    if (mapping.date && mapping.amount) await runPreview()
+  } catch (e) {
+    error.value = apiErrorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+function mappingBody() {
+  const metrics: Record<string, string> = {}
+  if (mapping.impressions) metrics['impressions'] = mapping.impressions
+  if (mapping.clicks) metrics['clicks'] = mapping.clicks
+  if (mapping.orders) metrics['orders'] = mapping.orders
+  return {
+    date: mapping.date, amount: mapping.amount,
+    currency: mapping.currency || null, currencyFixed: mapping.currency ? null : mapping.currencyFixed.toUpperCase() || null,
+    externalId: mapping.externalId || null, status: mapping.status || null, statusFixed: mapping.statusFixed,
+    description: mapping.description || null, property: mapping.property || null, propertyId: mapping.propertyId || null,
+    metrics, dimensions: [], dateFormat: mapping.dateFormat, decimalSeparator: mapping.decimalSeparator,
+  }
+}
+
+async function runPreview() {
+  if (!upload.value) return
+  busy.value = true
+  error.value = null
+  try {
+    preview.value = await revenueApi<Preview>(`imports/${upload.value.batchId}/preview`, { method: 'POST', body: { mapping: mappingBody() } })
+  } catch (e) {
+    preview.value = null
+    error.value = apiErrorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function commit() {
+  if (!upload.value) return
+  busy.value = true
+  error.value = null
+  try {
+    result.value = await revenueApi<Result>(`imports/${upload.value.batchId}/commit`, { method: 'POST', body: { mapping: mappingBody() } })
+    step.value = 3
+    await refreshHistory()
+  } catch (e) {
+    error.value = apiErrorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function discard() {
+  if (upload.value) await revenueApi(`imports/${upload.value.batchId}/discard`, { method: 'POST' }).catch(() => {})
+  reset()
+  await refreshHistory()
+}
+
+function reset() {
+  step.value = 1
+  file.value = null
+  upload.value = null
+  preview.value = null
+  result.value = null
+  error.value = null
+}
+
+const { data: history, refresh: refreshHistory } = await useAsyncData('revenue-import-history', () => revenueApi<{ imports: { id: string; sourceName: string; fileName: string; fileFormat: string; status: string; rowCount: number; inserted: number; updated: number; unchanged: number; skipped: number; failed: number; createdAt: string; createdByName: string | null }[] }>('runs'), { server: false })
+
+const FIELDS: { key: keyof typeof mapping; label: string; required?: boolean; hint?: string }[] = [
+  { key: 'date', label: 'Tanggal', required: true },
+  { key: 'amount', label: 'Nominal', required: true, hint: 'Pendapatan bersih yang diterima' },
+  { key: 'currency', label: 'Mata uang', hint: 'Kosong = pakai mata uang tetap di bawah' },
+  { key: 'externalId', label: 'ID transaksi', hint: 'Disarankan: impor ulang jadi update, bukan duplikat' },
+  { key: 'status', label: 'Status', hint: 'paid/completed = final, pending = sementara, refunded = refund, failed = dilewati' },
+  { key: 'description', label: 'Keterangan/produk' },
+  { key: 'property', label: 'Domain/situs', hint: 'Dicocokkan dengan domain di Kelola situs' },
+  { key: 'impressions', label: 'Metrik: impressions' },
+  { key: 'clicks', label: 'Metrik: clicks' },
+  { key: 'orders', label: 'Metrik: order/qty' },
+]
+
+useHead({ title: 'Impor file · Pendapatan' })
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Impor file</h1>
+    </header>
+    <ol
+      class="rv-steps"
+      aria-label="Langkah"
+    >
+      <li :class="{ 'is-on': step === 1 }">
+        Unggah
+      </li>
+      <li :class="{ 'is-on': step === 2 }">
+        Petakan kolom dan periksa
+      </li>
+      <li :class="{ 'is-on': step === 3 }">
+        Hasil
+      </li>
+    </ol>
+
+    <p
+      v-if="error"
+      class="notice notice--error"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+
+    <section
+      v-if="step === 1"
+      class="adm-panel"
+    >
+      <form
+        class="stack"
+        @submit.prevent="send"
+      >
+        <label class="field">
+          <span>Sumber pemasukan</span>
+          <select v-model="sourceCode">
+            <option
+              v-for="s in sources"
+              :key="s.code"
+              :value="s.code"
+            >{{ s.name }}</option>
+          </select>
+          <span class="field__hint">Laporan Whop, ekspor jaringan iklan lain, atau rekap afiliasi. Data dari file masuk ke sumber ini.</span>
+        </label>
+        <label
+          class="rv-dropzone"
+          :class="{ 'is-over': over }"
+          @dragover.prevent="over = true"
+          @dragleave="over = false"
+          @drop.prevent="over = false; pickFile($event.dataTransfer?.files[0])"
+        >
+          <strong>{{ file ? file.name : 'Pilih atau tarik file ke sini' }}</strong>
+          <span class="muted">CSV (koma, titik koma, atau tab), Excel .xlsx (sheet pertama), atau JSON. Maks. 5 MB, 20.000 baris.</span>
+          <input
+            type="file"
+            accept=".csv,.tsv,.txt,.xlsx,.json,text/csv,application/json"
+            @change="pickFile(($event.target as HTMLInputElement).files?.[0])"
+          >
+        </label>
+        <div class="rv-actions">
+          <button
+            type="submit"
+            class="btn btn--primary"
+            :disabled="!file || busy"
+          >
+            {{ busy ? 'Membaca file…' : 'Lanjut' }}
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <template v-if="step === 2 && upload">
+      <p
+        v-if="upload.sameFile.length"
+        class="notice rv-warn"
+      >
+        File dengan isi sama pernah diunggah ({{ upload.sameFile[0]?.fileName }}, {{ formatTime(upload.sameFile[0]?.createdAt) }}). Mengimpor ulang aman: baris yang sudah ada tidak digandakan.
+      </p>
+      <div class="rv-import">
+        <section class="adm-panel">
+          <h2>Kolom {{ upload.fileName }} ({{ formatNumber(upload.rowCount) }} baris)</h2>
+          <form
+            class="stack"
+            @submit.prevent="runPreview"
+          >
+            <label
+              v-for="f in FIELDS"
+              :key="f.key"
+              class="field"
+            >
+              <span>{{ f.label }}{{ f.required ? ' (wajib)' : '' }}</span>
+              <select
+                v-model="mapping[f.key]"
+                :required="f.required"
+              >
+                <option value="">{{ f.required ? 'Pilih kolom' : 'Tidak dipakai' }}</option>
+                <option
+                  v-for="h in upload.headers"
+                  :key="h"
+                  :value="h"
+                >{{ h }}</option>
+              </select>
+              <span
+                v-if="f.hint"
+                class="field__hint"
+              >{{ f.hint }}</span>
+            </label>
+            <div class="row">
+              <label
+                v-if="!mapping.currency"
+                class="field"
+              >
+                <span>Mata uang tetap</span>
+                <input
+                  v-model="mapping.currencyFixed"
+                  type="text"
+                  maxlength="3"
+                >
+              </label>
+              <label
+                v-if="!mapping.status"
+                class="field"
+              >
+                <span>Status semua baris</span>
+                <select v-model="mapping.statusFixed">
+                  <option value="finalized">Final</option>
+                  <option value="estimated">Sementara</option>
+                </select>
+              </label>
+              <label
+                v-if="!mapping.property"
+                class="field"
+              >
+                <span>Situs semua baris</span>
+                <select v-model="mapping.propertyId">
+                  <option value="">Tidak spesifik</option>
+                  <option
+                    v-for="p in properties"
+                    :key="p.id"
+                    :value="p.id"
+                  >{{ p.name }}</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <label class="field">
+                <span>Format tanggal</span>
+                <select v-model="mapping.dateFormat">
+                  <option value="auto">Otomatis (ISO atau tanggal &gt; 12)</option>
+                  <option value="YYYY-MM-DD">2026-11-25</option>
+                  <option value="DD/MM/YYYY">25/11/2026</option>
+                  <option value="MM/DD/YYYY">11/25/2026</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Pemisah desimal</span>
+                <select v-model="mapping.decimalSeparator">
+                  <option value=".">Titik (1,234.56)</option>
+                  <option value=",">Koma (1.234,56)</option>
+                </select>
+              </label>
+            </div>
+            <div class="rv-actions">
+              <button
+                type="submit"
+                class="btn"
+                :disabled="busy"
+              >
+                Periksa ulang
+              </button>
+              <button
+                type="button"
+                class="btn btn--ghost"
+                @click="discard"
+              >
+                Buang file
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="adm-panel">
+          <h2>Pratinjau</h2>
+          <p
+            v-if="!preview"
+            class="muted"
+          >
+            Pilih kolom tanggal dan nominal, lalu Periksa ulang.
+          </p>
+          <template v-else>
+            <ul class="rv-counts rv-num">
+              <li><strong>{{ formatNumber(preview.willInsert) }}</strong> baris baru</li>
+              <li><strong>{{ formatNumber(preview.alreadyInLedger) }}</strong> sudah ada (diperbarui/sama)</li>
+              <li><strong>{{ formatNumber(preview.skippedCount) }}</strong> dilewati</li>
+              <li><strong>{{ formatNumber(preview.errorCount) }}</strong> galat</li>
+            </ul>
+            <p
+              v-if="preview.currencies.some((c) => c !== (nav?.settings.baseCurrency ?? 'IDR'))"
+              class="field__hint"
+            >
+              Mata uang {{ preview.currencies.join(', ') }} dikonversi dengan kurs di menu Kurs; tanpa kurs, baris tetap masuk dan ditandai belum dikonversi.
+            </p>
+            <div class="table-scroll">
+              <table class="table rv-num">
+                <thead>
+                  <tr>
+                    <th>Baris</th>
+                    <th>Tanggal</th>
+                    <th>Nominal</th>
+                    <th>Status</th>
+                    <th>Keterangan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="r in preview.sample"
+                    :key="r.row"
+                  >
+                    <td>{{ r.row }}</td>
+                    <td class="nowrap">
+                      {{ formatDay(r.reportDate, true) }}
+                    </td>
+                    <td class="nowrap">
+                      {{ formatMoney(r.grossAmount, r.currency, { precise: true }) }}
+                    </td>
+                    <td>{{ STATUS_TEXT[r.status as LedgerStatus] }}</td>
+                    <td>
+                      {{ r.description ?? '-' }}
+                      <div
+                        v-if="r.propertyDomain"
+                        class="muted rv-small"
+                      >
+                        {{ r.propertyDomain }}
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <details v-if="preview.errorCount">
+              <summary>Galat per baris ({{ preview.errorCount }})</summary>
+              <ul class="issues">
+                <li
+                  v-for="e in preview.errors"
+                  :key="e.row"
+                  class="issues__error"
+                >
+                  Baris {{ e.row }}: {{ e.message }}
+                </li>
+              </ul>
+            </details>
+            <details v-if="preview.skippedCount">
+              <summary>Dilewati ({{ preview.skippedCount }})</summary>
+              <ul class="issues">
+                <li
+                  v-for="e in preview.skipped"
+                  :key="e.row"
+                  class="issues__warning"
+                >
+                  Baris {{ e.row }}: {{ e.message }}
+                </li>
+              </ul>
+            </details>
+            <div class="rv-actions">
+              <button
+                type="button"
+                class="btn btn--primary"
+                :disabled="busy || !preview.valid"
+                @click="commit"
+              >
+                Impor {{ formatNumber(preview.valid) }} baris ke ledger
+              </button>
+            </div>
+          </template>
+        </section>
+      </div>
+    </template>
+
+    <section
+      v-if="step === 3 && result"
+      class="adm-panel"
+    >
+      <h2>Impor selesai</h2>
+      <ul class="rv-counts rv-num">
+        <li><strong>{{ result.counts.inserted }}</strong> ditambahkan</li>
+        <li><strong>{{ result.counts.updated }}</strong> diperbarui</li>
+        <li><strong>{{ result.counts.unchanged }}</strong> sama (tidak berubah)</li>
+        <li><strong>{{ result.counts.skipped }}</strong> dilewati</li>
+        <li><strong>{{ result.counts.failed }}</strong> galat</li>
+      </ul>
+      <details v-if="result.errors.length">
+        <summary>Galat per baris</summary>
+        <ul class="issues">
+          <li
+            v-for="e in result.errors"
+            :key="e.row"
+            class="issues__error"
+          >
+            Baris {{ e.row }}: {{ e.message }}
+          </li>
+        </ul>
+      </details>
+      <div class="rv-actions">
+        <NuxtLink
+          :to="`/admin/revenue/sources/${sourceCode}`"
+          class="btn btn--primary"
+        >
+          Lihat {{ sources.find((s) => s.code === sourceCode)?.name }}
+        </NuxtLink>
+        <button
+          type="button"
+          class="btn"
+          @click="reset"
+        >
+          Impor file lain
+        </button>
+      </div>
+    </section>
+
+    <section class="rv-section">
+      <div class="rv-section__head">
+        <h2>Riwayat impor</h2>
+      </div>
+      <div class="table-scroll">
+        <table class="table rv-num">
+          <thead>
+            <tr>
+              <th>Waktu</th>
+              <th>Sumber</th>
+              <th>File</th>
+              <th>Status</th>
+              <th>Hasil</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="b in history?.imports ?? []"
+              :key="b.id"
+            >
+              <td class="nowrap">
+                {{ formatTime(b.createdAt) }}
+              </td>
+              <td>{{ b.sourceName }}</td>
+              <td>
+                {{ b.fileName }}
+                <div class="muted rv-small">
+                  {{ b.fileFormat.toUpperCase() }}, {{ formatNumber(b.rowCount) }} baris{{ b.createdByName ? `, oleh ${b.createdByName}` : '' }}
+                </div>
+              </td>
+              <td>{{ b.status === 'committed' ? 'Masuk ledger' : b.status === 'uploaded' ? 'Belum di-commit' : b.status === 'discarded' ? 'Dibuang' : 'Gagal' }}</td>
+              <td class="rv-small">
+                {{ b.inserted }} baru, {{ b.updated }} diperbarui, {{ b.unchanged }} sama, {{ b.skipped }} dilewati, {{ b.failed }} galat
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/revenue/connections.vue`
+
+```vue
+<!--
+  Koneksi & log (ADR-011): pengaturan setiap sumber (aktif, jadwal, jendela
+  ulang, konfigurasi non-rahasia), status kredensial dari env server, uji
+  koneksi, tarik manual, URL webhook, otomasi headless, sumber baru untuk
+  impor/manual, dan log tarik data semua sumber.
+  Rahasia (API token, OAuth secret, merchant key) tidak pernah diisi di sini.
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+interface Run { id: string; sourceCode: string; sourceName: string; channelType: string; trigger: string; status: string; mock: boolean; rangeStart: string; rangeEnd: string; startedAt: string; finishedAt: string | null; rowsFetched: number; inserted: number; updated: number; unchanged: number; skipped: number; failed: number; errorMessage: string | null; log: string[] }
+
+const nav = useRevenueNav()
+const sources = computed(() => nav.value?.sources ?? [])
+const { data: runs, refresh: refreshRuns } = await useAsyncData('revenue-runs', () => revenueApi<{ runs: Run[] }>('runs'), { server: false })
+
+/** Salinan form per sumber; dibuat ulang setiap data sumber berubah. */
+const forms = reactive<Record<string, { isActive: boolean; syncIntervalMinutes: string; lookbackDays: number; configText: string; error: string; ok: string; busy: boolean }>>({})
+watch(sources, (list) => {
+  for (const s of list) {
+    forms[s.code] = {
+      isActive: s.isActive,
+      syncIntervalMinutes: s.syncIntervalMinutes ? String(s.syncIntervalMinutes) : '',
+      lookbackDays: s.lookbackDays,
+      configText: JSON.stringify(s.config, null, 2),
+      error: '',
+      ok: '',
+      busy: false,
+    }
+  }
+}, { immediate: true })
+
+async function save(s: SourceInfo) {
+  const f = forms[s.code]
+  if (!f) return
+  f.error = ''
+  f.ok = ''
+  let config: unknown
+  try {
+    config = JSON.parse(f.configText || '{}')
+  } catch {
+    f.error = 'Konfigurasi harus JSON yang valid'
+    return
+  }
+  f.busy = true
+  try {
+    await revenueApi(`sources/${s.code}`, {
+      method: 'PUT',
+      body: { isActive: f.isActive, syncIntervalMinutes: f.syncIntervalMinutes ? Number(f.syncIntervalMinutes) : null, lookbackDays: Number(f.lookbackDays), config, updatedAt: s.updatedAt },
+    })
+    await refreshRevenueNav()
+    const again = forms[s.code]
+    if (again) again.ok = 'Tersimpan.'
+  } catch (e) {
+    f.error = apiStatus(e) === 409 ? 'Sumber ini sudah diubah di tempat lain. Muat ulang halaman.' : apiErrorMessage(e)
+  } finally {
+    const again = forms[s.code]
+    if (again) again.busy = false
+  }
+}
+
+async function test(s: SourceInfo) {
+  const f = forms[s.code]
+  if (!f) return
+  f.busy = true
+  f.error = ''
+  f.ok = ''
+  try {
+    const r = s.connector === 'lynk'
+      ? await revenueApi<{ ok: boolean; message?: string; status: string }>(`sources/${s.code}/webhook-test`, { method: 'POST' })
+      : await revenueApi<{ ok: boolean; message: string }>(`sources/${s.code}/test`, { method: 'POST' })
+    if (r.ok) f.ok = r.message ?? 'OK'
+    else f.error = r.message ?? 'Gagal'
+  } catch (e) {
+    f.error = apiErrorMessage(e)
+  } finally {
+    f.busy = false
+  }
+}
+
+async function sync(s: SourceInfo) {
+  const f = forms[s.code]
+  if (!f) return
+  f.busy = true
+  f.error = ''
+  f.ok = ''
+  try {
+    const r = await revenueApi<{ status: string; error: string | null; counts: { inserted: number; updated: number; unchanged: number } }>(`sources/${s.code}/sync`, { method: 'POST', body: {} })
+    if (r.status === 'failed') f.error = r.error ?? 'Sync gagal'
+    else f.ok = `${r.counts.inserted} baru, ${r.counts.updated} diperbarui, ${r.counts.unchanged} sama.`
+    await Promise.all([refreshRuns(), refreshRevenueNav()])
+  } catch (e) {
+    f.error = apiErrorMessage(e)
+  } finally {
+    const again = forms[s.code]
+    if (again) again.busy = false
+  }
+}
+
+// ---------- sumber baru ----------
+const create = reactive({ code: '', name: '', connector: 'generic' as 'generic' | 'headless', integrationType: 'csv_import' as 'csv_import' | 'manual' | 'headless', defaultCurrency: 'USD', error: '', busy: false })
+watch(() => create.connector, (c) => {
+  create.integrationType = c === 'headless' ? 'headless' : 'csv_import'
+})
+async function createSource() {
+  create.busy = true
+  create.error = ''
+  try {
+    await revenueApi('sources', { method: 'POST', body: { code: create.code, name: create.name, connector: create.connector, integrationType: create.integrationType, defaultCurrency: create.defaultCurrency.toUpperCase() } })
+    Object.assign(create, { code: '', name: '' })
+    await refreshRevenueNav()
+  } catch (e) {
+    create.error = apiErrorMessage(e)
+  } finally {
+    create.busy = false
+  }
+}
+
+const CONFIG_HINT: Record<string, string> = {
+  adsense: '{ "accountId": "accounts/pub-XXXXXXXX", "finalizeDay": 7, "reportingTimeZone": "ACCOUNT_TIME_ZONE", "withDomain": true, "currencyCode": "USD", "mock": false }',
+  adsterra: '{ "groupBy": ["domain", "placement"], "mock": false }  (groupBy maks. 2 dari domain, placement, country, placement_sub_id)',
+  lynk: '{ "timezone": "Asia/Jakarta", "propertyId": "<id situs untuk semua penjualan>" }',
+  headless: '{ "enabled": false, "scraper": "mock" }  (juga butuh REVENUE_HEADLESS_ENABLED=true di server)',
+  generic: '{}',
+}
+const RUN_TEXT: Record<string, string> = { running: 'Berjalan', success: 'Berhasil', partial: 'Sebagian gagal', failed: 'Gagal' }
+const runTone = (s: string) => (s === 'success' ? 'good' : s === 'partial' || s === 'running' ? 'warning' : 'critical')
+const openLog = ref<string | null>(null)
+
+useHead({ title: 'Koneksi & log · Pendapatan' })
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Koneksi &amp; log</h1>
+    </header>
+    <p class="muted rv-intro">
+      Kredensial (API token Adsterra, OAuth AdSense, merchant key Lynk.id) diisi di env server, bukan di sini.
+      Halaman ini hanya menunjukkan mana yang sudah terpasang.
+      <template v-if="!nav?.schedulerEnabled">
+        Penjadwal otomatis mati (REVENUE_SCHEDULER bukan true); jadwal di bawah dipakai `pnpm revenue:sync --due` atau saat penjadwal dinyalakan.
+      </template>
+    </p>
+
+    <section
+      v-for="s in sources"
+      :id="s.code"
+      :key="s.code"
+      class="rv-section rv-source-card"
+      :aria-labelledby="`src-${s.code}`"
+    >
+      <div class="rv-section__head">
+        <h2 :id="`src-${s.code}`">
+          <span
+            class="rv-dot"
+            :style="{ background: colorFor(s.code, sources) }"
+          />{{ s.name }}
+        </h2>
+        <span class="muted">{{ CHANNEL_TEXT[s.integrationType] }}</span>
+        <span
+          v-if="s.mock"
+          class="rv-status rv-status--warning"
+        ><span aria-hidden="true">!</span> Mode mock</span>
+      </div>
+      <div
+        v-if="forms[s.code]"
+        class="rv-conn"
+      >
+        <dl>
+          <template v-if="s.webhookUrl">
+            <dt>URL webhook</dt>
+            <dd><code class="mono">{{ s.webhookUrl }}</code></dd>
+          </template>
+          <template v-if="s.credentials.required.length">
+            <dt>Env server</dt>
+            <dd>
+              <div
+                v-for="name in s.credentials.required"
+                :key="name"
+              >
+                <span :class="['rv-status', s.credentials.missing.includes(name) ? 'rv-status--warning' : 'rv-status--good']">
+                  <span aria-hidden="true">{{ s.credentials.missing.includes(name) ? '!' : '✓' }}</span>
+                  {{ s.credentials.missing.includes(name) ? 'Belum diisi' : 'Terpasang' }}
+                </span>
+                <code class="mono">{{ name }}</code>
+              </div>
+            </dd>
+          </template>
+          <template v-if="s.canSync">
+            <dt>Sync terakhir</dt>
+            <dd>{{ s.lastSyncAt ? `${RUN_TEXT[s.lastSyncStatus ?? ''] ?? s.lastSyncStatus}, ${formatAgo(s.lastSyncAt)}` : 'Belum pernah' }}</dd>
+          </template>
+        </dl>
+        <form
+          class="stack"
+          @submit.prevent="save(s)"
+        >
+          <div class="row">
+            <label class="check">
+              <input
+                v-model="forms[s.code]!.isActive"
+                type="checkbox"
+              >
+              Aktif
+            </label>
+            <label
+              v-if="s.canSync"
+              class="field"
+            >
+              <span>Tarik otomatis setiap (menit)</span>
+              <input
+                v-model="forms[s.code]!.syncIntervalMinutes"
+                type="number"
+                min="15"
+                max="10080"
+                placeholder="kosong = manual"
+              >
+            </label>
+            <label
+              v-if="s.canSync"
+              class="field"
+            >
+              <span>Tarik ulang N hari terakhir</span>
+              <input
+                v-model="forms[s.code]!.lookbackDays"
+                type="number"
+                min="0"
+                max="60"
+              >
+              <span class="field__hint">Angka di luar jendela ini dianggap final.</span>
+            </label>
+          </div>
+          <label
+            v-if="s.connector !== 'generic'"
+            class="field"
+          >
+            <span>Konfigurasi (JSON, non-rahasia)</span>
+            <textarea
+              v-model="forms[s.code]!.configText"
+              class="mono"
+              spellcheck="false"
+            />
+            <span class="field__hint mono">{{ CONFIG_HINT[s.connector] }}</span>
+          </label>
+          <p
+            v-if="forms[s.code]!.error"
+            class="field__error"
+            role="alert"
+          >
+            {{ forms[s.code]!.error }}
+          </p>
+          <p
+            v-if="forms[s.code]!.ok"
+            class="notice"
+            role="status"
+          >
+            {{ forms[s.code]!.ok }}
+          </p>
+          <div class="rv-actions">
+            <button
+              type="submit"
+              class="btn btn--primary"
+              :disabled="forms[s.code]!.busy"
+            >
+              Simpan pengaturan
+            </button>
+            <button
+              v-if="s.connector !== 'generic'"
+              type="button"
+              class="btn"
+              :disabled="forms[s.code]!.busy"
+              @click="test(s)"
+            >
+              {{ s.connector === 'lynk' ? 'Kirim event uji' : 'Uji koneksi' }}
+            </button>
+            <button
+              v-if="s.canSync"
+              type="button"
+              class="btn"
+              :disabled="forms[s.code]!.busy"
+              @click="sync(s)"
+            >
+              Tarik data sekarang
+            </button>
+            <NuxtLink
+              :to="`/admin/revenue/sources/${s.code}`"
+              class="btn btn--ghost"
+            >
+              Lihat data
+            </NuxtLink>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section
+      class="rv-section"
+      aria-labelledby="src-baru"
+    >
+      <div class="rv-section__head">
+        <h2 id="src-baru">
+          Tambah sumber lain
+        </h2>
+      </div>
+      <form
+        class="adm-panel"
+        @submit.prevent="createSource"
+      >
+        <p class="field__hint">
+          Untuk pemasukan yang diisi lewat impor file atau input manual (afiliasi, jaringan iklan lain, marketplace),
+          atau otomasi browser. Adapter API baru ditambahkan di kode (packages/core/src/revenue/adapters).
+        </p>
+        <div class="row">
+          <label class="field">
+            <span>Nama</span>
+            <input
+              v-model="create.name"
+              type="text"
+              required
+              maxlength="80"
+              placeholder="Shopee Affiliate"
+            >
+          </label>
+          <label class="field">
+            <span>Kode</span>
+            <input
+              v-model="create.code"
+              type="text"
+              required
+              pattern="[a-z0-9]+(_[a-z0-9]+)*"
+              placeholder="shopee_affiliate"
+            >
+          </label>
+          <label class="field">
+            <span>Jalur</span>
+            <select v-model="create.connector">
+              <option value="generic">Impor file / manual</option>
+              <option value="headless">Otomasi browser (nonaktif bawaan)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Mata uang</span>
+            <input
+              v-model="create.defaultCurrency"
+              type="text"
+              maxlength="3"
+              required
+            >
+          </label>
+        </div>
+        <p
+          v-if="create.error"
+          class="field__error"
+          role="alert"
+        >
+          {{ create.error }}
+        </p>
+        <div class="rv-actions">
+          <button
+            type="submit"
+            class="btn btn--primary"
+            :disabled="create.busy"
+          >
+            Tambah sumber
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section
+      class="rv-section"
+      aria-labelledby="log-sync"
+    >
+      <div class="rv-section__head">
+        <h2 id="log-sync">
+          Log tarik data
+        </h2>
+        <button
+          type="button"
+          class="btn btn--small"
+          @click="refreshRuns()"
+        >
+          Muat ulang
+        </button>
+      </div>
+      <div class="table-scroll">
+        <table class="table rv-num">
+          <thead>
+            <tr>
+              <th>Mulai</th>
+              <th>Sumber</th>
+              <th>Status</th>
+              <th>Rentang</th>
+              <th>Hasil</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template
+              v-for="r in runs?.runs ?? []"
+              :key="r.id"
+            >
+              <tr>
+                <td class="nowrap">
+                  {{ formatTime(r.startedAt) }}
+                  <div class="muted rv-small">
+                    {{ r.trigger === 'schedule' ? 'jadwal' : r.trigger === 'cli' ? 'CLI' : 'manual' }}{{ r.mock ? ', mock' : '' }}
+                  </div>
+                </td>
+                <td>{{ r.sourceName }}</td>
+                <td>
+                  <span :class="['rv-status', `rv-status--${runTone(r.status)}`]">{{ RUN_TEXT[r.status] ?? r.status }}</span>
+                </td>
+                <td class="nowrap rv-small">
+                  {{ formatRange(r.rangeStart, r.rangeEnd) }}
+                </td>
+                <td class="rv-small">
+                  {{ r.rowsFetched }} baris: {{ r.inserted }} baru, {{ r.updated }} diperbarui, {{ r.unchanged }} sama<template v-if="r.failed">
+                    , {{ r.failed }} gagal
+                  </template>
+                  <button
+                    type="button"
+                    class="btn btn--ghost btn--small"
+                    :aria-expanded="openLog === r.id"
+                    @click="openLog = openLog === r.id ? null : r.id"
+                  >
+                    Log
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="openLog === r.id">
+                <td colspan="5">
+                  <p
+                    v-if="r.errorMessage"
+                    class="notice notice--error"
+                  >
+                    {{ r.errorMessage }}
+                  </p>
+                  <pre class="rv-log">{{ r.log.join('\n') }}</pre>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</template>
+```
+
+`apps/web/app/pages/admin/revenue/fx.vue`
+
+```vue
+<!--
+  Kurs (ADR-011): 1 <mata uang> = N <mata uang utama>, berlaku mulai tanggal
+  sampai ada kurs lebih baru. Entri memakai kurs terakhir <= tanggal
+  laporannya, dan kurs itu disimpan di entri (angka lama tidak berubah
+  diam-diam). "Isi yang kosong" mengonversi entri tanpa kurs; "Hitung
+  ulang" menerapkan kurs terbaru ke rentang tertentu (tercatat sebagai revisi).
+-->
+<script setup lang="ts">
+definePageMeta({ layout: 'console' })
+
+interface FxData { baseCurrency: string; rates: { currency: string; rateDate: string; rate: string; note: string | null }[]; missing: { currency: string; entries: number; firstDate: string }[] }
+
+const nav = useRevenueNav()
+const today = computed(() => todayIn(nav.value?.settings.timeZone ?? 'Asia/Jakarta'))
+const { data, refresh, error } = await useAsyncData('revenue-fx', () => revenueApi<FxData>('fx'), { server: false })
+
+const form = reactive({ currency: 'USD', rateDate: `${today.value.slice(0, 7)}-01`, rate: '', note: '' })
+const recompute = reactive({ currency: 'USD', from: `${today.value.slice(0, 7)}-01`, to: today.value })
+const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null)
+const busy = ref(false)
+
+async function run(fn: () => Promise<string>) {
+  busy.value = true
+  message.value = null
+  try {
+    message.value = { kind: 'ok', text: await fn() }
+    await refresh()
+  } catch (e) {
+    message.value = { kind: 'error', text: apiErrorMessage(e) }
+  } finally {
+    busy.value = false
+  }
+}
+
+const save = () => run(async () => {
+  await revenueApi('fx', { method: 'POST', body: { currency: form.currency.toUpperCase(), rateDate: form.rateDate, rate: form.rate.trim().replace(',', '.'), note: form.note || null } })
+  form.rate = ''
+  const r = await revenueApi<{ updated: number }>('fx/recompute', { method: 'POST', body: { mode: 'missing' } })
+  return `Kurs disimpan. ${r.updated} entri yang belum dikonversi kini terkonversi.`
+})
+const fillMissing = () => run(async () => `${(await revenueApi<{ updated: number }>('fx/recompute', { method: 'POST', body: { mode: 'missing' } })).updated} entri dikonversi.`)
+const recomputeRange = () => run(async () => `${(await revenueApi<{ updated: number }>('fx/recompute', { method: 'POST', body: { mode: 'range', ...recompute, currency: recompute.currency.toUpperCase() } })).updated} entri dihitung ulang (versi lama tersimpan di riwayat).`)
+const remove = (currency: string, rateDate: string) => run(async () => {
+  await revenueApi('fx/delete', { method: 'POST', body: { currency, rateDate } })
+  return 'Kurs dihapus. Entri yang sudah dikonversi tidak berubah.'
+})
+
+useHead({ title: 'Kurs · Pendapatan' })
+</script>
+
+<template>
+  <div>
+    <header class="adm-head">
+      <h1>Kurs ke {{ data?.baseCurrency ?? 'mata uang utama' }}</h1>
+    </header>
+    <p
+      v-if="error"
+      class="notice notice--error"
+    >
+      {{ apiErrorMessage(error) }}
+    </p>
+    <p
+      v-if="message"
+      class="notice"
+      :class="{ 'notice--error': message.kind === 'error' }"
+      role="status"
+    >
+      {{ message.text }}
+    </p>
+
+    <p
+      v-for="m in data?.missing ?? []"
+      :key="m.currency"
+      class="notice rv-warn"
+    >
+      {{ formatNumber(m.entries) }} entri {{ m.currency }} (sejak {{ formatDay(m.firstDate, true) }}) belum dikonversi.
+      Tambahkan kurs {{ m.currency }} bertanggal paling lambat {{ formatDay(m.firstDate, true) }}.
+    </p>
+
+    <div class="adm-split">
+      <section class="adm-panel">
+        <h2>Tambah atau ubah kurs</h2>
+        <form
+          class="stack"
+          @submit.prevent="save"
+        >
+          <div class="row">
+            <label class="field">
+              <span>Mata uang</span>
+              <input
+                v-model="form.currency"
+                type="text"
+                maxlength="3"
+                required
+              >
+            </label>
+            <label class="field">
+              <span>Berlaku mulai</span>
+              <input
+                v-model="form.rateDate"
+                type="date"
+                required
+              >
+            </label>
+            <label class="field">
+              <span>1 {{ form.currency || '…' }} = ? {{ data?.baseCurrency }}</span>
+              <input
+                v-model="form.rate"
+                type="text"
+                inputmode="decimal"
+                required
+                placeholder="16250"
+              >
+            </label>
+          </div>
+          <label class="field">
+            <span>Catatan (mis. sumber kurs)</span>
+            <input
+              v-model="form.note"
+              type="text"
+              maxlength="200"
+            >
+          </label>
+          <div class="rv-actions">
+            <button
+              type="submit"
+              class="btn btn--primary"
+              :disabled="busy"
+            >
+              Simpan kurs
+            </button>
+            <button
+              type="button"
+              class="btn"
+              :disabled="busy"
+              @click="fillMissing"
+            >
+              Konversi entri yang belum berkurs
+            </button>
+          </div>
+        </form>
+      </section>
+      <section class="adm-panel">
+        <h2>Hitung ulang rentang</h2>
+        <p class="field__hint">
+          Untuk koreksi kurs: entri di rentang ini memakai kurs terbaru yang berlaku pada tanggalnya. Koreksi/refund manual tidak diubah.
+        </p>
+        <form
+          class="stack"
+          @submit.prevent="recomputeRange"
+        >
+          <div class="row">
+            <label class="field"><span>Mata uang</span><input
+              v-model="recompute.currency"
+              type="text"
+              maxlength="3"
+              required
+            ></label>
+            <label class="field"><span>Dari</span><input
+              v-model="recompute.from"
+              type="date"
+              required
+            ></label>
+            <label class="field"><span>Sampai</span><input
+              v-model="recompute.to"
+              type="date"
+              required
+            ></label>
+          </div>
+          <div class="rv-actions">
+            <button
+              type="submit"
+              class="btn"
+              :disabled="busy"
+            >
+              Hitung ulang
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <section class="rv-section">
+      <div class="rv-section__head">
+        <h2>Daftar kurs</h2>
+      </div>
+      <table class="table rv-num">
+        <thead>
+          <tr>
+            <th>Mata uang</th>
+            <th>Berlaku mulai</th>
+            <th>Kurs</th>
+            <th>Catatan</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="r in data?.rates ?? []"
+            :key="`${r.currency}-${r.rateDate}`"
+          >
+            <td>{{ r.currency }}</td>
+            <td>{{ formatDay(r.rateDate, true) }}</td>
+            <td>{{ formatNumber(r.rate, 4) }} {{ data?.baseCurrency }}</td>
+            <td class="muted">
+              {{ r.note ?? '' }}
+            </td>
+            <td>
+              <button
+                type="button"
+                class="btn btn--ghost btn--small btn--danger"
+                :disabled="busy"
+                @click="remove(r.currency, r.rateDate)"
+              >
+                Hapus
+              </button>
+            </td>
+          </tr>
+          <tr v-if="data && !data.rates.length">
+            <td
+              colspan="5"
+              class="muted"
+            >
+              Belum ada kurs. Pendapatan USD (AdSense, Adsterra, Whop) baru masuk total setelah kurs diisi.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+</template>
+```
+
+28. Tulis gayanya. Bahasanya sama dengan admin (kertas abu, garis tipis, tanpa bayangan). Satu hal yang sengaja menonjol adalah angka total dan batang komposisinya. Teks tidak pernah memakai warna seri:
+
+`apps/web/app/assets/revenue.css`
+
+```css
+/*
+ * Konsol pendapatan (ADR-011). Mengikuti bahasa admin (admin.css): kertas
+ * abu hangat, garis tipis, tanpa bayangan dan kartu berbayang. Satu hal
+ * yang sengaja menonjol: angka total + batang komposisi per sumber di
+ * bagian atas. Warna seri hanya untuk tanda data (batang, titik, garis
+ * kunci); teks selalu memakai warna tinta.
+ */
+
+.adm .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------- Rail ----------------------------------------------------- */
+
+.rv-rail {
+  gap: 1.25rem;
+  overflow-y: auto;
+}
+
+.rv-rail__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.rv-rail__mark {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #2a78d6 0 34%, #eb6834 34% 58%, #1baf7a 58% 80%, #eda100 80%);
+}
+
+.rv-rail__group h2 {
+  margin: 0 0 0.25rem 0.625rem;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.rv-rail .adm-nav a {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rv-rail__manage {
+  color: var(--ink-3) !important;
+  font-size: 0.8125rem;
+}
+
+.rv-rail__blog {
+  justify-content: center;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
+
+.adm-rail__back {
+  font-size: 0.8125rem;
+  text-decoration: none;
+}
+
+.adm-rail__back::before {
+  content: '‹ ';
+}
+
+.rv-dot {
+  display: inline-block;
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.375rem;
+  border-radius: 50%;
+  vertical-align: 0.05em;
+}
+
+.rv-rail .rv-dot {
+  margin-right: 0;
+}
+
+.rv-flag {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #fff1cc;
+  color: #6b4700;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.rv-flag--off {
+  background: #eceeea;
+  color: var(--ink-3);
+}
+
+/* ---------- Umum ----------------------------------------------------- */
+
+.rv {
+  transition: opacity 120ms ease-out;
+}
+
+.rv.is-loading {
+  opacity: 0.55;
+}
+
+.rv-sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+}
+
+.rv-small {
+  font-size: 0.75rem;
+}
+
+.rv-more {
+  margin-left: auto;
+  font-size: 0.8125rem;
+}
+
+.adm .rv-num td,
+.adm .rv-num th {
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-segmented button {
+  padding: 0.35rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.adm-segmented button + button {
+  border-left: 1px solid var(--line-strong);
+}
+
+.adm-segmented button.is-on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.adm-segmented button:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ---------- Filter ---------------------------------------------------- */
+
+.rv-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.adm .rv-filters select,
+.adm .rv-date input {
+  width: auto;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.adm .rv-date input {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.rv-pop {
+  position: relative;
+}
+
+.rv-pop > summary {
+  list-style: none;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+.rv-pop > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rv-pop > summary::after {
+  content: '▾';
+  color: var(--ink-3);
+}
+
+.rv-pop__panel {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  display: grid;
+  gap: 0.4rem;
+  min-width: 14rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+/* ---------- Angka utama + komposisi ----------------------------------- */
+
+.rv-hero {
+  display: grid;
+  gap: 1.25rem;
+  padding: 1.5rem 1.5rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.adm .rv-hero__label {
+  color: var(--ink-2);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.rv-hero__value {
+  margin: 0.25rem 0 0;
+  font-size: clamp(2.25rem, 5vw, 3.25rem);
+  font-weight: 650;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-feature-settings: 'tnum' 0, 'cv11' 1;
+}
+
+.rv-hero__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.625rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+}
+
+.rv-delta {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.rv-delta.is-up {
+  color: #006300;
+}
+
+.rv-delta.is-down {
+  color: var(--danger);
+}
+
+.rv-warn {
+  margin: 0;
+  border-color: #e7c66b;
+  background: #fff8e1;
+}
+
+.rv-seg {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.rv-seg__bar {
+  display: flex;
+  gap: 2px;
+  height: 28px;
+}
+
+.rv-seg__part {
+  display: flex;
+  flex-basis: 0;
+  align-items: center;
+  min-width: 3px;
+  padding: 0 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.rv-seg__part:hover {
+  filter: brightness(1.06);
+}
+
+.rv-seg__part:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.rv-seg__empty {
+  align-self: center;
+  color: var(--ink-3);
+  font-size: 0.875rem;
+}
+
+.rv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.rv-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--ink-2);
+}
+
+.rv-legend__swatch {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+}
+
+.rv-legend__value {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Ringkasan ------------------------------------------------- */
+
+.rv-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.rv-stat {
+  padding: 1rem 1.25rem;
+}
+
+.rv-stat + .rv-stat {
+  border-left: 1px solid var(--line);
+}
+
+.adm .rv-stat h3 {
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.rv-stat__value {
+  margin: 0.375rem 0 0.25rem;
+  font-size: 1.375rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-feature-settings: 'tnum' 0;
+}
+
+.rv-stat__note {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+@media (max-width: 68rem) {
+  .rv-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rv-stat:nth-child(3) {
+    border-left: 0;
+  }
+
+  .rv-stat:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* ---------- Bagian ---------------------------------------------------- */
+
+.rv-section {
+  margin-top: 2rem;
+}
+
+.rv-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.rv-section__head h2 {
+  margin-right: auto;
+}
+
+.rv-split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 0 2rem;
+}
+
+@media (max-width: 68rem) {
+  .rv-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rv-meter {
+  display: block;
+  height: 4px;
+  margin-top: 0.3rem;
+  border-radius: 2px;
+  background: #eceeea;
+}
+
+.rv-meter span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* ---------- Grafik ---------------------------------------------------- */
+
+.rv-chart {
+  position: relative;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.25rem 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.rv-chart svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.rv-chart svg:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.rv-chart text {
+  fill: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rv-chart__grid line {
+  stroke: #e7e9e5;
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.rv-chart__grid line.is-zero {
+  stroke: #c3c7c1;
+}
+
+.rv-chart__band {
+  fill: rgb(31 95 74 / 0.06);
+}
+
+.rv-chart__cross {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+
+.rv-tip {
+  position: absolute;
+  z-index: 4;
+  top: 0.5rem;
+  min-width: 12rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 0.8125rem;
+  pointer-events: none;
+  transform: translateX(14px);
+}
+
+.rv-tip--left {
+  transform: translateX(calc(-100% - 14px));
+}
+
+.rv-tip__head {
+  color: var(--ink-3);
+}
+
+.rv-tip__total {
+  margin: 0.125rem 0 0.375rem;
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.rv-tip ul {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rv-tip li {
+  display: grid;
+  grid-template-columns: 0.75rem auto 1fr;
+  align-items: center;
+  gap: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rv-tip li span:last-child {
+  color: var(--ink-3);
+}
+
+.rv-tip__key {
+  width: 0.75rem;
+  height: 2px;
+  border-radius: 1px;
+}
+
+/* ---------- Status ---------------------------------------------------- */
+
+.rv-health {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  list-style: none;
+}
+
+.rv-health li {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: 0.125rem 0.75rem;
+  align-items: baseline;
+  padding: 0.625rem 0.875rem;
+}
+
+.rv-health li + li {
+  border-top: 1px solid var(--line);
+}
+
+.rv-health__detail {
+  grid-column: 2;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.rv-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rv-status--good {
+  background: #e3f1e3;
+  color: #006300;
+}
+
+.rv-status--warning {
+  background: #fff1cc;
+  color: #6b4700;
+}
+
+.rv-status--critical {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.rv-status--off {
+  background: #eceeea;
+  color: var(--ink-3);
+}
+
+.rv-badge {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rv-badge--finalized {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rv-badge--estimated {
+  border-color: #e0c06a;
+  color: #6b4700;
+}
+
+.rv-badge--adjusted {
+  background: #eceaf9;
+  color: #3d2fa0;
+}
+
+.rv-badge--refunded {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---------- Detail sumber / operasional -------------------------------- */
+
+.rv-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.rv-kpis > div {
+  padding: 0.875rem 1.125rem;
+  border-right: 1px solid var(--line);
+}
+
+.rv-kpis > div:last-child {
+  border-right: 0;
+}
+
+.rv-kpis h3 {
+  color: var(--ink-2);
+  font-size: 0.8125rem !important;
+  font-weight: 500 !important;
+}
+
+.rv-kpis p {
+  margin: 0.25rem 0 0;
+  font-size: 1.25rem;
+  font-weight: 650;
+}
+
+.rv-kpis small {
+  color: var(--ink-3);
+  font-size: 0.75rem;
+}
+
+.rv-conn {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.rv-conn dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.375rem 1rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.rv-conn dt {
+  color: var(--ink-3);
+}
+
+.rv-conn dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.rv-log {
+  max-height: 14rem;
+  margin: 0.5rem 0 0;
+  padding: 0.625rem 0.75rem;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: #f1f2ef;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+}
+
+.rv-steps {
+  display: flex;
+  gap: 1.5rem;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  font-size: 0.875rem;
+}
+
+.rv-steps li {
+  color: var(--ink-3);
+  counter-increment: step;
+}
+
+.rv-steps li::before {
+  content: counter(step) '. ';
+}
+
+.rv-steps li.is-on {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.rv-dropzone {
+  display: grid;
+  place-items: center;
+  gap: 0.5rem;
+  padding: 2rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  text-align: center;
+}
+
+.rv-dropzone.is-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rv-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rv-counts strong {
+  display: block;
+  font-size: 1.25rem;
+}
+
+.rv-drawer {
+  width: min(40rem, calc(100vw - 2rem));
+  margin-right: 0;
+  margin-left: auto;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+}
+
+.rv-pre {
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  background: #f1f2ef;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rv-linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.rv-drawer__amount {
+  font-size: 2rem;
+}
+
+.rv-intro {
+  max-width: 48rem;
+  margin: -0.5rem 0 0.5rem;
+}
+
+.rv-source-card {
+  scroll-margin-top: 1rem;
+}
+
+.rv-form {
+  margin-bottom: 1.5rem;
+}
+
+.adm input[type='date'] {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.adm .rv-date input[type='date'] {
+  width: auto;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.adm-panel > .adm-segmented {
+  justify-self: start;
+}
+
+.rv-import {
+  display: grid;
+  grid-template-columns: minmax(18rem, 2fr) minmax(0, 3fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.rv-import > .adm-panel + .adm-panel {
+  margin-top: 0;
+}
+
+@media (max-width: 68rem) {
+  .rv-import {
+    grid-template-columns: 1fr;
+  }
+}
+```
+
+29. Tambahkan pemeriksaan ke gate admin: API pendapatan 401 tanpa sesi, 404 untuk editor, 200 untuk superadmin; webhook terjangkau di host site; body rusak 400; path traversal 404 (lihat `gate-admin.mjs` di bab "Membangun Login Admin").
+
+30. Isi contoh data dan buka dashboard:
+
+```bash
+pnpm revenue:demo            # 120 hari: sync mock, webhook bertanda tangan, impor CSV, manual
+pnpm dev                     # http://admin.localhost:3000/admin
+pnpm revenue:demo --remove   # hapus lagi
+```
+
+   Isi `REVENUE_MOCK=true` di `.env` agar tombol "Tarik data sekarang" dan "Kirim event uji" berjalan tanpa kredensial. Panduan memasang kredensial asli, env lengkap, dan langkah verifikasi manual ada di `docs/pendapatan.md`.

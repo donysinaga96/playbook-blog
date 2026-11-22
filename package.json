@@ -29,7 +29,9 @@
     "tutorial": "node docs/tutorial/build.mjs",
     "admin:create": "pnpm --filter @framework/web admin:create",
     "site:create": "pnpm --filter @framework/web site:create",
-    "site:domain": "pnpm --filter @framework/web site:domain"
+    "site:domain": "pnpm --filter @framework/web site:domain",
+    "revenue:sync": "pnpm --filter @framework/web revenue:sync",
+    "revenue:demo": "pnpm --filter @framework/web revenue:demo"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

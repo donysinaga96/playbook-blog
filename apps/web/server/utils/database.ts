@@ -1,7 +1,7 @@
 // Satu koneksi database (pool) dan satu set repository per PROSES server.
 // Ini bukan state per request: semua yang khusus request (site, theme) wajib
 // disimpan di event.context, tidak di modul (ADR-001).
-import { createRepositories, type Repositories } from '@framework/core'
+import { createRepositories, revenueSettingsFromEnv, type Repositories } from '@framework/core'
 import { createDatabase, databaseUrlFromEnv, type Database } from '@framework/db'
 
 let database: Database | undefined
@@ -17,7 +17,7 @@ export function useDatabase(): Database {
 }
 
 export function useRepositories(): Repositories {
-  repositories ??= createRepositories(useDatabase())
+  repositories ??= createRepositories(useDatabase(), { revenue: revenueSettingsFromEnv(process.env) })
   return repositories
 }
 

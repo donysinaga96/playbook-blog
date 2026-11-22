@@ -262,6 +262,24 @@ try {
   r = await admin(`/api/admin/sites/${kuliner.id}/articles`, { cookie: editorCookie })
   check('editor: site lain 404', r.status === 404, String(r.status))
 
+  // Dashboard pendapatan (ADR-011): hanya superadmin; webhook publik di host
+  // mana pun, diamankan tanda tangan, tidak bisa dipakai menembus route lain.
+  r = await admin('/api/admin/revenue/overview')
+  check('pendapatan: tanpa sesi 401', r.status === 401, String(r.status))
+  r = await admin('/api/admin/revenue/overview', { cookie: editorCookie })
+  check('pendapatan: bukan superadmin 404', r.status === 404, String(r.status))
+  r = await admin('/api/admin/revenue/overview?from=2026-01-01&to=2026-01-31', { cookie: adminCookie })
+  check('pendapatan: superadmin 200 + total', r.status === 200 && JSON.parse(r.body).overview?.total !== undefined, String(r.status))
+  r = await admin('/api/admin/revenue/sources', { cookie: adminCookie })
+  check('pendapatan: daftar sumber tanpa nilai rahasia', r.status === 200 && !/token|secret|merchant_key/i.test(JSON.stringify(JSON.parse(r.body).sources.map((s) => s.config))), String(r.status))
+  const lynkBody = JSON.stringify({ event: 'payment.received', data: { message_id: 'GATE_1', message_data: { refId: 'GATE-1', totals: { grandTotal: 1000 } } } })
+  r = await requestWithHost(port, { path: '/api/webhooks/revenue/lynk', host: siteHost, method: 'POST', rawBody: Buffer.from(lynkBody), headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(lynkBody)), 'x-lynk-signature': 'a'.repeat(64) } })
+  check('webhook: di host site terjangkau, tanpa key/tanda tangan sah tidak diterima (401/503)', r.status === 401 || r.status === 503, String(r.status))
+  r = await requestWithHost(port, { path: '/api/webhooks/revenue/lynk', host: siteHost, method: 'POST', rawBody: Buffer.from('{'), headers: { 'content-type': 'application/json', 'content-length': '1' } })
+  check('webhook: body rusak 400', r.status === 400, String(r.status))
+  r = await requestWithHost(port, { path: '/api/webhooks/revenue/%2e%2e/%2e%2e/admin/me', host: siteHost, method: 'POST', rawBody: Buffer.from('{}'), headers: { 'content-type': 'application/json', 'content-length': '2' } })
+  check('webhook: path traversal tidak sampai ke admin', r.status === 404, String(r.status))
+
   // Rate limit: 5 kegagalan per IP + email -> 429 dengan Retry-After.
   const victim = `gate-${Date.now()}@local.test`
   for (let i = 0; i < 5; i++) await admin('/api/admin/login', { method: 'POST', body: { email: victim, password: 'salah-salah-salah' } })

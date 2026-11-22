@@ -39,9 +39,9 @@ function index(tableName: string, indexName: string) {
 }
 
 describe('schema hasil drizzle-kit pull', () => {
-  it('berisi 18 tabel (0001: 16, 0002: +2), tanpa schema_migrations', () => {
+  it('berisi 26 tabel (0001: 16, 0002: +2, 0003: +8), tanpa schema_migrations', () => {
     const names = tables.map(getTableName)
-    expect(names).toHaveLength(18)
+    expect(names).toHaveLength(26)
     expect(names).not.toContain('schema_migrations')
   })
 

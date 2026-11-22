@@ -76,6 +76,18 @@ export const relations = defineRelations(schema, (r) => ({
 			alias: "users_id_sites_id_via_media"
 		}),
 		media: r.many.media(),
+		revenueFxRates: r.many.revenueFxRates(),
+		revenueSourcesViaRevenueImportBatches: r.many.revenueSources({
+			from: r.users.id.through(r.revenueImportBatches.createdBy),
+			to: r.revenueSources.id.through(r.revenueImportBatches.sourceId),
+			alias: "users_id_revenueSources_id_via_revenueImportBatches"
+		}),
+		revenueImportBatches: r.many.revenueImportBatches(),
+		revenueLedgerEntries: r.many.revenueLedgerEntries(),
+		revenueSourcesViaRevenueSyncRuns: r.many.revenueSources({
+			alias: "revenueSources_id_users_id_via_revenueSyncRuns"
+		}),
+		revenueSyncRuns: r.many.revenueSyncRuns(),
 		sitesViaSiteMembers: r.many.sites({
 			alias: "sites_id_users_id_via_siteMembers"
 		}),
@@ -124,6 +136,7 @@ export const relations = defineRelations(schema, (r) => ({
 		menus: r.many.menus(),
 		pages: r.many.pages(),
 		redirects: r.many.redirects(),
+		revenueProperties: r.many.revenueProperties(),
 		siteDomains: r.one.siteDomains(),
 		usersViaSiteMembers: r.many.users({
 			from: r.sites.id.through(r.siteMembers.siteId),
@@ -267,6 +280,125 @@ export const relations = defineRelations(schema, (r) => ({
 		site: r.one.sites({
 			from: r.redirects.siteId,
 			to: r.sites.id
+		}),
+	},
+	revenueFxRates: {
+		user: r.one.users({
+			from: r.revenueFxRates.createdBy,
+			to: r.users.id
+		}),
+	},
+	revenueSources: {
+		usersViaRevenueImportBatches: r.many.users({
+			alias: "users_id_revenueSources_id_via_revenueImportBatches"
+		}),
+		revenueImportBatches: r.many.revenueImportBatches(),
+		revenueLedgerEntriesSourceId: r.many.revenueLedgerEntries({
+			alias: "revenueLedgerEntries_sourceId_revenueSources_id"
+		}),
+		usersViaRevenueSyncRuns: r.many.users({
+			from: r.revenueSources.id.through(r.revenueSyncRuns.sourceId),
+			to: r.users.id.through(r.revenueSyncRuns.triggeredBy),
+			alias: "revenueSources_id_users_id_via_revenueSyncRuns"
+		}),
+		revenueSyncRuns: r.one.revenueSyncRuns(),
+		revenueLedgerEntriesViaRevenueWebhookEvents: r.many.revenueLedgerEntries({
+			alias: "revenueLedgerEntries_id_revenueSources_id_via_revenueWebhookEvents"
+		}),
+		revenueWebhookEvents: r.many.revenueWebhookEvents(),
+	},
+	revenueImportBatches: {
+		user: r.one.users({
+			from: r.revenueImportBatches.createdBy,
+			to: r.users.id
+		}),
+		revenueSource: r.one.revenueSources({
+			from: r.revenueImportBatches.sourceId,
+			to: r.revenueSources.id
+		}),
+		revenueLedgerEntries: r.many.revenueLedgerEntries(),
+	},
+	revenueLedgerEntries: {
+		revenueLedgerEntry: r.one.revenueLedgerEntries({
+			from: r.revenueLedgerEntries.adjustsEntryId,
+			to: r.revenueLedgerEntries.id,
+			alias: "revenueLedgerEntries_adjustsEntryId_revenueLedgerEntries_id"
+		}),
+		revenueLedgerEntries: r.many.revenueLedgerEntries({
+			alias: "revenueLedgerEntries_adjustsEntryId_revenueLedgerEntries_id"
+		}),
+		user: r.one.users({
+			from: r.revenueLedgerEntries.createdBy,
+			to: r.users.id
+		}),
+		revenueImportBatch: r.one.revenueImportBatches({
+			from: r.revenueLedgerEntries.importBatchId,
+			to: r.revenueImportBatches.id
+		}),
+		revenueProperty: r.one.revenueProperties({
+			from: r.revenueLedgerEntries.propertyId,
+			to: r.revenueProperties.id
+		}),
+		revenueSource: r.one.revenueSources({
+			from: r.revenueLedgerEntries.sourceId,
+			to: r.revenueSources.id,
+			alias: "revenueLedgerEntries_sourceId_revenueSources_id"
+		}),
+		revenueSyncRun: r.one.revenueSyncRuns({
+			from: r.revenueLedgerEntries.syncRunId,
+			to: r.revenueSyncRuns.id
+		}),
+		revenueWebhookEvent: r.one.revenueWebhookEvents({
+			from: r.revenueLedgerEntries.webhookEventId,
+			to: r.revenueWebhookEvents.id,
+			alias: "revenueLedgerEntries_webhookEventId_revenueWebhookEvents_id"
+		}),
+		revenueLedgerRevisions: r.many.revenueLedgerRevisions(),
+		revenueSources: r.many.revenueSources({
+			from: r.revenueLedgerEntries.id.through(r.revenueWebhookEvents.ledgerEntryId),
+			to: r.revenueSources.id.through(r.revenueWebhookEvents.sourceId),
+			alias: "revenueLedgerEntries_id_revenueSources_id_via_revenueWebhookEvents"
+		}),
+		revenueWebhookEvents: r.many.revenueWebhookEvents({
+			alias: "revenueWebhookEvents_ledgerEntryId_revenueLedgerEntries_id"
+		}),
+	},
+	revenueProperties: {
+		revenueLedgerEntries: r.many.revenueLedgerEntries(),
+		site: r.one.sites({
+			from: r.revenueProperties.linkedSiteId,
+			to: r.sites.id
+		}),
+	},
+	revenueSyncRuns: {
+		revenueLedgerEntries: r.many.revenueLedgerEntries(),
+		revenueSource: r.one.revenueSources({
+			from: r.revenueSyncRuns.sourceId,
+			to: r.revenueSources.id
+		}),
+		user: r.one.users({
+			from: r.revenueSyncRuns.triggeredBy,
+			to: r.users.id
+		}),
+	},
+	revenueWebhookEvents: {
+		revenueLedgerEntries: r.many.revenueLedgerEntries({
+			alias: "revenueLedgerEntries_webhookEventId_revenueWebhookEvents_id"
+		}),
+		revenueLedgerEntry: r.one.revenueLedgerEntries({
+			from: r.revenueWebhookEvents.ledgerEntryId,
+			to: r.revenueLedgerEntries.id,
+			alias: "revenueWebhookEvents_ledgerEntryId_revenueLedgerEntries_id"
+		}),
+		revenueSource: r.one.revenueSources({
+			from: r.revenueWebhookEvents.sourceId,
+			to: r.revenueSources.id
+		}),
+	},
+	revenueLedgerRevisions: {
+		revenueLedgerEntry: r.one.revenueLedgerEntries({
+			from: r.revenueLedgerRevisions.entryId,
+			to: r.revenueLedgerEntries.id
 		}),
 	},
 	siteDomains: {

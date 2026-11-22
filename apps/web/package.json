@@ -19,7 +19,9 @@
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
     "log:report": "node scripts/log-report.mjs",
     "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
-    "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
+    "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts",
+    "revenue:sync": "node --env-file-if-exists=../../.env --import tsx scripts/revenue-sync.ts",
+    "revenue:demo": "node --env-file-if-exists=../../.env --import tsx scripts/revenue-demo.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
