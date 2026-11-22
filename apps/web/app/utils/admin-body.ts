@@ -20,6 +20,8 @@ function isEmptyBlock(b: Block): boolean {
       return b.items.length === 0
     case 'embed':
       return b.url === ''
+    case 'link':
+      return b.url === '' && b.label === ''
   }
 }
 
@@ -36,6 +38,8 @@ function cleanBlock(b: Block): Block {
       return { ...b, items: b.items.map((i) => i.trim()).filter(Boolean) }
     case 'embed':
       return { ...b, url: b.url.trim() }
+    case 'link':
+      return { type: 'link', url: b.url.trim(), label: b.label.trim(), ...(b.description?.trim() ? { description: b.description.trim() } : {}) }
   }
 }
 

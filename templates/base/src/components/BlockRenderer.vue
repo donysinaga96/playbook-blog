@@ -92,6 +92,19 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
         </figcaption>
       </figure>
       <p
+        v-else-if="block.type === 'link'"
+        class="prose__link"
+      >
+        <a
+          :href="block.url"
+          v-bind="block.kind === 'web' ? { target: '_blank', rel: 'noopener noreferrer' } : {}"
+        >{{ block.label }}</a>
+        <span
+          v-if="block.description"
+          class="prose__link-description"
+        >{{ block.description }}</span>
+      </p>
+      <p
         v-else-if="block.type === 'embed'"
         class="prose__embed"
       >

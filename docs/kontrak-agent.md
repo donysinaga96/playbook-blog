@@ -81,7 +81,7 @@ Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah a
 | `format` | tidak | `STANDARD` (bawaan), `LISTICLE`, `GALLERY`, `VIDEO` |
 | `cover` | tidak | `key` gambar sampul dari `images` |
 | `images` | tidak | Daftar gambar (lihat di bawah), maks 100 |
-| `body` | ya | `{ "version": 1, "blocks": [...] }`, minimal satu block |
+| `body` | ya | `{ "version": 2, "blocks": [...] }` (versi 1 tetap diterima, tanpa block tautan), minimal satu block |
 | `references` | tidak | Daftar sumber (lihat di bawah), maks 100. Kosong = peringatan di approval |
 | `seo` | tidak | `{ "title": maks 200, "description": maks 320 }` |
 
@@ -89,7 +89,7 @@ Field yang tidak dikenal ditolak, termasuk `status` dan `published_at`. Keduanya
 
 ### Block body
 
-Sama dengan block body v1 artikel, kecuali gambar:
+Sama dengan block body artikel, kecuali gambar. Block tautan baru ada di versi 2:
 
 | Block | Bentuk |
 |---|---|
@@ -99,6 +99,7 @@ Sama dengan block body v1 artikel, kecuali gambar:
 | Kutipan | `{ "type": "quote", "text": "...", "cite": "..." }` |
 | Daftar | `{ "type": "list", "style": "bullet" atau "numbered", "items": ["..."] }` |
 | Video/embed | `{ "type": "embed", "provider": "youtube" atau "vimeo" atau "x", "url": "https://..." }` |
+| Tautan (v2) | `{ "type": "link", "url": "https://..." atau "mailto:...", "label": "...", "description": "..." }`. Untuk mengarahkan pembaca ke layanan resmi, mis. portal pendaftaran. `description` opsional |
 
 Video tidak disimpan. Block `embed` memutar video dari alamat aslinya dan menampilkan tautan ke sumbernya. Provider lain belum didukung, jadi tulis video seperti itu sebagai referensi saja.
 
@@ -148,13 +149,14 @@ Semua sumber yang dipakai AI untuk menulis isi dicantumkan di sini. Semuanya tam
     }
   ],
   "body": {
-    "version": 1,
+    "version": 2,
     "blocks": [
       { "type": "paragraph", "text": "Saksang biasa hadir di pesta adat Batak." },
       { "type": "heading", "level": 2, "text": "Bumbu utama" },
       { "type": "list", "style": "bullet", "items": ["Andaliman", "Bawang batak", "Lengkuas"] },
       { "type": "image", "image": "cover", "caption": "Saksang siap disajikan" },
-      { "type": "embed", "provider": "youtube", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
+      { "type": "embed", "provider": "youtube", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+      { "type": "link", "url": "https://contoh.test/andaliman", "label": "Baca: Mengenal andaliman", "description": "Sumber bumbu khas Batak" }
     ]
   },
   "references": [

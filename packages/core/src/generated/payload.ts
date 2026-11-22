@@ -13,7 +13,7 @@
 // atau storage (kategori ada, slug belum dipakai, file gambar ada, storage_key
 // diawali kode site) dilakukan saat review/approve (5a.2).
 import { z } from 'zod'
-import { BODY_VERSION, embedBlock, headingBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
+import { blocksTooNew, embedBlock, headingBlock, linkBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
 import { splitStorageKey } from '../media/storage'
 import { editorErrorMap } from '../editor/errors'
 import { SLUG_MAX, SLUG_PATTERN, slugify } from '../editor/slug'
@@ -64,6 +64,7 @@ export const generatedBlockSchema = z.discriminatedUnion('type', [
   quoteBlock,
   listBlock,
   embedBlock,
+  linkBlock,
 ])
 
 export const referenceSchema = z.strictObject({
@@ -92,7 +93,8 @@ export const generatedPayloadSchema = z
     cover: imageKey.optional(),
     images: z.array(generatedImageSchema).max(100).default([]),
     body: z.strictObject({
-      version: z.literal(BODY_VERSION),
+      // v1 atau v2 (v2 menambah block link), sama dengan body artikel.
+      version: z.union([z.literal(1), z.literal(2)]),
       blocks: z.array(generatedBlockSchema).min(1).max(2_000),
     }),
     references: z.array(referenceSchema).max(100).default([]),
@@ -113,6 +115,9 @@ export const generatedPayloadSchema = z
       storageKeys.add(img.storageKey)
     })
     if (p.cover && !keys.has(p.cover)) ctx.addIssue({ code: 'custom', path: ['cover'], message: `gambar "${p.cover}" tidak ada di images` })
+    for (const i of blocksTooNew(p.body.version, p.body.blocks)) {
+      ctx.addIssue({ code: 'custom', path: ['body', 'blocks', i, 'type'], message: 'block link butuh body versi 2' })
+    }
     p.body.blocks.forEach((block, i) => {
       if (block.type === 'image' && !keys.has(block.image)) {
         ctx.addIssue({ code: 'custom', path: ['body', 'blocks', i, 'image'], message: `gambar "${block.image}" tidak ada di images` })

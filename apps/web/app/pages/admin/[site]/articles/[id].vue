@@ -126,7 +126,7 @@ function payload() {
     title: form.title,
     slug: form.slug.trim() || undefined,
     excerpt: form.excerpt.trim() || null,
-    body: { version: 1, blocks: cleanBlocks(form.blocks) },
+    body: { version: 2 /* BODY_VERSION */, blocks: cleanBlocks(form.blocks) },
     categoryId: form.categoryId,
     authorId: form.authorId || null,
     featuredMediaId: form.featuredMediaId,

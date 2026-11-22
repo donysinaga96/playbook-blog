@@ -28,7 +28,7 @@ import {
   sql,
   tags,
 } from '@framework/db'
-import type { Block } from '../content/blocks'
+import type { Block, Body } from '../content/blocks'
 import { embedSrc } from '../content/embed'
 import type { ArticleRecord, EditorRepository, Tx } from '../editor/editor-repository'
 import type { ArticleDetail } from '../repositories/content-repository'
@@ -306,8 +306,8 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     return { status: 'PUBLISHED', publishedAt: at.toISOString() }
   }
 
-  /** Block payload -> block body v1: gambar menunjuk media yang baru dicatat atau dipakai ulang. */
-  function toBody(payload: GeneratedPayload, mediaIds: Map<string, string>): { version: 1; blocks: Block[] } {
+  /** Block payload -> block body (versi sama dengan payload): gambar menunjuk media yang baru dicatat atau dipakai ulang. */
+  function toBody(payload: GeneratedPayload, mediaIds: Map<string, string>): Body {
     return {
       version: payload.body.version,
       blocks: payload.body.blocks.map((block): Block => {

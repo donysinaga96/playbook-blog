@@ -3,9 +3,18 @@ import { BLOCK_TYPES, bodySchema, emptyBody, parseBody, parseBodyLenient } from 
 
 const mediaId = '01930000-0000-7000-8000-000000000202'
 
-describe('block body v1', () => {
-  it('mendukung 6 tipe block', () => {
-    expect([...BLOCK_TYPES].sort()).toEqual(['embed', 'heading', 'image', 'list', 'paragraph', 'quote'])
+describe('block body v1 dan v2', () => {
+  it('v2 menerima block link (web dan mailto); body v1 tanpa link tetap sah', () => {
+    const v2 = parseBody({ version: 2, blocks: [
+      { type: 'link', url: 'https://sscasn.bkn.go.id', label: ' Portal SSCASN ', description: 'Pendaftaran resmi' },
+      { type: 'link', url: 'mailto:redaksi@contoh.id', label: 'Email redaksi' },
+    ] })
+    expect(v2.blocks[0]).toEqual({ type: 'link', url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN', description: 'Pendaftaran resmi' })
+    expect(parseBody({ version: 1, blocks: [{ type: 'paragraph', text: 'lama' }] }).version).toBe(1)
+  })
+
+  it('mendukung 7 tipe block (v2 menambah link)', () => {
+    expect([...BLOCK_TYPES].sort()).toEqual(['embed', 'heading', 'image', 'link', 'list', 'paragraph', 'quote'])
   })
 
   it('menerima body kosong yang sama dengan default database', () => {
@@ -30,7 +39,12 @@ describe('block body v1', () => {
 
   it.each([
     ['array tanpa pembungkus versi (format lama)', [{ type: 'paragraph', text: 'x' }]],
-    ['versi tidak dikenal', { version: 2, blocks: [] }],
+    ['versi tidak dikenal', { version: 3, blocks: [] }],
+    ['block link di body v1', { version: 1, blocks: [{ type: 'link', url: 'https://contoh.test', label: 'x' }] }],
+    ['link javascript:', { version: 2, blocks: [{ type: 'link', url: 'javascript:alert(1)', label: 'x' }] }],
+    ['link huruf besar', { version: 2, blocks: [{ type: 'link', url: 'HTTPS://contoh.test', label: 'x' }] }],
+    ['link mailto tanpa domain', { version: 2, blocks: [{ type: 'link', url: 'mailto:redaksi', label: 'x' }] }],
+    ['link tanpa label', { version: 2, blocks: [{ type: 'link', url: 'https://contoh.test', label: ' ' }] }],
     ['tanpa versi', { blocks: [] }],
     ['key tambahan di body', { version: 1, blocks: [], extra: true }],
     ['tipe block tidak dikenal', { version: 1, blocks: [{ type: 'html', html: '<b>x</b>' }] }],

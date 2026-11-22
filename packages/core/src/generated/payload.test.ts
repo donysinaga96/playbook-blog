@@ -70,6 +70,7 @@ describe('parseGeneratedPayload', () => {
     ['tag tanpa huruf/angka', ['tags', 2], '!!!', 'tags.2'],
     ['key tak dikenal (status)', ['status'], 'PUBLISHED', ''],
     ['HTML mentah di paragraph', ['body', 'blocks', 0, 'html'], '<b>x</b>', 'body.blocks.0'],
+    ['block link di body v1', ['body', 'blocks', 0], { type: 'link', url: 'https://contoh.test', label: 'x' }, 'body.blocks.0.type'],
   ])('menolak: %s', (_name, path, value, issuePath) => {
     const payload = valid()
     set(payload, path, value)
@@ -77,6 +78,12 @@ describe('parseGeneratedPayload', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.issues.map((i) => i.path)).toContain(issuePath)
+  })
+
+  it('body v2 boleh memuat block link', () => {
+    const p = valid()
+    const result = parseGeneratedPayload({ ...p, body: { version: 2, blocks: [...p.body.blocks, { type: 'link', url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN' }] } })
+    expect(result.ok ? [] : result.issues).toEqual([])
   })
 
   it('bukan object = satu masalah, tidak melempar', () => {

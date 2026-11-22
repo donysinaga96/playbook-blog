@@ -85,6 +85,17 @@ describe('template base: view', () => {
     expect(none).not.toContain('Sumber dan referensi')
   })
 
+  it('block link: web dibuka di tab baru, mailto tidak; keterangan tampil', async () => {
+    const vm = { ...views.article, blocks: [
+      { type: 'link' as const, url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN', description: 'Pendaftaran resmi', kind: 'web' as const },
+      { type: 'link' as const, url: 'mailto:redaksi@contoh.id', label: 'Email redaksi', description: null, kind: 'email' as const },
+    ] }
+    const html = await render(await load(base.views.article), { vm })
+    expect(html).toMatch(/<a href="https:\/\/sscasn\.bkn\.go\.id" target="_blank" rel="noopener noreferrer">Portal SSCASN<\/a>/)
+    expect(html).toMatch(/<a href="mailto:redaksi@contoh\.id">Email redaksi<\/a>/)
+    expect(html).toContain('Pendaftaran resmi')
+  })
+
   it('tipe block tidak dikenal tidak merender apa-apa dan tidak crash', async () => {
     const BlockRenderer = (await import('./components/BlockRenderer.vue')).default
     const html = await render(BlockRenderer, { blocks: [{ type: 'carousel', items: [] }, { type: 'paragraph', text: 'Tetap ada' }] })

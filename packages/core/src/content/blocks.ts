@@ -1,5 +1,5 @@
-// Block body v1: isi artikel dan halaman disimpan sebagai
-//   { "version": 1, "blocks": [ ... ] }
+// Block body: isi artikel dan halaman disimpan sebagai
+//   { "version": 2, "blocks": [ ... ] }
 // di kolom JSONB articles.body / pages.body. Database hanya menjaga bentuk
 // luarnya (CHECK articles_body_shape); isi tiap block divalidasi di sini.
 //
@@ -10,9 +10,16 @@
 //    tulis migrasi data; jangan mengubah bentuk block v1 diam-diam.
 //  - Tipe block yang tidak dikenal TIDAK boleh disimpan (schema ketat),
 //    tetapi saat dirender dilewati dan dicatat (parseBodyLenient).
+//
+// Riwayat versi:
+//  - v1: paragraph, heading, image, quote, list, embed.
+//  - v2 (M5, 22 Nov 2026): + link (tautan berlabel, juga mailto:). Bentuk
+//    block v1 tidak berubah, jadi body v1 tetap sah apa adanya (tanpa
+//    migrasi data); block link hanya boleh di body versi 2.
 import { z } from 'zod'
 
-export const BODY_VERSION = 1
+export const BODY_VERSION = 2
+export const BODY_VERSIONS = [1, 2] as const
 
 const text = z.string().trim().min(1).max(20_000)
 const shortText = z.string().trim().min(1).max(1_000)
@@ -57,6 +64,21 @@ export const embedBlock = z.strictObject({
   url: httpsUrl,
 })
 
+/** Tautan: http(s) atau mailto, huruf kecil, tanpa spasi (sama dengan aturan URL lain). */
+export const linkUrl = z
+  .string()
+  .trim()
+  .max(2_048)
+  .refine((v) => /^(https?:\/\/[^\s/]+\S*|mailto:[^\s@]+@[^\s@]+\.[^\s@]+)$/.test(v), 'tautan harus diawali http://, https://, atau mailto: (huruf kecil) tanpa spasi')
+
+// v2: tautan berlabel, mis. ke situs resmi atau email redaksi.
+export const linkBlock = z.strictObject({
+  type: z.literal('link'),
+  url: linkUrl,
+  label: shortText.max(200),
+  description: shortText.max(500).optional(),
+})
+
 export const blockSchema = z.discriminatedUnion('type', [
   paragraphBlock,
   headingBlock,
@@ -64,12 +86,27 @@ export const blockSchema = z.discriminatedUnion('type', [
   quoteBlock,
   listBlock,
   embedBlock,
+  linkBlock,
 ])
 
-export const bodySchema = z.strictObject({
-  version: z.literal(BODY_VERSION),
-  blocks: z.array(blockSchema).max(2_000),
-})
+/** Tipe block yang baru ada di versi tertentu; versi lebih lama menolaknya. */
+const SINCE_VERSION: Partial<Record<string, number>> = { link: 2 }
+
+/** Block yang tipenya lebih baru dari versi body (mis. link di body v1). */
+export function blocksTooNew(version: number, blocks: readonly { type: string }[]): number[] {
+  return blocks.flatMap((b, i) => ((SINCE_VERSION[b.type] ?? 1) > version ? [i] : []))
+}
+
+export const bodySchema = z
+  .strictObject({
+    version: z.union([z.literal(1), z.literal(2)]),
+    blocks: z.array(blockSchema).max(2_000),
+  })
+  .superRefine((body, ctx) => {
+    for (const i of blocksTooNew(body.version, body.blocks)) {
+      ctx.addIssue({ code: 'custom', path: ['blocks', i, 'type'], message: `tipe ${body.blocks[i]?.type} butuh body versi ${BODY_VERSION}` })
+    }
+  })
 
 export type Block = z.infer<typeof blockSchema>
 export type BlockType = Block['type']
@@ -77,8 +114,8 @@ export type Body = z.infer<typeof bodySchema>
 
 export const BLOCK_TYPES = blockSchema.options.map((o) => o.shape.type.value) satisfies BlockType[]
 
-/** Body kosong yang sama dengan default kolom di database. */
-export const emptyBody = (): Body => ({ version: BODY_VERSION, blocks: [] })
+/** Body kosong yang sama dengan default kolom di database (v1 tetap sah). */
+export const emptyBody = (): Body => ({ version: 1, blocks: [] })
 
 /** Validasi ketat untuk menyimpan: melempar ZodError bila ada yang salah. */
 export function parseBody(raw: unknown): Body {
@@ -118,5 +155,6 @@ export function parseBodyLenient(raw: unknown): LenientBody {
       reason: known ? 'isi block tidak valid' : 'tipe block tidak dikenal',
     })
   })
-  return { body: { version: BODY_VERSION, blocks }, skipped }
+  const version = outer.data.version === 1 ? 1 : BODY_VERSION
+  return { body: { version, blocks }, skipped }
 }

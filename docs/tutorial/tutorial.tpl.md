@@ -372,11 +372,15 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
    - Ada dua cara membaca body. `parseBody` ketat dan dipakai saat menyimpan. `parseBodyLenient` dipakai saat render: block yang rusak atau tidak dikenal dilewati dan dilaporkan, sehingga halaman tidak crash.
    - Pesan khusus untuk level heading ("level heading harus 2, 3, atau 4") ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 @@include packages/core/src/content/blocks.ts ts@@
 
 @@include packages/core/src/content/blocks.test.ts ts@@
 
 3. Tulis `extractBodyText()` untuk mengisi kolom `articles.body_text`, yang dipakai indeks pencarian. Caption gambar, sumber kutipan, dan embed tidak ikut. Blok `default` dengan tipe `never` membuat typecheck gagal bila tipe block baru ditambah tanpa ditangani di sini:
+
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
 
 @@include packages/core/src/content/extract-body-text.ts ts@@
 
@@ -813,6 +817,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
    (`ImageView.sourceUrl`, `ReferenceView`, dan `ArticleView.references` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 @@include packages/template-kit/src/view-models.ts ts@@
 
 3. Tulis util token → CSS variable di `tokens.ts`. Hasilnya disisipkan ke `<style>` di `<head>`, jadi nilainya dijaga ketat walau sudah divalidasi skema:
@@ -899,6 +905,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 @@include templates/base/src/components/BreadcrumbNav.vue vue@@
 
    (`ImageCredit` dan tautan "Tonton di sumber asli" ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
 
 @@include templates/base/src/components/BlockRenderer.vue vue@@
 
@@ -1107,6 +1115,8 @@ SMOKE_HOSTS=tekno.localhost,kuliner.localhost pnpm --filter @framework/web smoke
    - Block yang dilewati dan block gambar yang medianya tidak ada dikumpulkan di `issues` untuk log, tidak membuat halaman gagal.
 
    (`references` dan bahan JSON-LD artikel ditambahkan di bab "Menampilkan Sumber dan Referensi".)
+
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
 
 @@include packages/core/src/views/build-page.ts ts@@
 
@@ -1737,6 +1747,8 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 
 7. Bersihkan isi editor sebelum dikirim. Block kosong dibuang, agar draf berisi judul saja bisa disimpan meski form baru dimulai dengan satu paragraf kosong. SEO tersimpan digabung dengan field yang diedit; tanpa itu, form yang hanya punya sebagian field (halaman, kategori) menghapus canonical, gambar OG, dan robots saat disimpan:
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 @@include apps/web/app/utils/admin-body.ts ts@@
 
 8. Tulis CSS admin di bawah `.adm`, agar tidak pernah bertabrakan dengan CSS template (`.tpl`) di aplikasi yang sama. Perhatikan dua hal: selector judul editor diperkuat (`.adm input[type='text'].adm-editor__title`) karena gaya umum `.adm input[type='text']` lebih spesifik, dan textarea memakai `field-sizing: content` agar tingginya mengikuti isi:
@@ -1754,6 +1766,8 @@ ADMIN_PASSWORD=<password admin> pnpm --filter @framework/web gate:admin
 10. Tulis komponen. Versi pertama pemilih gambar (`MediaSelect`, sebuah `<select>`) diganti `MediaPicker` dengan pratinjau dan upload di bab "Mengunggah Media". Dua pelajaran dari versi pertama tetap berlaku: `<select>` yang opsinya dimuat belakangan harus memakai `v-model` (dengan `:value`, opsi yang datang kemudian tidak ikut terpilih), dan prop boolean opsional butuh `withDefaults` (prop boolean yang tidak dikirim dianggap `false` oleh Vue):
 
 @@include apps/web/app/components/admin/StatusBadge.vue vue@@
+
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
 
 @@include apps/web/app/components/admin/BlockEditor.vue vue@@
 
@@ -1955,6 +1969,8 @@ Sampai bab sebelumnya, konten masuk lewat admin satu per satu. Tujuan produknya 
 @@include docs/adr/010-alur-konten-ai.md markdown@@
 
 2. Tulis skema payload hasil AI di `packages/core`. Bedanya dengan input editor: agent tidak tahu ID internal, jadi kategori, penulis, dan tag dirujuk lewat slug atau nama, dan gambar lewat `key` lokal yang menunjuk `storageKey` di object storage. Block gambar di payload memakai `image` (key), bukan `mediaId`; block lain sama dengan block body v1. Status dan tanggal terbit sengaja tidak ada di payload, dan karena skemanya ketat, field `status` dari agent ditolak. Tag dianggap dobel bila slug-nya sama, karena tag unik per slug di database:
+
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
 
 @@include packages/core/src/generated/payload.ts ts@@
 
@@ -2300,3 +2316,18 @@ DATABASE_URL=postgres://blog_app:<password>@localhost:5432/blog_restore_uji \
    Coba juga dua kasus yang harus gagal: restore ke database yang sudah ada, dan restore dari file `.dump` yang diubah satu byte (checksum `FAILED`).
 
 5. Buktikan di CI: bagian 8 `run_all.sh` mem-backup database test, me-restore-nya ke database baru, memeriksa jumlah baris, lalu memastikan restore menolak database yang sudah ada dan backup yang checksum-nya berbeda. Total pemeriksaan menjadi 84.
+
+# Tautan di Isi Halaman dan Artikel
+
+Saat menyiapkan site pertama, halaman "Latihan Ujian CPNS" perlu mengarahkan pembaca ke portal resmi, tetapi block body hanya punya teks polos: alamat situs tampil sebagai teks yang tidak bisa diklik. Bab ini menambah block tautan.
+
+1. Ikuti aturan versi body. Block baru berarti versi baru, jadi body naik ke versi 2 dengan satu block tambahan: `link` (URL, label, keterangan opsional). Bentuk block versi 1 tidak berubah, sehingga body versi 1 tetap sah apa adanya dan data lama tidak perlu dimigrasi. Yang ditolak hanya block `link` di body yang mengaku versi 1 (`blocksTooNew`). URL boleh `http(s)` atau `mailto:` (untuk email redaksi), huruf kecil tanpa spasi; `javascript:` dan sejenisnya ditolak skema, karena URL ini menjadi `href`.
+
+2. Teruskan ke semua lapisan:
+   - `extractBodyText`: label dan keterangan tautan ikut ke pencarian, URL tidak. Pemeriksaan `never` di `switch` membuat typecheck gagal sampai tipe baru ditangani.
+   - View model: `BlockView` mendapat varian `link` dengan `kind` (`web` atau `email`), dihitung di pembangun halaman.
+   - Template base: tautan web dibuka di tab baru (`noopener noreferrer`), tautan email tidak; tampil sebagai kotak dengan garis aksen di kiri, jadi semua template mendapatkannya tanpa override.
+   - Editor admin: tombol "Tautan" di editor block (teks, alamat, keterangan), pembersih isi membuang keterangan kosong, dan form artikel serta halaman mengirim body versi 2. Konstanta `BODY_VERSION` tidak di-import ke kode browser karena index core ikut memuat kode database; nilainya ditulis langsung dengan komentar.
+   - Payload AI agent: body versi 1 atau 2, dengan aturan yang sama. Kontrak agent dan contoh payload-nya (yang diuji otomatis) diperbarui ke versi 2.
+
+3. Uji: skema (link di v1 ditolak, `javascript:`, huruf besar, mailto tanpa domain, label kosong), ekstraksi teks, pembersih editor, payload agent, dan render template (atribut tab baru hanya untuk tautan web).

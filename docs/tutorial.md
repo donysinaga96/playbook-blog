@@ -3081,11 +3081,13 @@ describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
    - Ada dua cara membaca body. `parseBody` ketat dan dipakai saat menyimpan. `parseBodyLenient` dipakai saat render: block yang rusak atau tidak dikenal dilewati dan dilaporkan, sehingga halaman tidak crash.
    - Pesan khusus untuk level heading ("level heading harus 2, 3, atau 4") ditambahkan di bab "Memeriksa dan Menyetujui Hasil AI".
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `packages/core/src/content/blocks.ts`
 
 ```ts
-// Block body v1: isi artikel dan halaman disimpan sebagai
-//   { "version": 1, "blocks": [ ... ] }
+// Block body: isi artikel dan halaman disimpan sebagai
+//   { "version": 2, "blocks": [ ... ] }
 // di kolom JSONB articles.body / pages.body. Database hanya menjaga bentuk
 // luarnya (CHECK articles_body_shape); isi tiap block divalidasi di sini.
 //
@@ -3096,9 +3098,16 @@ describe.skipIf(!url)('koneksi ke database dev (blog_app)', () => {
 //    tulis migrasi data; jangan mengubah bentuk block v1 diam-diam.
 //  - Tipe block yang tidak dikenal TIDAK boleh disimpan (schema ketat),
 //    tetapi saat dirender dilewati dan dicatat (parseBodyLenient).
+//
+// Riwayat versi:
+//  - v1: paragraph, heading, image, quote, list, embed.
+//  - v2 (M5, 22 Nov 2026): + link (tautan berlabel, juga mailto:). Bentuk
+//    block v1 tidak berubah, jadi body v1 tetap sah apa adanya (tanpa
+//    migrasi data); block link hanya boleh di body versi 2.
 import { z } from 'zod'
 
-export const BODY_VERSION = 1
+export const BODY_VERSION = 2
+export const BODY_VERSIONS = [1, 2] as const
 
 const text = z.string().trim().min(1).max(20_000)
 const shortText = z.string().trim().min(1).max(1_000)
@@ -3143,6 +3152,21 @@ export const embedBlock = z.strictObject({
   url: httpsUrl,
 })
 
+/** Tautan: http(s) atau mailto, huruf kecil, tanpa spasi (sama dengan aturan URL lain). */
+export const linkUrl = z
+  .string()
+  .trim()
+  .max(2_048)
+  .refine((v) => /^(https?:\/\/[^\s/]+\S*|mailto:[^\s@]+@[^\s@]+\.[^\s@]+)$/.test(v), 'tautan harus diawali http://, https://, atau mailto: (huruf kecil) tanpa spasi')
+
+// v2: tautan berlabel, mis. ke situs resmi atau email redaksi.
+export const linkBlock = z.strictObject({
+  type: z.literal('link'),
+  url: linkUrl,
+  label: shortText.max(200),
+  description: shortText.max(500).optional(),
+})
+
 export const blockSchema = z.discriminatedUnion('type', [
   paragraphBlock,
   headingBlock,
@@ -3150,12 +3174,27 @@ export const blockSchema = z.discriminatedUnion('type', [
   quoteBlock,
   listBlock,
   embedBlock,
+  linkBlock,
 ])
 
-export const bodySchema = z.strictObject({
-  version: z.literal(BODY_VERSION),
-  blocks: z.array(blockSchema).max(2_000),
-})
+/** Tipe block yang baru ada di versi tertentu; versi lebih lama menolaknya. */
+const SINCE_VERSION: Partial<Record<string, number>> = { link: 2 }
+
+/** Block yang tipenya lebih baru dari versi body (mis. link di body v1). */
+export function blocksTooNew(version: number, blocks: readonly { type: string }[]): number[] {
+  return blocks.flatMap((b, i) => ((SINCE_VERSION[b.type] ?? 1) > version ? [i] : []))
+}
+
+export const bodySchema = z
+  .strictObject({
+    version: z.union([z.literal(1), z.literal(2)]),
+    blocks: z.array(blockSchema).max(2_000),
+  })
+  .superRefine((body, ctx) => {
+    for (const i of blocksTooNew(body.version, body.blocks)) {
+      ctx.addIssue({ code: 'custom', path: ['blocks', i, 'type'], message: `tipe ${body.blocks[i]?.type} butuh body versi ${BODY_VERSION}` })
+    }
+  })
 
 export type Block = z.infer<typeof blockSchema>
 export type BlockType = Block['type']
@@ -3163,8 +3202,8 @@ export type Body = z.infer<typeof bodySchema>
 
 export const BLOCK_TYPES = blockSchema.options.map((o) => o.shape.type.value) satisfies BlockType[]
 
-/** Body kosong yang sama dengan default kolom di database. */
-export const emptyBody = (): Body => ({ version: BODY_VERSION, blocks: [] })
+/** Body kosong yang sama dengan default kolom di database (v1 tetap sah). */
+export const emptyBody = (): Body => ({ version: 1, blocks: [] })
 
 /** Validasi ketat untuk menyimpan: melempar ZodError bila ada yang salah. */
 export function parseBody(raw: unknown): Body {
@@ -3204,7 +3243,8 @@ export function parseBodyLenient(raw: unknown): LenientBody {
       reason: known ? 'isi block tidak valid' : 'tipe block tidak dikenal',
     })
   })
-  return { body: { version: BODY_VERSION, blocks }, skipped }
+  const version = outer.data.version === 1 ? 1 : BODY_VERSION
+  return { body: { version, blocks }, skipped }
 }
 ```
 
@@ -3216,9 +3256,18 @@ import { BLOCK_TYPES, bodySchema, emptyBody, parseBody, parseBodyLenient } from 
 
 const mediaId = '01930000-0000-7000-8000-000000000202'
 
-describe('block body v1', () => {
-  it('mendukung 6 tipe block', () => {
-    expect([...BLOCK_TYPES].sort()).toEqual(['embed', 'heading', 'image', 'list', 'paragraph', 'quote'])
+describe('block body v1 dan v2', () => {
+  it('v2 menerima block link (web dan mailto); body v1 tanpa link tetap sah', () => {
+    const v2 = parseBody({ version: 2, blocks: [
+      { type: 'link', url: 'https://sscasn.bkn.go.id', label: ' Portal SSCASN ', description: 'Pendaftaran resmi' },
+      { type: 'link', url: 'mailto:redaksi@contoh.id', label: 'Email redaksi' },
+    ] })
+    expect(v2.blocks[0]).toEqual({ type: 'link', url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN', description: 'Pendaftaran resmi' })
+    expect(parseBody({ version: 1, blocks: [{ type: 'paragraph', text: 'lama' }] }).version).toBe(1)
+  })
+
+  it('mendukung 7 tipe block (v2 menambah link)', () => {
+    expect([...BLOCK_TYPES].sort()).toEqual(['embed', 'heading', 'image', 'link', 'list', 'paragraph', 'quote'])
   })
 
   it('menerima body kosong yang sama dengan default database', () => {
@@ -3243,7 +3292,12 @@ describe('block body v1', () => {
 
   it.each([
     ['array tanpa pembungkus versi (format lama)', [{ type: 'paragraph', text: 'x' }]],
-    ['versi tidak dikenal', { version: 2, blocks: [] }],
+    ['versi tidak dikenal', { version: 3, blocks: [] }],
+    ['block link di body v1', { version: 1, blocks: [{ type: 'link', url: 'https://contoh.test', label: 'x' }] }],
+    ['link javascript:', { version: 2, blocks: [{ type: 'link', url: 'javascript:alert(1)', label: 'x' }] }],
+    ['link huruf besar', { version: 2, blocks: [{ type: 'link', url: 'HTTPS://contoh.test', label: 'x' }] }],
+    ['link mailto tanpa domain', { version: 2, blocks: [{ type: 'link', url: 'mailto:redaksi', label: 'x' }] }],
+    ['link tanpa label', { version: 2, blocks: [{ type: 'link', url: 'https://contoh.test', label: ' ' }] }],
     ['tanpa versi', { blocks: [] }],
     ['key tambahan di body', { version: 1, blocks: [], extra: true }],
     ['tipe block tidak dikenal', { version: 1, blocks: [{ type: 'html', html: '<b>x</b>' }] }],
@@ -3306,6 +3360,8 @@ describe('parseBodyLenient (untuk render)', () => {
 
 3. Tulis `extractBodyText()` untuk mengisi kolom `articles.body_text`, yang dipakai indeks pencarian. Caption gambar, sumber kutipan, dan embed tidak ikut. Blok `default` dengan tipe `never` membuat typecheck gagal bila tipe block baru ditambah tanpa ditangani di sini:
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `packages/core/src/content/extract-body-text.ts`
 
 ```ts
@@ -3316,7 +3372,8 @@ import type { Block, Body } from './blocks'
  * search_vector (konfigurasi 'simple', bobot C). Aplikasi wajib mengisinya
  * setiap kali body berubah; database tidak mengekstraknya sendiri.
  *
- * Yang masuk: paragraph, heading, isi list, dan kutipan. Caption gambar,
+ * Yang masuk: paragraph, heading, isi list, kutipan, dan label serta
+ * keterangan tautan (v2). Caption gambar,
  * sumber kutipan, dan embed tidak ikut, agar pencarian tidak dipenuhi
  * keterangan yang bukan isi tulisan.
  * Antar-block digabung satu spasi dan semua whitespace dipadatkan, sama
@@ -3338,6 +3395,8 @@ function blockText(block: Block): string[] {
       return [block.text]
     case 'list':
       return block.items
+    case 'link':
+      return block.description ? [block.label, block.description] : [block.label]
     case 'image':
     case 'embed':
       return []
@@ -3363,6 +3422,13 @@ const mediaId = '01930000-0000-7000-8000-000000000202'
 describe('extractBodyText', () => {
   it('body kosong menghasilkan string kosong (default kolom body_text)', () => {
     expect(extractBodyText(emptyBody())).toBe('')
+  })
+
+  it('tautan: label dan keterangan ikut, URL tidak', () => {
+    expect(extractBodyText({ blocks: [
+      { type: 'link', url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN', description: 'Pendaftaran resmi' },
+      { type: 'link', url: 'mailto:a@b.id', label: 'Email' },
+    ] })).toBe('Portal SSCASN Pendaftaran resmi Email')
   })
 
   it('menggabung paragraph, heading, list, dan quote dengan satu spasi', () => {
@@ -6534,6 +6600,8 @@ curl -i -H 'Host: tekno.localhost' http://127.0.0.1:3998/            # 404
 
    (`ImageView.sourceUrl`, `ReferenceView`, dan `ArticleView.references` ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `packages/template-kit/src/view-models.ts`
 
 ```ts
@@ -6649,6 +6717,15 @@ export type BlockView =
       url: string
       /** URL iframe yang aman (dibangun core); null = tampilkan tautan saja. */
       embedSrc: string | null
+    }
+  | {
+      type: 'link'
+      /** http(s) atau mailto, sudah divalidasi core. */
+      url: string
+      label: string
+      description: string | null
+      /** email = mailto; web = situs lain (dibuka di tab baru). */
+      kind: 'web' | 'email'
     }
 
 export type BlockViewType = BlockView['type']
@@ -8354,6 +8431,8 @@ defineProps<{ items: LinkView[] }>()
 
    (`ImageCredit` dan tautan "Tonton di sumber asli" ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `templates/base/src/components/BlockRenderer.vue`
 
 ```vue
@@ -8450,6 +8529,19 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
           >Tonton di sumber asli ({{ PROVIDER_LABEL[block.provider] }})</a>
         </figcaption>
       </figure>
+      <p
+        v-else-if="block.type === 'link'"
+        class="prose__link"
+      >
+        <a
+          :href="block.url"
+          v-bind="block.kind === 'web' ? { target: '_blank', rel: 'noopener noreferrer' } : {}"
+        >{{ block.label }}</a>
+        <span
+          v-if="block.description"
+          class="prose__link-description"
+        >{{ block.description }}</span>
+      </p>
       <p
         v-else-if="block.type === 'embed'"
         class="prose__embed"
@@ -9336,6 +9428,25 @@ defineProps<{ vm: NotFoundView }>()
   font-size: 0.875rem;
 }
 
+.tpl .prose__link {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--c-border);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-card);
+}
+
+.tpl .prose__link a {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tpl .prose__link-description {
+  color: var(--c-muted);
+  font-size: 0.9375rem;
+}
+
 .tpl .article__references {
   margin-block: 2rem 1.5rem;
   padding-top: 1rem;
@@ -10037,6 +10148,17 @@ describe('template base: view', () => {
 
     const none = await render(await load(base.views.article), { vm: { ...views.article, references: [] } })
     expect(none).not.toContain('Sumber dan referensi')
+  })
+
+  it('block link: web dibuka di tab baru, mailto tidak; keterangan tampil', async () => {
+    const vm = { ...views.article, blocks: [
+      { type: 'link' as const, url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN', description: 'Pendaftaran resmi', kind: 'web' as const },
+      { type: 'link' as const, url: 'mailto:redaksi@contoh.id', label: 'Email redaksi', description: null, kind: 'email' as const },
+    ] }
+    const html = await render(await load(base.views.article), { vm })
+    expect(html).toMatch(/<a href="https:\/\/sscasn\.bkn\.go\.id" target="_blank" rel="noopener noreferrer">Portal SSCASN<\/a>/)
+    expect(html).toMatch(/<a href="mailto:redaksi@contoh\.id">Email redaksi<\/a>/)
+    expect(html).toContain('Pendaftaran resmi')
   })
 
   it('tipe block tidak dikenal tidak merender apa-apa dan tidak crash', async () => {
@@ -10871,6 +10993,8 @@ describe('createDateFormatter', () => {
 
    (`references` dan bahan JSON-LD artikel ditambahkan di bab "Menampilkan Sumber dan Referensi".)
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `packages/core/src/views/build-page.ts`
 
 ```ts
@@ -11395,6 +11519,9 @@ export function createPageBuilder(
           return
         case 'embed':
           out.push({ ...block, embedSrc: embedSrc(block.provider, block.url) })
+          return
+        case 'link':
+          out.push({ type: 'link', url: block.url, label: block.label, description: block.description ?? null, kind: block.url.startsWith('mailto:') ? 'email' : 'web' })
           return
         default:
           out.push(block)
@@ -12411,6 +12538,19 @@ const PROVIDER_LABEL: Record<Extract<BlockView, { type: 'embed' }>['provider'], 
           >Tonton di sumber asli ({{ PROVIDER_LABEL[block.provider] }})</a>
         </figcaption>
       </figure>
+      <p
+        v-else-if="block.type === 'link'"
+        class="prose__link"
+      >
+        <a
+          :href="block.url"
+          v-bind="block.kind === 'web' ? { target: '_blank', rel: 'noopener noreferrer' } : {}"
+        >{{ block.label }}</a>
+        <span
+          v-if="block.description"
+          class="prose__link-description"
+        >{{ block.description }}</span>
+      </p>
       <p
         v-else-if="block.type === 'embed'"
         class="prose__embed"
@@ -19269,6 +19409,8 @@ describe('tanggal di zona waktu site', () => {
 
 7. Bersihkan isi editor sebelum dikirim. Block kosong dibuang, agar draf berisi judul saja bisa disimpan meski form baru dimulai dengan satu paragraf kosong. SEO tersimpan digabung dengan field yang diedit; tanpa itu, form yang hanya punya sebagian field (halaman, kategori) menghapus canonical, gambar OG, dan robots saat disimpan:
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `apps/web/app/utils/admin-body.ts`
 
 ```ts
@@ -19294,6 +19436,8 @@ function isEmptyBlock(b: Block): boolean {
       return b.items.length === 0
     case 'embed':
       return b.url === ''
+    case 'link':
+      return b.url === '' && b.label === ''
   }
 }
 
@@ -19310,6 +19454,8 @@ function cleanBlock(b: Block): Block {
       return { ...b, items: b.items.map((i) => i.trim()).filter(Boolean) }
     case 'embed':
       return { ...b, url: b.url.trim() }
+    case 'link':
+      return { type: 'link', url: b.url.trim(), label: b.label.trim(), ...(b.description?.trim() ? { description: b.description.trim() } : {}) }
   }
 }
 
@@ -19942,6 +20088,11 @@ export function cleanSeo(seo: Record<string, string | null | undefined>): Record
   font-weight: 600;
 }
 
+.adm-block__stack {
+  display: grid;
+  gap: 0.5rem;
+}
+
 .adm-block__inline {
   display: grid;
   grid-template-columns: 11rem minmax(0, 1fr);
@@ -20461,6 +20612,8 @@ const shown = computed(() => displayStatus(props.status, props.publishedAt ?? nu
 </template>
 ```
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `apps/web/app/components/admin/BlockEditor.vue`
 
 ```vue
@@ -20483,6 +20636,7 @@ const TYPES: { type: Block['type']; label: string }[] = [
   { type: 'quote', label: 'Kutipan' },
   { type: 'list', label: 'Daftar' },
   { type: 'embed', label: 'Sematan' },
+  { type: 'link', label: 'Tautan' },
 ]
 const labelOf = (type: string) => TYPES.find((t) => t.type === type)?.label ?? type
 
@@ -20494,6 +20648,7 @@ function emptyBlock(type: Block['type']): Block {
     case 'quote': return { type, text: '' }
     case 'list': return { type, style: 'bullet', items: [''] }
     case 'embed': return { type, provider: 'youtube', url: '' }
+    case 'link': return { type, url: '', label: '' }
   }
 }
 
@@ -20689,6 +20844,33 @@ const EMBED_HINT: Record<string, string> = {
             aria-label="Tautan sematan"
             :placeholder="EMBED_HINT[block.provider]"
             @input="update(index, { url: ($event.target as HTMLInputElement).value })"
+          >
+        </div>
+
+        <div
+          v-else-if="block.type === 'link'"
+          class="adm-block__stack"
+        >
+          <input
+            type="text"
+            :value="block.label"
+            aria-label="Teks tautan"
+            placeholder="Teks tautan, mis. Portal SSCASN BKN"
+            @input="update(index, { label: ($event.target as HTMLInputElement).value })"
+          >
+          <input
+            type="text"
+            :value="block.url"
+            aria-label="Alamat tautan"
+            placeholder="https://… atau mailto:nama@contoh.id"
+            @input="update(index, { url: ($event.target as HTMLInputElement).value })"
+          >
+          <input
+            type="text"
+            :value="block.description ?? ''"
+            aria-label="Keterangan tautan"
+            placeholder="Keterangan singkat (opsional)"
+            @input="update(index, { description: ($event.target as HTMLInputElement).value })"
           >
         </div>
 
@@ -21032,7 +21214,7 @@ function payload() {
     title: form.title,
     slug: form.slug.trim() || undefined,
     excerpt: form.excerpt.trim() || null,
-    body: { version: 1, blocks: cleanBlocks(form.blocks) },
+    body: { version: 2 /* BODY_VERSION */, blocks: cleanBlocks(form.blocks) },
     categoryId: form.categoryId,
     authorId: form.authorId || null,
     featuredMediaId: form.featuredMediaId,
@@ -24067,6 +24249,8 @@ hasil AI. Yang harus diputuskan sekarang:
 
 2. Tulis skema payload hasil AI di `packages/core`. Bedanya dengan input editor: agent tidak tahu ID internal, jadi kategori, penulis, dan tag dirujuk lewat slug atau nama, dan gambar lewat `key` lokal yang menunjuk `storageKey` di object storage. Block gambar di payload memakai `image` (key), bukan `mediaId`; block lain sama dengan block body v1. Status dan tanggal terbit sengaja tidak ada di payload, dan karena skemanya ketat, field `status` dari agent ditolak. Tag dianggap dobel bila slug-nya sama, karena tag unik per slug di database:
 
+   (Block `link` dan body versi 2 ditambahkan di bab "Tautan di Isi Halaman dan Artikel".)
+
 `packages/core/src/generated/payload.ts`
 
 ```ts
@@ -24085,7 +24269,7 @@ hasil AI. Yang harus diputuskan sekarang:
 // atau storage (kategori ada, slug belum dipakai, file gambar ada, storage_key
 // diawali kode site) dilakukan saat review/approve (5a.2).
 import { z } from 'zod'
-import { BODY_VERSION, embedBlock, headingBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
+import { blocksTooNew, embedBlock, headingBlock, linkBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
 import { splitStorageKey } from '../media/storage'
 import { editorErrorMap } from '../editor/errors'
 import { SLUG_MAX, SLUG_PATTERN, slugify } from '../editor/slug'
@@ -24136,6 +24320,7 @@ export const generatedBlockSchema = z.discriminatedUnion('type', [
   quoteBlock,
   listBlock,
   embedBlock,
+  linkBlock,
 ])
 
 export const referenceSchema = z.strictObject({
@@ -24164,7 +24349,8 @@ export const generatedPayloadSchema = z
     cover: imageKey.optional(),
     images: z.array(generatedImageSchema).max(100).default([]),
     body: z.strictObject({
-      version: z.literal(BODY_VERSION),
+      // v1 atau v2 (v2 menambah block link), sama dengan body artikel.
+      version: z.union([z.literal(1), z.literal(2)]),
       blocks: z.array(generatedBlockSchema).min(1).max(2_000),
     }),
     references: z.array(referenceSchema).max(100).default([]),
@@ -24185,6 +24371,9 @@ export const generatedPayloadSchema = z
       storageKeys.add(img.storageKey)
     })
     if (p.cover && !keys.has(p.cover)) ctx.addIssue({ code: 'custom', path: ['cover'], message: `gambar "${p.cover}" tidak ada di images` })
+    for (const i of blocksTooNew(p.body.version, p.body.blocks)) {
+      ctx.addIssue({ code: 'custom', path: ['body', 'blocks', i, 'type'], message: 'block link butuh body versi 2' })
+    }
     p.body.blocks.forEach((block, i) => {
       if (block.type === 'image' && !keys.has(block.image)) {
         ctx.addIssue({ code: 'custom', path: ['body', 'blocks', i, 'image'], message: `gambar "${block.image}" tidak ada di images` })
@@ -24322,7 +24511,7 @@ Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah a
 | `format` | tidak | `STANDARD` (bawaan), `LISTICLE`, `GALLERY`, `VIDEO` |
 | `cover` | tidak | `key` gambar sampul dari `images` |
 | `images` | tidak | Daftar gambar (lihat di bawah), maks 100 |
-| `body` | ya | `{ "version": 1, "blocks": [...] }`, minimal satu block |
+| `body` | ya | `{ "version": 2, "blocks": [...] }` (versi 1 tetap diterima, tanpa block tautan), minimal satu block |
 | `references` | tidak | Daftar sumber (lihat di bawah), maks 100. Kosong = peringatan di approval |
 | `seo` | tidak | `{ "title": maks 200, "description": maks 320 }` |
 
@@ -24330,7 +24519,7 @@ Field yang tidak dikenal ditolak, termasuk `status` dan `published_at`. Keduanya
 
 ### Block body
 
-Sama dengan block body v1 artikel, kecuali gambar:
+Sama dengan block body artikel, kecuali gambar. Block tautan baru ada di versi 2:
 
 | Block | Bentuk |
 |---|---|
@@ -24340,6 +24529,7 @@ Sama dengan block body v1 artikel, kecuali gambar:
 | Kutipan | `{ "type": "quote", "text": "...", "cite": "..." }` |
 | Daftar | `{ "type": "list", "style": "bullet" atau "numbered", "items": ["..."] }` |
 | Video/embed | `{ "type": "embed", "provider": "youtube" atau "vimeo" atau "x", "url": "https://..." }` |
+| Tautan (v2) | `{ "type": "link", "url": "https://..." atau "mailto:...", "label": "...", "description": "..." }`. Untuk mengarahkan pembaca ke layanan resmi, mis. portal pendaftaran. `description` opsional |
 
 Video tidak disimpan. Block `embed` memutar video dari alamat aslinya dan menampilkan tautan ke sumbernya. Provider lain belum didukung, jadi tulis video seperti itu sebagai referensi saja.
 
@@ -24389,13 +24579,14 @@ Semua sumber yang dipakai AI untuk menulis isi dicantumkan di sini. Semuanya tam
     }
   ],
   "body": {
-    "version": 1,
+    "version": 2,
     "blocks": [
       { "type": "paragraph", "text": "Saksang biasa hadir di pesta adat Batak." },
       { "type": "heading", "level": 2, "text": "Bumbu utama" },
       { "type": "list", "style": "bullet", "items": ["Andaliman", "Bawang batak", "Lengkuas"] },
       { "type": "image", "image": "cover", "caption": "Saksang siap disajikan" },
-      { "type": "embed", "provider": "youtube", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
+      { "type": "embed", "provider": "youtube", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+      { "type": "link", "url": "https://contoh.test/andaliman", "label": "Baca: Mengenal andaliman", "description": "Sumber bumbu khas Batak" }
     ]
   },
   "references": [
@@ -24504,6 +24695,7 @@ describe('parseGeneratedPayload', () => {
     ['tag tanpa huruf/angka', ['tags', 2], '!!!', 'tags.2'],
     ['key tak dikenal (status)', ['status'], 'PUBLISHED', ''],
     ['HTML mentah di paragraph', ['body', 'blocks', 0, 'html'], '<b>x</b>', 'body.blocks.0'],
+    ['block link di body v1', ['body', 'blocks', 0], { type: 'link', url: 'https://contoh.test', label: 'x' }, 'body.blocks.0.type'],
   ])('menolak: %s', (_name, path, value, issuePath) => {
     const payload = valid()
     set(payload, path, value)
@@ -24511,6 +24703,12 @@ describe('parseGeneratedPayload', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.issues.map((i) => i.path)).toContain(issuePath)
+  })
+
+  it('body v2 boleh memuat block link', () => {
+    const p = valid()
+    const result = parseGeneratedPayload({ ...p, body: { version: 2, blocks: [...p.body.blocks, { type: 'link', url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN' }] } })
+    expect(result.ok ? [] : result.issues).toEqual([])
   })
 
   it('bukan object = satu masalah, tidak melempar', () => {
@@ -24828,7 +25026,7 @@ import {
   sql,
   tags,
 } from '@framework/db'
-import type { Block } from '../content/blocks'
+import type { Block, Body } from '../content/blocks'
 import { embedSrc } from '../content/embed'
 import type { ArticleRecord, EditorRepository, Tx } from '../editor/editor-repository'
 import type { ArticleDetail } from '../repositories/content-repository'
@@ -25106,8 +25304,8 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     return { status: 'PUBLISHED', publishedAt: at.toISOString() }
   }
 
-  /** Block payload -> block body v1: gambar menunjuk media yang baru dicatat atau dipakai ulang. */
-  function toBody(payload: GeneratedPayload, mediaIds: Map<string, string>): { version: 1; blocks: Block[] } {
+  /** Block payload -> block body (versi sama dengan payload): gambar menunjuk media yang baru dicatat atau dipakai ulang. */
+  function toBody(payload: GeneratedPayload, mediaIds: Map<string, string>): Body {
     return {
       version: payload.body.version,
       blocks: payload.body.blocks.map((block): Block => {
@@ -28016,3 +28214,18 @@ DATABASE_URL=postgres://blog_app:<password>@localhost:5432/blog_restore_uji \
    Coba juga dua kasus yang harus gagal: restore ke database yang sudah ada, dan restore dari file `.dump` yang diubah satu byte (checksum `FAILED`).
 
 5. Buktikan di CI: bagian 8 `run_all.sh` mem-backup database test, me-restore-nya ke database baru, memeriksa jumlah baris, lalu memastikan restore menolak database yang sudah ada dan backup yang checksum-nya berbeda. Total pemeriksaan menjadi 84.
+
+# Tautan di Isi Halaman dan Artikel
+
+Saat menyiapkan site pertama, halaman "Latihan Ujian CPNS" perlu mengarahkan pembaca ke portal resmi, tetapi block body hanya punya teks polos: alamat situs tampil sebagai teks yang tidak bisa diklik. Bab ini menambah block tautan.
+
+1. Ikuti aturan versi body. Block baru berarti versi baru, jadi body naik ke versi 2 dengan satu block tambahan: `link` (URL, label, keterangan opsional). Bentuk block versi 1 tidak berubah, sehingga body versi 1 tetap sah apa adanya dan data lama tidak perlu dimigrasi. Yang ditolak hanya block `link` di body yang mengaku versi 1 (`blocksTooNew`). URL boleh `http(s)` atau `mailto:` (untuk email redaksi), huruf kecil tanpa spasi; `javascript:` dan sejenisnya ditolak skema, karena URL ini menjadi `href`.
+
+2. Teruskan ke semua lapisan:
+   - `extractBodyText`: label dan keterangan tautan ikut ke pencarian, URL tidak. Pemeriksaan `never` di `switch` membuat typecheck gagal sampai tipe baru ditangani.
+   - View model: `BlockView` mendapat varian `link` dengan `kind` (`web` atau `email`), dihitung di pembangun halaman.
+   - Template base: tautan web dibuka di tab baru (`noopener noreferrer`), tautan email tidak; tampil sebagai kotak dengan garis aksen di kiri, jadi semua template mendapatkannya tanpa override.
+   - Editor admin: tombol "Tautan" di editor block (teks, alamat, keterangan), pembersih isi membuang keterangan kosong, dan form artikel serta halaman mengirim body versi 2. Konstanta `BODY_VERSION` tidak di-import ke kode browser karena index core ikut memuat kode database; nilainya ditulis langsung dengan komentar.
+   - Payload AI agent: body versi 1 atau 2, dengan aturan yang sama. Kontrak agent dan contoh payload-nya (yang diuji otomatis) diperbarui ke versi 2.
+
+3. Uji: skema (link di v1 ditolak, `javascript:`, huruf besar, mailto tanpa domain, label kosong), ekstraksi teks, pembersih editor, payload agent, dan render template (atribut tab baru hanya untuk tautan web).

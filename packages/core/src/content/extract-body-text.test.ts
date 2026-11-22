@@ -9,6 +9,13 @@ describe('extractBodyText', () => {
     expect(extractBodyText(emptyBody())).toBe('')
   })
 
+  it('tautan: label dan keterangan ikut, URL tidak', () => {
+    expect(extractBodyText({ blocks: [
+      { type: 'link', url: 'https://sscasn.bkn.go.id', label: 'Portal SSCASN', description: 'Pendaftaran resmi' },
+      { type: 'link', url: 'mailto:a@b.id', label: 'Email' },
+    ] })).toBe('Portal SSCASN Pendaftaran resmi Email')
+  })
+
   it('menggabung paragraph, heading, list, dan quote dengan satu spasi', () => {
     const body = parseBody({
       version: 1,

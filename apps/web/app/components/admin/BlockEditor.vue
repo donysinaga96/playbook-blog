@@ -17,6 +17,7 @@ const TYPES: { type: Block['type']; label: string }[] = [
   { type: 'quote', label: 'Kutipan' },
   { type: 'list', label: 'Daftar' },
   { type: 'embed', label: 'Sematan' },
+  { type: 'link', label: 'Tautan' },
 ]
 const labelOf = (type: string) => TYPES.find((t) => t.type === type)?.label ?? type
 
@@ -28,6 +29,7 @@ function emptyBlock(type: Block['type']): Block {
     case 'quote': return { type, text: '' }
     case 'list': return { type, style: 'bullet', items: [''] }
     case 'embed': return { type, provider: 'youtube', url: '' }
+    case 'link': return { type, url: '', label: '' }
   }
 }
 
@@ -223,6 +225,33 @@ const EMBED_HINT: Record<string, string> = {
             aria-label="Tautan sematan"
             :placeholder="EMBED_HINT[block.provider]"
             @input="update(index, { url: ($event.target as HTMLInputElement).value })"
+          >
+        </div>
+
+        <div
+          v-else-if="block.type === 'link'"
+          class="adm-block__stack"
+        >
+          <input
+            type="text"
+            :value="block.label"
+            aria-label="Teks tautan"
+            placeholder="Teks tautan, mis. Portal SSCASN BKN"
+            @input="update(index, { label: ($event.target as HTMLInputElement).value })"
+          >
+          <input
+            type="text"
+            :value="block.url"
+            aria-label="Alamat tautan"
+            placeholder="https://… atau mailto:nama@contoh.id"
+            @input="update(index, { url: ($event.target as HTMLInputElement).value })"
+          >
+          <input
+            type="text"
+            :value="block.description ?? ''"
+            aria-label="Keterangan tautan"
+            placeholder="Keterangan singkat (opsional)"
+            @input="update(index, { description: ($event.target as HTMLInputElement).value })"
           >
         </div>
 

@@ -520,6 +520,9 @@ export function createPageBuilder(
         case 'embed':
           out.push({ ...block, embedSrc: embedSrc(block.provider, block.url) })
           return
+        case 'link':
+          out.push({ type: 'link', url: block.url, label: block.label, description: block.description ?? null, kind: block.url.startsWith('mailto:') ? 'email' : 'web' })
+          return
         default:
           out.push(block)
       }

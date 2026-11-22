@@ -598,6 +598,11 @@
   font-weight: 600;
 }
 
+.adm-block__stack {
+  display: grid;
+  gap: 0.5rem;
+}
+
 .adm-block__inline {
   display: grid;
   grid-template-columns: 11rem minmax(0, 1fr);

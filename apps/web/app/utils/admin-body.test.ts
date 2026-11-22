@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { cleanBlocks, cleanSeo, mergeSeo } from './admin-body'
 
 describe('pembersih isi editor', () => {
+  it('tautan: dipangkas, keterangan kosong dibuang, tautan kosong total dihapus', () => {
+    expect(cleanBlocks([
+      { type: 'link', url: ' https://contoh.test ', label: ' Contoh ', description: ' ' },
+      { type: 'link', url: '', label: '' },
+    ])).toEqual([{ type: 'link', url: 'https://contoh.test', label: 'Contoh' }])
+  })
+
   it('butir daftar kosong dibuang, teks dipangkas, keterangan kosong dihilangkan', () => {
     expect(cleanBlocks([
       { type: 'paragraph', text: '  Halo  ' },

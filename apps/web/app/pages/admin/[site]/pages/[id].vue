@@ -61,7 +61,7 @@ async function save() {
     title: form.title, slug: form.slug.trim() || undefined, viewKey: form.viewKey || 'default', status: form.status,
     // Tanggal tidak diubah = tidak dikirim (detik tersimpan tetap utuh).
     publishedAt: form.publishedLocal === loadedPublished.value ? undefined : form.publishedLocal ? zonedInputToIso(form.publishedLocal, site.value.timezone) : null,
-    body: { version: 1, blocks: cleanBlocks(form.blocks) }, seo: mergeSeo(record.value?.seo ?? {}, form.seo),
+    body: { version: 2 /* BODY_VERSION */, blocks: cleanBlocks(form.blocks) }, seo: mergeSeo(record.value?.seo ?? {}, form.seo),
   }
   try {
     if (isNew.value) {

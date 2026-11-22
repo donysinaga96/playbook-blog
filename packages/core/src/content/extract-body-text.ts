@@ -5,7 +5,8 @@ import type { Block, Body } from './blocks'
  * search_vector (konfigurasi 'simple', bobot C). Aplikasi wajib mengisinya
  * setiap kali body berubah; database tidak mengekstraknya sendiri.
  *
- * Yang masuk: paragraph, heading, isi list, dan kutipan. Caption gambar,
+ * Yang masuk: paragraph, heading, isi list, kutipan, dan label serta
+ * keterangan tautan (v2). Caption gambar,
  * sumber kutipan, dan embed tidak ikut, agar pencarian tidak dipenuhi
  * keterangan yang bukan isi tulisan.
  * Antar-block digabung satu spasi dan semua whitespace dipadatkan, sama
@@ -27,6 +28,8 @@ function blockText(block: Block): string[] {
       return [block.text]
     case 'list':
       return block.items
+    case 'link':
+      return block.description ? [block.label, block.description] : [block.label]
     case 'image':
     case 'embed':
       return []

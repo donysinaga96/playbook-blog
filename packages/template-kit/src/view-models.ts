@@ -111,6 +111,15 @@ export type BlockView =
       /** URL iframe yang aman (dibangun core); null = tampilkan tautan saja. */
       embedSrc: string | null
     }
+  | {
+      type: 'link'
+      /** http(s) atau mailto, sudah divalidasi core. */
+      url: string
+      label: string
+      description: string | null
+      /** email = mailto; web = situs lain (dibuka di tab baru). */
+      kind: 'web' | 'email'
+    }
 
 export type BlockViewType = BlockView['type']
 
