@@ -12,7 +12,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
-| M5a — Alur konten AI dan approval | 0 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5a — Alur konten AI dan approval | 3 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
 **Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
@@ -302,15 +302,15 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 ### Rincian
 
 **5a.0 Kontrak dan keputusan [K1] [K7]**
-- [ ] ADR-010 alur konten AI: tabel hasil AI terpisah, agent sebagai `blog_agent`, approve = pindah ke tabel konten dalam satu transaksi (ADR infrastruktur M5 bergeser ke ADR-011)
-- [ ] Skema payload hasil AI v1 (Zod, berversi) di `packages/core`
-- [ ] `docs/kontrak-agent.md`: kolom `generated_articles`, skema payload, cara merujuk kategori/tag/penulis (slug) dan gambar (`storage_key`), provider embed, referensi, contoh SQL satu hasil lengkap
+- [x] ADR-010 alur konten AI: tabel hasil AI terpisah, agent sebagai `blog_agent`, approve = pindah ke tabel konten dalam satu transaksi (ADR infrastruktur M5 bergeser ke ADR-011) — [docs/adr/010-alur-konten-ai.md](docs/adr/010-alur-konten-ai.md)
+- [x] Skema payload hasil AI v1 (Zod, berversi) di `packages/core` — `src/generated/payload.ts`: gambar lewat `key` → `storageKey`, kategori/penulis lewat slug, tag lewat nama (dobel = slug sama), `status`/tanggal ditolak; `parseGeneratedPayload` mengembalikan daftar masalah (path + pesan) untuk layar approval; 20 test
+- [x] `docs/kontrak-agent.md`: kolom `generated_articles`, skema payload, cara merujuk kategori/tag/penulis (slug) dan gambar (`storage_key`), provider embed, referensi, contoh SQL satu hasil lengkap — contoh payload di dokumen divalidasi test, jadi kontrak tidak bisa basi diam-diam; tambahan kolom `agent_note` (ringkasan tinjauan AI, tampil di approval)
 
 **5a.1 Migration 0002 [K1] [K6] [K7]**
-- [ ] Tabel `generated_articles`: `site_id`, `external_id` (unik per site), `status` (`READY_TO_PUBLISH`, `APPROVED`, `ARCHIVED`), `payload`, `generated_at`, `review_note`, `reviewed_by`, `reviewed_at`, `article_id` (composite FK ke artikel site yang sama)
+- [ ] Tabel `generated_articles`: `site_id`, `external_id` (unik per site), `agent_note`, `status` (`READY_TO_PUBLISH`, `APPROVED`, `ARCHIVED`), `payload`, `generated_at`, `review_note`, `reviewed_by`, `reviewed_at`, `article_id` (composite FK ke artikel site yang sama)
 - [ ] Tabel `article_references`: posisi, judul, URL (CHECK http/https), penerbit, jenis; composite FK; unik (artikel, posisi); `media.source_url`
 - [ ] Role `blog_agent` (`agent_role.sql`, idempotent, pola `app_role.sql`): INSERT/UPDATE `generated_articles`, SELECT sites/categories/tags/authors; tanpa akses tulis ke tabel lain
-- [ ] Trigger: `blog_agent` hanya boleh menulis `READY_TO_PUBLISH` dan tidak boleh mengubah hasil yang sudah diputuskan
+- [ ] Hak kolom: `blog_agent` hanya INSERT/UPDATE kolom isi (`site_id`, `external_id`, `payload`, `agent_note`, `generated_at`), jadi status dan kolom keputusan tidak bisa diisi agent; trigger: isi hasil yang sudah diputuskan tidak bisa diubah siapa pun
 - [ ] Test integritas + hak akses role; `drizzle-kit pull`; seed dev: 2 hasil AI (satu valid, satu dengan galat) beserta referensi
 
 **5a.2 Pemeriksaan dan approve di core [K3] [K4]**

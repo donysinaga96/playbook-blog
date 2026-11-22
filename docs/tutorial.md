@@ -2217,6 +2217,7 @@ Alternatif yang ditolak, Konsekuensi, dan Status (Diusulkan, Diterima, Diganti o
 | [007](007-render-halaman-server.md) | Halaman publik dirender penuh di server; view model dibangun di Nitro | Diterima |
 | [008](008-kontrak-section.md) | Section di base, manifest server (`./manifest`), theme diselesaikan sebelum view model | Diterima |
 | [009](009-admin.md) | Admin: host khusus (multi) / domain site (single), SPA, sesi cookie terenkripsi, Argon2id, CLI admin pertama | Diterima |
+| [010](010-alur-konten-ai.md) | Alur konten AI: tabel hasil AI terpisah (`generated_articles`), role `blog_agent`, approval memindahkan ke tabel konten, referensi tampil | Diterima |
 ```
 
 3. ADR-001, mode deploy. Satu schema, dua mode, dan konsekuensinya: repository tetap wajib menerima `siteId` walau berjalan di mode single-site, dan tidak boleh ada global state di SSR:
@@ -4389,6 +4390,7 @@ export * from './editor/inputs'
 export * from './editor/slug'
 export * from './media/image-info'
 export * from './media/local-storage'
+export * from './generated/payload'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -23158,3 +23160,549 @@ describe('paging galeri media', () => {
 
 9. Tutup dengan pemeriksaan penuh sebelum commit: `pnpm check`, `pnpm build`, smoke, gate isolasi site, dan gate admin. Di CI, job `build` sudah menjalankan gate admin setelah admin dan editor dibuat lewat `pnpm admin:create`, jadi gate "satu artikel dibuat, dijadwalkan, dan tampil tepat waktu tanpa menyentuh database manual" ikut diperiksa di setiap pipeline.
 
+
+# Menerima Konten dari AI Agent
+
+Sampai bab sebelumnya, konten masuk lewat admin satu per satu. Tujuan produknya berbeda: konten dibuat oleh AI agent yang Anda bangun sendiri di luar repo ini. Agent bekerja saat subuh atau saat Anda memicunya, meninjau hasilnya sendiri, lalu menyimpannya ke database. Pagi harinya Anda memutuskan mana yang terbit. Bab ini menyiapkan kontrak antara agent dan framework; tabel, layar approval, dan tampilan referensi dibangun di bab-bab berikutnya.
+
+1. Tetapkan aturannya sebagai ADR, karena aturan ini mahal diubah setelah agent dibuat. Hasil AI disimpan di tabel terpisah (`generated_articles`) dengan status sendiri: `READY_TO_PUBLISH`, lalu `APPROVED` atau `ARCHIVED`. Status artikel (`DRAFT`, `REVIEW`, `PUBLISHED`, `ARCHIVED`) tidak berubah, dan halaman publik tidak pernah membaca tabel hasil AI. Tombol approve di admin memindahkan isinya ke tabel konten dalam satu transaksi. Agent menulis langsung ke database sebagai role terbatas `blog_agent`, tanpa API:
+
+`docs/adr/010-alur-konten-ai.md`
+
+```markdown
+# ADR-010: Alur konten AI: tabel hasil AI terpisah, approval memindahkan ke tabel konten
+
+- Status: Diterima
+- Tanggal: 2026-11-22
+
+## Konteks
+
+Pemilik proyek memperjelas tujuan produk (22 Nov 2026): konten site dibuat oleh AI agent yang
+dibangun **di luar repo ini**. Agent berjalan saat subuh atau saat dipicu manual, meninjau
+hasilnya sendiri, lalu menyimpannya ke database. Pagi harinya pemilik proyek memutuskan konten
+mana yang terbit. Konten yang diambil dari sumber lain wajib menyebut sumbernya di halaman.
+
+Guide awal menunda AI ke backlog setelah M5 dan berencana memakai status artikel `REVIEW` untuk
+hasil AI. Yang harus diputuskan sekarang:
+
+- Di mana hasil AI disimpan sebelum disetujui, dan apakah status `articles` berubah.
+- Bagaimana agent menulis: lewat API aplikasi atau langsung ke database.
+- Bagaimana mencegah hasil AI tampil di web tanpa persetujuan, juga saat agent salah.
+- Bagaimana referensi disimpan dan ditampilkan.
+
+## Keputusan
+
+1. **Tabel hasil AI terpisah: `generated_articles`.** Status `articles` tidak berubah
+   (`DRAFT`, `REVIEW`, `PUBLISHED`, `ARCHIVED`). Hasil AI punya status sendiri:
+   `READY_TO_PUBLISH` → `APPROVED` (sudah dipindah ke tabel konten) atau `ARCHIVED` (ditolak,
+   dengan alasan). Hasil AI tidak pernah dibaca oleh halaman publik.
+2. **Agent menulis langsung ke database** sebagai role `blog_agent`, tanpa API ingest. Role ini
+   hanya boleh menulis `generated_articles` (kolom isi saja; status dan kolom keputusan tidak) dan
+   membaca sites, categories, tags, authors. Hasil yang sudah diputuskan tidak bisa diubah lagi.
+3. **Payload berversi dan tidak memakai ID internal.** Kolom `payload` (JSONB) mengikuti skema
+   `generatedPayloadSchema` v1 di `packages/core/src/generated/payload.ts`. Kategori, penulis,
+   dan tag dirujuk lewat slug atau nama; gambar lewat `key` lokal yang menunjuk `storageKey` di
+   object storage. Status dan tanggal terbit tidak ada di payload. Kontrak untuk agent:
+   [docs/kontrak-agent.md](../kontrak-agent.md).
+4. **Pemeriksaan saat approval, bukan saat agent menulis.** Database hanya menjaga bentuk luar
+   (payload berupa object). Layar approval menjalankan skema payload dan pemeriksaan yang butuh
+   database atau storage (kategori ada, slug belum dipakai, file gambar ada). Galat memblokir
+   approve; peringatan hanya ditampilkan.
+5. **Approve = pindah dalam satu transaksi.** Baris hasil AI dikunci (`FOR UPDATE`), diperiksa
+   ulang, lalu media, artikel (`PUBLISHED` sekarang atau terjadwal, atau `DRAFT` untuk diedit),
+   tag baru, dan referensi dibuat; hasil AI ditandai `APPROVED` dengan `article_id`. Klik ganda
+   atau dua admin bersamaan menghasilkan satu artikel. Tag yang belum ada dibuat; kategori yang
+   belum ada adalah galat (kategori memengaruhi menu dan URL).
+6. **Referensi adalah data artikel, bukan hanya data AI.** Tabel `article_references` (urutan,
+   judul, URL, penerbit, jenis) dan kolom `media.source_url`. Halaman artikel menampilkan bagian
+   "Sumber dan referensi" dari komponen base untuk semua template; kredit dan sumber gambar
+   tampil di bawah gambar; embed video diberi tautan ke alamat aslinya. Artikel yang ditulis
+   manual di admin juga bisa punya referensi.
+
+## Alternatif yang ditolak
+
+- **Hasil AI langsung di `articles` dengan status baru `READY_TO_PUBLISH`.** Satu tabel lebih
+  sedikit, tetapi setiap query publik dan admin harus mengecualikan status itu, dan kesalahan
+  satu filter langsung menampilkan konten yang belum disetujui. Ditolak pemilik proyek.
+- **API ingest (`POST /api/ingest/...`) dengan token agent.** Validasi terjadi saat agent
+  menulis, tetapi menambah permukaan HTTP baru yang terbuka ke internet dan mengikat agent ke
+  aplikasi yang sedang berjalan. Dengan tabel terpisah dan role terbatas, kesalahan agent
+  tidak bisa mencapai web, jadi validasi cukup dilakukan saat approval.
+- **Queue (Redis/BullMQ) untuk hasil AI.** Tidak perlu: agent menulis kapan saja, pemilik
+  proyek memutuskan kapan saja, dan jadwal terbit tetap memakai `published_at`.
+
+## Konsekuensi
+
+- Agent bisa dikembangkan terpisah, cukup mengikuti `docs/kontrak-agent.md`. Perubahan bentuk
+  payload = naikkan `GENERATED_PAYLOAD_VERSION`; aplikasi harus tetap bisa membaca versi lama
+  yang masih ada di antrian.
+- Payload yang rusak tetap tersimpan sampai pemilik proyek menolaknya. Ini disengaja: alasan
+  penolakan (`review_note`) bisa dibaca agent untuk memperbaiki hasil berikutnya.
+- Gambar harus sudah ada di storage sebelum hasil AI disimpan. Sampai provider object storage
+  dipilih, pengujian memakai storage lokal (`MEDIA_DIR`) dengan skema `storage_key` yang sama.
+- Role database kedua (`blog_agent`) harus ikut dikelola: password di env, dibuat oleh skrip
+  idempotent seperti `blog_app`, dan diuji hak aksesnya di `run_all.sh`.
+- ADR infrastruktur produksi (M5, ditahan) bergeser menjadi ADR-011.
+```
+
+2. Tulis skema payload hasil AI di `packages/core`. Bedanya dengan input editor: agent tidak tahu ID internal, jadi kategori, penulis, dan tag dirujuk lewat slug atau nama, dan gambar lewat `key` lokal yang menunjuk `storageKey` di object storage. Block gambar di payload memakai `image` (key), bukan `mediaId`; block lain sama dengan block body v1. Status dan tanggal terbit sengaja tidak ada di payload, dan karena skemanya ketat, field `status` dari agent ditolak. Tag dianggap dobel bila slug-nya sama, karena tag unik per slug di database:
+
+`packages/core/src/generated/payload.ts`
+
+```ts
+// Payload hasil AI v1 (ADR-010): isi kolom generated_articles.payload yang
+// ditulis AI agent di luar repo ini. Kontrak lengkap untuk agent ada di
+// docs/kontrak-agent.md; skema di sini adalah sumber kebenarannya.
+//
+// Bedanya dengan input editor (editor/inputs.ts):
+//  - Agent tidak tahu ID internal. Kategori, penulis, dan tag dirujuk lewat
+//    slug/nama; gambar lewat `key` lokal di payload yang menunjuk ke
+//    `images[]` (storage_key di object storage). ID baru ada saat approve.
+//  - Status dan tanggal terbit tidak ada di payload: keduanya keputusan
+//    pemilik proyek di layar approval.
+//
+// Skema ini hanya memeriksa bentuk payload. Pemeriksaan yang butuh database
+// atau storage (kategori ada, slug belum dipakai, file gambar ada, storage_key
+// diawali kode site) dilakukan saat review/approve (5a.2).
+import { z } from 'zod'
+import { BODY_VERSION, embedBlock, headingBlock, listBlock, paragraphBlock, quoteBlock } from '../content/blocks'
+import { splitStorageKey } from '../media/storage'
+import { SLUG_MAX, SLUG_PATTERN, slugify } from '../editor/slug'
+
+export const GENERATED_PAYLOAD_VERSION = 1
+
+/** Status baris generated_articles. Tidak sama dengan status artikel. */
+export const GENERATED_STATUSES = ['READY_TO_PUBLISH', 'APPROVED', 'ARCHIVED'] as const
+export type GeneratedStatus = (typeof GENERATED_STATUSES)[number]
+
+export const REFERENCE_KINDS = ['ARTICLE', 'VIDEO', 'IMAGE', 'OTHER'] as const
+export type ReferenceKind = (typeof REFERENCE_KINDS)[number]
+
+const slug = z.string().trim().max(SLUG_MAX).regex(SLUG_PATTERN, 'slug hanya huruf kecil, angka, dan tanda hubung')
+const optionalText = (max: number) => z.string().trim().min(1).max(max).optional()
+/** Sumber di luar site boleh http atau https (banyak situs lama masih http). */
+const sourceUrl = z.url({ protocol: /^https?$/ }).max(2_048)
+/** Kunci gambar di dalam satu payload, mis. "cover" atau "img-2". */
+const imageKey = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'key gambar: huruf kecil, angka, _ atau -, maks 64')
+
+export const generatedImageSchema = z.strictObject({
+  key: imageKey,
+  /** Lokasi file di object storage, relatif dan diawali kode site: "kabar-tekno/2026/11/x.webp". */
+  storageKey: z.string().max(500).refine((k) => splitStorageKey(k) !== null, 'storageKey tidak sah'),
+  altText: z.string().trim().min(1).max(500),
+  caption: optionalText(1_000),
+  /** Pemilik hak gambar, mis. "Foto: Reuters". */
+  credit: optionalText(300),
+  /** Halaman asal gambar bila diambil dari sumber lain. */
+  sourceUrl: sourceUrl.optional(),
+  focalX: z.number().min(0).max(1).optional(),
+  focalY: z.number().min(0).max(1).optional(),
+})
+
+/** Block gambar di payload: menunjuk `images[].key`, bukan mediaId. */
+export const generatedImageBlock = z.strictObject({
+  type: z.literal('image'),
+  image: imageKey,
+  caption: optionalText(1_000),
+})
+
+export const generatedBlockSchema = z.discriminatedUnion('type', [
+  paragraphBlock,
+  headingBlock,
+  generatedImageBlock,
+  quoteBlock,
+  listBlock,
+  embedBlock,
+])
+
+export const referenceSchema = z.strictObject({
+  title: z.string().trim().min(1).max(300),
+  url: sourceUrl,
+  /** Nama media atau situs, mis. "Kompas", "YouTube - Kanal X". */
+  publisher: optionalText(200),
+  kind: z.enum(REFERENCE_KINDS).default('ARTICLE'),
+})
+
+export const generatedPayloadSchema = z
+  .strictObject({
+    version: z.literal(GENERATED_PAYLOAD_VERSION),
+    title: z.string().trim().min(1).max(300),
+    /** Tidak diisi = dibuat dari judul saat approve. */
+    slug: slug.optional(),
+    excerpt: optionalText(1_000),
+    /** Slug kategori yang sudah ada di site. Kategori tidak dibuat otomatis. */
+    category: slug,
+    /** Slug penulis (tabel authors) di site; tidak diisi = tanpa byline. */
+    author: slug.optional(),
+    /** Nama tag. Tag yang belum ada dibuat saat approve. */
+    tags: z.array(z.string().trim().min(1).max(120)).max(50).default([]),
+    format: z.enum(['STANDARD', 'LISTICLE', 'GALLERY', 'VIDEO']).default('STANDARD'),
+    /** Key gambar sampul di `images`. */
+    cover: imageKey.optional(),
+    images: z.array(generatedImageSchema).max(100).default([]),
+    body: z.strictObject({
+      version: z.literal(BODY_VERSION),
+      blocks: z.array(generatedBlockSchema).min(1).max(2_000),
+    }),
+    references: z.array(referenceSchema).max(100).default([]),
+    seo: z
+      .strictObject({
+        title: z.string().trim().min(1).max(200).optional(),
+        description: z.string().trim().min(1).max(320).optional(),
+      })
+      .default({}),
+  })
+  .superRefine((p, ctx) => {
+    const keys = new Set<string>()
+    const storageKeys = new Set<string>()
+    p.images.forEach((img, i) => {
+      if (keys.has(img.key)) ctx.addIssue({ code: 'custom', path: ['images', i, 'key'], message: `key gambar "${img.key}" dipakai dua kali` })
+      if (storageKeys.has(img.storageKey)) ctx.addIssue({ code: 'custom', path: ['images', i, 'storageKey'], message: 'storageKey dipakai dua kali' })
+      keys.add(img.key)
+      storageKeys.add(img.storageKey)
+    })
+    if (p.cover && !keys.has(p.cover)) ctx.addIssue({ code: 'custom', path: ['cover'], message: `gambar "${p.cover}" tidak ada di images` })
+    p.body.blocks.forEach((block, i) => {
+      if (block.type === 'image' && !keys.has(block.image)) {
+        ctx.addIssue({ code: 'custom', path: ['body', 'blocks', i, 'image'], message: `gambar "${block.image}" tidak ada di images` })
+      }
+    })
+    const tagSlugs = new Set<string>()
+    // Tag unik per slug di database, jadi "Masakan Batak" dan "masakan-batak" sama.
+    p.tags.forEach((name, i) => {
+      const tagSlug = slugify(name)
+      if (!tagSlug) ctx.addIssue({ code: 'custom', path: ['tags', i], message: `tag "${name}" tidak bisa dijadikan slug` })
+      else if (tagSlugs.has(tagSlug)) ctx.addIssue({ code: 'custom', path: ['tags', i], message: `tag "${name}" dobel` })
+      tagSlugs.add(tagSlug)
+    })
+    const refUrls = new Set<string>()
+    p.references.forEach((ref, i) => {
+      if (refUrls.has(ref.url)) ctx.addIssue({ code: 'custom', path: ['references', i, 'url'], message: 'URL referensi dobel' })
+      refUrls.add(ref.url)
+    })
+  })
+
+export type GeneratedPayload = z.output<typeof generatedPayloadSchema>
+export type GeneratedImage = z.output<typeof generatedImageSchema>
+export type GeneratedReference = z.output<typeof referenceSchema>
+
+export interface PayloadIssue {
+  /** Lokasi di payload, mis. "body.blocks.3.text". Kosong = payload secara keseluruhan. */
+  path: string
+  message: string
+}
+
+export type PayloadParseResult = { ok: true; payload: GeneratedPayload } | { ok: false; issues: PayloadIssue[] }
+
+/** Validasi payload dari database; tidak melempar, mengembalikan daftar masalah untuk layar approval. */
+export function parseGeneratedPayload(raw: unknown): PayloadParseResult {
+  const result = generatedPayloadSchema.safeParse(raw)
+  if (result.success) return { ok: true, payload: result.data }
+  return {
+    ok: false,
+    issues: result.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
+  }
+}
+```
+
+   Ekspor modul ini dari `packages/core/src/index.ts`:
+
+```ts
+export * from './generated/payload'
+```
+
+3. Tulis kontrak untuk pembuat agent di `docs/kontrak-agent.md`: hak akses role `blog_agent`, kolom `generated_articles`, contoh `INSERT ... ON CONFLICT` dengan `external_id` agar run subuh dan pemicu manual tidak membuat duplikat, tabel field payload, aturan gambar dan referensi, serta pemeriksaan yang dijalankan saat approval. Contoh payload lengkap di dokumen itu diberi penanda `<!-- contoh-payload -->` tepat di atas blok ```` ```json ````:
+
+`docs/kontrak-agent.md`
+
+````markdown
+# Kontrak AI agent
+
+Dokumen ini untuk pembuat AI agent konten (di luar repo ini). Isinya: apa yang boleh dibaca dan ditulis agent di database, bentuk data yang ditulis, dan apa yang terjadi setelahnya. Latar keputusannya ada di [ADR-010](adr/010-alur-konten-ai.md).
+
+Sumber kebenaran bentuk payload adalah skema Zod `generatedPayloadSchema` di [packages/core/src/generated/payload.ts](../packages/core/src/generated/payload.ts). Contoh payload di dokumen ini diuji otomatis terhadap skema itu (`payload.test.ts`). Kalau test itu gagal, dokumen ini sudah tidak sesuai dengan kode.
+
+> Status: tabel `generated_articles`, `article_references`, dan role `blog_agent` dibuat di migration 0002 (task 5a.1). Sebelum itu, dokumen ini adalah rancangan yang sudah disetujui.
+
+## Alur
+
+1. Agent menyimpan gambar ke object storage dengan key yang diawali kode site, misalnya `dapur-nusantara/2026/11/saksang.webp`.
+2. Agent menulis satu baris per artikel ke `generated_articles`. Statusnya otomatis `READY_TO_PUBLISH`.
+3. Hasil AI **tidak pernah tampil di web** selama masih di tabel ini.
+4. Pemilik proyek membuka **Antrian terbit** di admin. Layar itu menampilkan pratinjau dengan template site, hasil pemeriksaan, dan daftar referensi. Lalu pemilik proyek memilih satu aksi:
+   - **Terbitkan sekarang** atau **Jadwalkan**. Isi payload dipindah ke tabel konten, status hasil AI menjadi `APPROVED`, dan `article_id` terisi.
+   - **Pindahkan sebagai draft**. Isi dipindah sebagai artikel `DRAFT` untuk diedit dulu. Status hasil AI menjadi `APPROVED`.
+   - **Tolak**. Status hasil AI menjadi `ARCHIVED`, dan alasannya tersimpan di `review_note`.
+5. Setelah diputuskan, baris itu tidak bisa diubah agent lagi. Agent bisa membaca `status` dan `review_note` untuk belajar dari penolakan.
+
+## Koneksi
+
+Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatur lewat env `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` saat role dibuat (`packages/db/scripts/agent_role.sh`).
+
+| Tabel | Hak `blog_agent` |
+|---|---|
+| `sites` | SELECT: `id`, `code`, `name`, `status` |
+| `categories` | SELECT: kategori yang bisa dipakai (`slug`, `name`, `status`, `parent_id`) |
+| `authors` | SELECT: penulis (`slug`, `name`, `status`) |
+| `tags` | SELECT: tag yang sudah ada (`slug`, `name`) |
+| `generated_articles` | SELECT; INSERT dan UPDATE hanya kolom isi (`site_id`, `external_id`, `payload`, `agent_note`, `generated_at`) |
+| Tabel lain | Tidak ada akses |
+
+Hanya kategori dan penulis dengan `status = 'ACTIVE'` yang lolos pemeriksaan approval.
+
+## Tabel `generated_articles`
+
+| Kolom | Diisi oleh | Keterangan |
+|---|---|---|
+| `id` | database | UUIDv7 |
+| `site_id` | agent | ID site tujuan (cari lewat `sites.code`) |
+| `external_id` | agent | ID buatan agent, unik per site, maks 200 karakter. Menulis ulang dengan `external_id` yang sama memperbarui baris yang masih `READY_TO_PUBLISH`, tidak membuat baris baru |
+| `payload` | agent | JSON hasil AI (lihat di bawah) |
+| `agent_note` | agent | Opsional. Ringkasan tinjauan AI (sumber yang dicek, keraguan), tampil di layar approval |
+| `generated_at` | agent | Waktu hasil dibuat; bawaan `now()` |
+| `status` | aplikasi | `READY_TO_PUBLISH` → `APPROVED` / `ARCHIVED` |
+| `review_note`, `reviewed_by`, `reviewed_at` | aplikasi | Keputusan pemilik proyek; `review_note` wajib bila ditolak |
+| `article_id` | aplikasi | Artikel hasil approve |
+
+### Menulis satu hasil
+
+```sql
+INSERT INTO generated_articles (site_id, external_id, payload, agent_note)
+VALUES (
+  (SELECT id FROM sites WHERE code = 'dapur-nusantara'),
+  'run-2026-11-23-subuh/saksang',
+  $payload$ { ...payload JSON... } $payload$::jsonb,
+  'Tiga sumber dicek; takaran bumbu dari sumber 1.'
+)
+ON CONFLICT (site_id, external_id) DO UPDATE
+  SET payload = EXCLUDED.payload,
+      agent_note = EXCLUDED.agent_note,
+      generated_at = now()
+  WHERE generated_articles.status = 'READY_TO_PUBLISH';
+```
+
+Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah apa pun (0 baris). Pakai `external_id` baru untuk hasil baru.
+
+## Payload v1
+
+| Field | Wajib | Keterangan |
+|---|---|---|
+| `version` | ya | `1` |
+| `title` | ya | 1–300 karakter |
+| `slug` | tidak | Huruf kecil, angka, tanda hubung. Tidak diisi = dibuat dari judul saat approve. Slug yang sudah dipakai artikel atau redirect site itu = galat |
+| `excerpt` | tidak | Ringkasan, maks 1.000 karakter |
+| `category` | ya | Slug kategori yang **sudah ada** di site. Kategori tidak dibuat otomatis |
+| `author` | tidak | Slug penulis di site; tidak diisi = tanpa byline |
+| `tags` | tidak | Nama tag, maks 50. Tag yang belum ada dibuat saat approve (dengan peringatan). Dua nama dengan slug yang sama dianggap dobel |
+| `format` | tidak | `STANDARD` (bawaan), `LISTICLE`, `GALLERY`, `VIDEO` |
+| `cover` | tidak | `key` gambar sampul dari `images` |
+| `images` | tidak | Daftar gambar (lihat di bawah), maks 100 |
+| `body` | ya | `{ "version": 1, "blocks": [...] }`, minimal satu block |
+| `references` | tidak | Daftar sumber (lihat di bawah), maks 100. Kosong = peringatan di approval |
+| `seo` | tidak | `{ "title": maks 200, "description": maks 320 }` |
+
+Field yang tidak dikenal ditolak, termasuk `status` dan `published_at`. Keduanya keputusan pemilik proyek.
+
+### Block body
+
+Sama dengan block body v1 artikel, kecuali gambar:
+
+| Block | Bentuk |
+|---|---|
+| Paragraf | `{ "type": "paragraph", "text": "..." }`. Teks polos, bukan HTML |
+| Judul bagian | `{ "type": "heading", "level": 2, "text": "..." }`. Level 2–4 (level 1 = judul artikel) |
+| Gambar | `{ "type": "image", "image": "<key>", "caption": "..." }`. `image` menunjuk `images[].key` |
+| Kutipan | `{ "type": "quote", "text": "...", "cite": "..." }` |
+| Daftar | `{ "type": "list", "style": "bullet" atau "numbered", "items": ["..."] }` |
+| Video/embed | `{ "type": "embed", "provider": "youtube" atau "vimeo" atau "x", "url": "https://..." }` |
+
+Video tidak disimpan. Block `embed` memutar video dari alamat aslinya dan menampilkan tautan ke sumbernya. Provider lain belum didukung, jadi tulis video seperti itu sebagai referensi saja.
+
+### Gambar
+
+| Field | Wajib | Keterangan |
+|---|---|---|
+| `key` | ya | Nama lokal di payload ini, misalnya `cover`, `img-2` (huruf kecil, angka, `_`, `-`) |
+| `storageKey` | ya | Lokasi file di object storage, diawali kode site. File harus sudah ada saat approval |
+| `altText` | ya | Deskripsi gambar untuk pembaca layar |
+| `caption` | tidak | Keterangan di bawah gambar |
+| `credit` | tidak | Pemilik hak, misalnya "Foto: Kantor Berita X" |
+| `sourceUrl` | tidak | Halaman asal gambar bila diambil dari sumber lain |
+| `focalX`, `focalY` | tidak | Titik fokus 0–1 untuk pemotongan; bawaan 0,5 |
+
+Gambar yang diambil dari sumber lain **harus** punya `credit` atau `sourceUrl`. Gambar tanpa keduanya diberi peringatan saat approval.
+
+### Referensi
+
+| Field | Wajib | Keterangan |
+|---|---|---|
+| `title` | ya | Judul sumber |
+| `url` | ya | `http://` atau `https://` |
+| `publisher` | tidak | Nama media atau situs |
+| `kind` | tidak | `ARTICLE` (bawaan), `VIDEO`, `IMAGE`, `OTHER` |
+
+Semua sumber yang dipakai AI untuk menulis isi dicantumkan di sini. Semuanya tampil di bagian "Sumber dan referensi" di akhir artikel, dengan urutan sesuai daftar.
+
+### Contoh lengkap
+
+<!-- contoh-payload -->
+```json
+{
+  "version": 1,
+  "title": "Saksang, Masakan Pesta dari Tanah Batak",
+  "excerpt": "Sejarah singkat saksang dan bumbu andaliman yang membuatnya khas.",
+  "category": "resep",
+  "tags": ["Masakan Batak", "Andaliman"],
+  "cover": "cover",
+  "images": [
+    {
+      "key": "cover",
+      "storageKey": "dapur-nusantara/2026/11/saksang-cover.webp",
+      "altText": "Saksang dalam mangkuk tanah liat",
+      "credit": "Foto: Arsip Contoh",
+      "sourceUrl": "https://contoh.test/galeri/saksang"
+    }
+  ],
+  "body": {
+    "version": 1,
+    "blocks": [
+      { "type": "paragraph", "text": "Saksang biasa hadir di pesta adat Batak." },
+      { "type": "heading", "level": 2, "text": "Bumbu utama" },
+      { "type": "list", "style": "bullet", "items": ["Andaliman", "Bawang batak", "Lengkuas"] },
+      { "type": "image", "image": "cover", "caption": "Saksang siap disajikan" },
+      { "type": "embed", "provider": "youtube", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
+    ]
+  },
+  "references": [
+    { "title": "Mengenal andaliman", "url": "https://contoh.test/andaliman", "publisher": "Contoh Kuliner" },
+    { "title": "Video memasak saksang", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "publisher": "YouTube", "kind": "VIDEO" }
+  ],
+  "seo": { "description": "Sejarah saksang dan bumbu andaliman khas Batak." }
+}
+```
+
+## Pemeriksaan saat approval
+
+Galat memblokir approve. Peringatan hanya ditampilkan, dan pemilik proyek yang memutuskan.
+
+| Pemeriksaan | Jenis |
+|---|---|
+| Payload lolos skema versi yang dikenal (bentuk, panjang, field tak dikenal, key gambar) | Galat |
+| Kategori dan penulis ada di site itu dan `ACTIVE` | Galat |
+| Tag belum ada di site | Peringatan (dibuat saat approve) |
+| `storageKey` diawali kode site, file ada di storage, dan tipenya gambar yang dikenali | Galat |
+| URL embed dikenali provider | Galat |
+| Slug valid dan belum dipakai artikel atau redirect site itu | Galat |
+| Tidak ada referensi sama sekali | Peringatan |
+| Gambar tanpa `credit` dan `sourceUrl` | Peringatan |
+| URL embed tidak ada di `references` | Peringatan (video tetap diberi tautan ke sumbernya) |
+
+## Versi payload
+
+Perubahan bentuk payload menaikkan `version`. Aplikasi tetap membaca versi lama selama masih ada hasil AI versi itu di antrian. Agent sebaiknya selalu menulis versi terbaru yang tercantum di dokumen ini.
+````
+
+4. Uji skemanya. Selain kasus yang diterima dan ditolak, satu test membaca contoh payload dari `docs/kontrak-agent.md` dan memvalidasinya. Kalau skema berubah tanpa dokumen ikut diperbarui, test ini gagal, jadi kontrak untuk agent tidak bisa diam-diam basi:
+
+`packages/core/src/generated/payload.test.ts`
+
+````ts
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+import { parseGeneratedPayload } from './payload'
+
+const valid = () => ({
+  version: 1,
+  title: 'Cara Membuat Saksang',
+  category: 'resep',
+  tags: ['Masakan Batak', 'Daging'],
+  cover: 'cover',
+  images: [
+    {
+      key: 'cover',
+      storageKey: 'dapur-nusantara/2026/11/saksang.webp',
+      altText: 'Saksang di piring',
+      credit: 'Foto: Contoh',
+      sourceUrl: 'https://contoh.test/saksang',
+    },
+  ],
+  body: {
+    version: 1,
+    blocks: [
+      { type: 'paragraph', text: 'Saksang adalah masakan Batak.' },
+      { type: 'image', image: 'cover' },
+      { type: 'embed', provider: 'youtube', url: 'https://www.youtube.com/watch?v=abc' },
+    ],
+  },
+  references: [{ title: 'Resep asli', url: 'http://contoh.test/resep', publisher: 'Contoh' }],
+})
+
+describe('parseGeneratedPayload', () => {
+  it('menerima payload lengkap dan mengisi default', () => {
+    const result = parseGeneratedPayload(valid())
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.payload.format).toBe('STANDARD')
+    expect(result.payload.references[0]?.kind).toBe('ARTICLE')
+    expect(result.payload.seo).toEqual({})
+  })
+
+  const REMOVE = Symbol('hapus')
+  /** Mengubah satu nilai di payload lewat path; REMOVE = hapus key. */
+  function set(target: unknown, path: (string | number)[], value: unknown): void {
+    let node = target as Record<string | number, unknown>
+    for (const key of path.slice(0, -1)) node = node[key] as Record<string | number, unknown>
+    const last = path.at(-1)!
+    if (value === REMOVE) delete node[last]
+    else node[last] = value
+  }
+  const IMAGE = { key: 'cover', storageKey: 'dapur-nusantara/x.webp', altText: 'x' }
+
+  it.each<[string, (string | number)[], unknown, string]>([
+    ['versi tidak dikenal', ['version'], 2, 'version'],
+    ['tanpa kategori', ['category'], REMOVE, 'category'],
+    ['slug huruf besar', ['slug'], 'Saksang', 'slug'],
+    ['body kosong', ['body', 'blocks'], [], 'body.blocks'],
+    ['block gambar memakai mediaId', ['body', 'blocks', 1], { type: 'image', mediaId: '01930000-0000-7000-8000-000000000001' }, 'body.blocks.1'],
+    ['block gambar ke key yang tidak ada', ['body', 'blocks', 1, 'image'], 'tidak-ada', 'body.blocks.1.image'],
+    ['sampul ke key yang tidak ada', ['cover'], 'lain', 'cover'],
+    ['key gambar dobel', ['images', 1], IMAGE, 'images.1.key'],
+    ['storageKey path traversal', ['images', 0, 'storageKey'], 'dapur-nusantara/../rahasia', 'images.0.storageKey'],
+    ['gambar tanpa alt', ['images', 0, 'altText'], REMOVE, 'images.0.altText'],
+    ['embed provider tidak dikenal', ['body', 'blocks', 2, 'provider'], 'tiktok', 'body.blocks.2.provider'],
+    ['URL referensi javascript:', ['references', 0, 'url'], 'javascript:alert(1)', 'references.0.url'],
+    ['URL referensi dobel', ['references', 1], { title: 'Lagi', url: 'http://contoh.test/resep' }, 'references.1.url'],
+    ['tag dobel beda tulisan', ['tags', 2], 'masakan-batak', 'tags.2'],
+    ['tag tanpa huruf/angka', ['tags', 2], '!!!', 'tags.2'],
+    ['key tak dikenal (status)', ['status'], 'PUBLISHED', ''],
+    ['HTML mentah di paragraph', ['body', 'blocks', 0, 'html'], '<b>x</b>', 'body.blocks.0'],
+  ])('menolak: %s', (_name, path, value, issuePath) => {
+    const payload = valid()
+    set(payload, path, value)
+    const result = parseGeneratedPayload(payload)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.issues.map((i) => i.path)).toContain(issuePath)
+  })
+
+  it('bukan object = satu masalah, tidak melempar', () => {
+    const result = parseGeneratedPayload('teks')
+    expect(result.ok).toBe(false)
+  })
+
+  it('contoh payload di docs/kontrak-agent.md valid', () => {
+    const doc = readFileSync(fileURLToPath(new URL('../../../../docs/kontrak-agent.md', import.meta.url)), 'utf8')
+    const match = /<!-- contoh-payload -->\s*```json\n([\s\S]*?)```/.exec(doc)
+    expect(match, 'blok ```json setelah <!-- contoh-payload --> tidak ditemukan').not.toBeNull()
+    const result = parseGeneratedPayload(JSON.parse(match![1]!))
+    expect(result.ok ? [] : result.issues).toEqual([])
+  })
+})
+````
+
+```bash
+pnpm vitest run packages/core/src/generated
+#  Test Files  1 passed (1)
+#       Tests  20 passed (20)
+```

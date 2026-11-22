@@ -1875,3 +1875,35 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 9. Tutup dengan pemeriksaan penuh sebelum commit: `pnpm check`, `pnpm build`, smoke, gate isolasi site, dan gate admin. Di CI, job `build` sudah menjalankan gate admin setelah admin dan editor dibuat lewat `pnpm admin:create`, jadi gate "satu artikel dibuat, dijadwalkan, dan tampil tepat waktu tanpa menyentuh database manual" ikut diperiksa di setiap pipeline.
 
+
+# Menerima Konten dari AI Agent
+
+Sampai bab sebelumnya, konten masuk lewat admin satu per satu. Tujuan produknya berbeda: konten dibuat oleh AI agent yang Anda bangun sendiri di luar repo ini. Agent bekerja saat subuh atau saat Anda memicunya, meninjau hasilnya sendiri, lalu menyimpannya ke database. Pagi harinya Anda memutuskan mana yang terbit. Bab ini menyiapkan kontrak antara agent dan framework; tabel, layar approval, dan tampilan referensi dibangun di bab-bab berikutnya.
+
+1. Tetapkan aturannya sebagai ADR, karena aturan ini mahal diubah setelah agent dibuat. Hasil AI disimpan di tabel terpisah (`generated_articles`) dengan status sendiri: `READY_TO_PUBLISH`, lalu `APPROVED` atau `ARCHIVED`. Status artikel (`DRAFT`, `REVIEW`, `PUBLISHED`, `ARCHIVED`) tidak berubah, dan halaman publik tidak pernah membaca tabel hasil AI. Tombol approve di admin memindahkan isinya ke tabel konten dalam satu transaksi. Agent menulis langsung ke database sebagai role terbatas `blog_agent`, tanpa API:
+
+@@include docs/adr/010-alur-konten-ai.md markdown@@
+
+2. Tulis skema payload hasil AI di `packages/core`. Bedanya dengan input editor: agent tidak tahu ID internal, jadi kategori, penulis, dan tag dirujuk lewat slug atau nama, dan gambar lewat `key` lokal yang menunjuk `storageKey` di object storage. Block gambar di payload memakai `image` (key), bukan `mediaId`; block lain sama dengan block body v1. Status dan tanggal terbit sengaja tidak ada di payload, dan karena skemanya ketat, field `status` dari agent ditolak. Tag dianggap dobel bila slug-nya sama, karena tag unik per slug di database:
+
+@@include packages/core/src/generated/payload.ts ts@@
+
+   Ekspor modul ini dari `packages/core/src/index.ts`:
+
+```ts
+export * from './generated/payload'
+```
+
+3. Tulis kontrak untuk pembuat agent di `docs/kontrak-agent.md`: hak akses role `blog_agent`, kolom `generated_articles`, contoh `INSERT ... ON CONFLICT` dengan `external_id` agar run subuh dan pemicu manual tidak membuat duplikat, tabel field payload, aturan gambar dan referensi, serta pemeriksaan yang dijalankan saat approval. Contoh payload lengkap di dokumen itu diberi penanda `<!-- contoh-payload -->` tepat di atas blok ```` ```json ````:
+
+@@include docs/kontrak-agent.md markdown@@
+
+4. Uji skemanya. Selain kasus yang diterima dan ditolak, satu test membaca contoh payload dari `docs/kontrak-agent.md` dan memvalidasinya. Kalau skema berubah tanpa dokumen ikut diperbarui, test ini gagal, jadi kontrak untuk agent tidak bisa diam-diam basi:
+
+@@include packages/core/src/generated/payload.test.ts ts@@
+
+```bash
+pnpm vitest run packages/core/src/generated
+#  Test Files  1 passed (1)
+#       Tests  20 passed (20)
+```
