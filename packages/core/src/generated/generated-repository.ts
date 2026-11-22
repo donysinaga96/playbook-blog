@@ -36,7 +36,7 @@ import type { MediaRef } from '../repositories/types'
 import { conflict, EditorError, invalid, notFound } from '../editor/errors'
 import { updatedAtSchema } from '../editor/inputs'
 import { isReservedFirstSegment, permalinkFirstToken, slugify } from '../editor/slug'
-import { sniffImage } from '../media/image-info'
+import { MAX_IMAGE_BYTES, sniffImage } from '../media/image-info'
 import type { MediaStorage } from '../media/local-storage'
 import { normalizePaging, toPage, type Page, type RepositoryContext, type SiteId } from '../repositories/types'
 import { parseSiteSettings } from '../site/settings'
@@ -120,7 +120,7 @@ export interface ApproveResult {
 }
 
 /** Penyimpanan yang dibaca saat memeriksa gambar. null = storage belum diatur di server. */
-export type ImageReader = Pick<MediaStorage, 'read'> | null
+export type ImageReader = Pick<MediaStorage, 'read' | 'size'> | null
 
 const EXTENSION_MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
 const NOTE_MAX = 1_000
@@ -154,7 +154,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
   }
 
   /** Pemeriksaan yang butuh database dan storage; payload sudah lolos skema. */
-  async function resolvePlan(tx: Db, siteId: SiteId, payload: GeneratedPayload, storage: ImageReader): Promise<{ issues: ReviewIssue[]; plan: ResolvedPlan | null }> {
+  async function resolvePlan(tx: Db, siteId: SiteId, payload: GeneratedPayload, storage: ImageReader, ownArticleId: string | null = null): Promise<{ issues: ReviewIssue[]; plan: ResolvedPlan | null }> {
     const issues: ReviewIssue[] = []
     const error = (field: string, message: string) => issues.push({ level: 'error', field, message })
     const warning = (field: string, message: string) => issues.push({ level: 'warning', field, message })
@@ -191,7 +191,8 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     // Redirect lama dengan path yang sama tidak masalah: konten menang atas redirect.
     if (payload.slug) {
       const [taken] = await tx.select({ id: articles.id }).from(articles).where(and(eq(articles.siteId, siteId), eq(articles.slug, payload.slug))).limit(1)
-      if (taken) error('slug', `slug "${payload.slug}" sudah dipakai artikel lain`)
+      // Hasil yang sudah disetujui: slug itu dipakai artikel hasil approve-nya sendiri.
+      if (taken && taken.id !== ownArticleId) error('slug', `slug "${payload.slug}" sudah dipakai artikel lain`)
       const settings = parseSiteSettings(site.settings)
       if (permalinkFirstToken(settings.permalink) === ':slug' && isReservedFirstSegment(payload.slug)) error('slug', `"${payload.slug}" dipakai route sistem`)
     }
@@ -221,7 +222,12 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
         error(field, 'storage media belum diatur di server (MEDIA_DIR)')
         continue
       }
-      const bytes = await storage.read(image.storageKey)
+      const size = await storage.size(image.storageKey)
+      if (size !== null && size > MAX_IMAGE_BYTES) {
+        error(field, `file lebih dari ${MAX_IMAGE_BYTES / 1024 / 1024} MB`)
+        continue
+      }
+      const bytes = size === null ? null : await storage.read(image.storageKey)
       if (!bytes) {
         error(field, `file ${image.storageKey} tidak ada di storage`)
         continue
@@ -413,7 +419,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
       // Hasil yang sudah diputuskan tetap bisa dipratinjau bila payload-nya sah.
       const plan = review.plan ?? (await (async () => {
         const parsed = parseGeneratedPayload(review.record.payload)
-        return parsed.ok ? (await resolvePlan(db, siteId, parsed.payload, storage)).plan : null
+        return parsed.ok ? (await resolvePlan(db, siteId, parsed.payload, storage, review.record.articleId)).plan : null
       })())
       return { review, preview: plan ? await previewOf(siteId, plan) : null }
     },

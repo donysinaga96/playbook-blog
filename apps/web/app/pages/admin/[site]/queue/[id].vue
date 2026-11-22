@@ -47,7 +47,10 @@ const payload = computed<PayloadView>(() => {
     excerpt: str(p['excerpt']),
     category: str(p['category']),
     tags: Array.isArray(p['tags']) ? p['tags'].filter((t): t is string => typeof t === 'string') : [],
-    references: refs.filter((r): r is PayloadView['references'][number] => typeof r === 'object' && r !== null && typeof (r as { url?: unknown }).url === 'string'),
+    // Payload mentah dari agent (belum tentu lolos skema): hanya URL http(s) yang
+    // boleh menjadi href, agar `javascript:` dari agent tidak bisa dijalankan di origin admin.
+    references: refs.filter((r): r is PayloadView['references'][number] =>
+      typeof r === 'object' && r !== null && typeof (r as { url?: unknown }).url === 'string' && /^https?:\/\//i.test((r as { url: string }).url)),
   }
 })
 

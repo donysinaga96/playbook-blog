@@ -5258,7 +5258,8 @@ it.skipIf(!process.env['CI'])('di CI, DATABASE_URL wajib ada agar test database 
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed
 #           (health 200 + halaman tekno/kuliner dirender), lalu gate M2:
-#           request SSR paralel ke dua domain tidak saling tertukar
+#           request SSR paralel ke dua domain tidak saling tertukar; gate admin
+#           (M4) dan gate konten AI (M5a)
 # =====================================================================
 
 stages:
@@ -5374,6 +5375,9 @@ build:
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email admin@local.test --reset-password
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm admin:create --email editor@local.test --name Editor --site kabar-tekno
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate:admin
+    # 5. Gate M5a: hasil AI ditulis sebagai role agent (login langsung), tidak tampil
+    #    sampai di-approve lewat admin, lalu tampil dengan referensinya.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" AGENT_DATABASE_URL="postgres://blog_agent:ci_agent_password@db:5432/blog_dev" pnpm --filter @framework/web gate:content
   artifacts:
     paths:
       - apps/web/.output/
@@ -5462,6 +5466,7 @@ pnpm install
     "browser-check": "node scripts/browser-check.mjs",
     "admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts",
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
+    "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
   "dependencies": {
@@ -13403,6 +13408,8 @@ event.context.page = lastPage as typeof event.context.page
    - Jam dipatok. Kolom `updated_at` seed berisi waktu saat seed dijalankan, jadi diganti penanda tetap agar snapshot sama di setiap mesin dan di CI.
    - Di CI, Vitest tidak menulis snapshot baru, sehingga snapshot yang hilang atau berbeda membuat job gagal.
 
+   (Penyamaran `dateModified` (JSON-LD) ditambahkan di bab "Membuktikan Alur Konten AI".)
+
 `packages/core/src/views/view-models.snapshot.test.ts`
 
 ```ts
@@ -13428,7 +13435,7 @@ const SEED_TIME = '<updated_at seed>'
 /** Ganti nilai yang bergantung pada waktu seed dengan penanda tetap. */
 function stable(result: PageResult): unknown {
   return JSON.parse(JSON.stringify(result), (key, value) => {
-    if (key === 'modifiedTime') return SEED_TIME
+    if (key === 'modifiedTime' || key === 'dateModified') return SEED_TIME
     if (key === 'updatedAt' && value !== null) return SEED_TIME
     return value
   })
@@ -21288,6 +21295,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 2. Tulis deteksi tipe dan dimensi dari header gambar. Gambar tidak di-decode; dimensi di luar 1..12000 piksel ditolak:
 
+   (`MAX_IMAGE_BYTES` ditambahkan di bab "Membuktikan Alur Konten AI".)
+
 `packages/core/src/media/image-info.ts`
 
 ```ts
@@ -21303,6 +21312,9 @@ export interface ImageInfo {
   width: number
   height: number
 }
+
+/** Batas ukuran file gambar (upload admin dan gambar hasil AI). */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 /** Batas dimensi agar file "gambar" berukuran raksasa ditolak. */
 export const MAX_IMAGE_SIDE = 12_000
@@ -21421,6 +21433,8 @@ describe('sniffImage', () => {
 
 4. Tulis sisi tulis storage. Penulisan atomik (file sementara lalu `rename`) agar pembaca tidak pernah melihat file setengah jadi; path dicek tetap di dalam folder dasar:
 
+   (`size()` ditambahkan di bab "Membuktikan Alur Konten AI".)
+
 `packages/core/src/media/local-storage.ts`
 
 ```ts
@@ -21432,7 +21446,7 @@ describe('sniffImage', () => {
 //  - Tulis atomik: file sementara di folder yang sama, lalu rename, sehingga
 //    pembaca tidak pernah melihat file setengah jadi.
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { splitStorageKey } from './storage'
 
@@ -21440,6 +21454,8 @@ export interface MediaStorage {
   put(storageKey: string, data: Uint8Array): Promise<void>
   /** Isi file; null bila tidak ada. */
   read(storageKey: string): Promise<Uint8Array | null>
+  /** Ukuran file dalam byte tanpa membacanya; null bila tidak ada. */
+  size(storageKey: string): Promise<number | null>
   /** Hapus file; tidak error bila sudah tidak ada. */
   delete(storageKey: string): Promise<void>
 }
@@ -21480,6 +21496,14 @@ export function createLocalMediaStorage(directory: string): MediaStorage {
     async read(storageKey) {
       try {
         return new Uint8Array(await readFile(pathOf(storageKey)))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    },
+    async size(storageKey) {
+      try {
+        return (await stat(pathOf(storageKey))).size
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
         throw error
@@ -21533,16 +21557,18 @@ describe('storage media lokal', async () => {
 
 6. Satukan logika baca file di server, dipakai route publik `/media` dan API admin. Header `nosniff` dan CSP `sandbox` dipasang untuk semua file media:
 
+   (`MAX_UPLOAD_BYTES` memakai `MAX_IMAGE_BYTES` dari core sejak bab "Membuktikan Alur Konten AI".)
+
 `apps/web/server/utils/media.ts`
 
 ```ts
 // Storage media di server (M4 4.3): disk lokal di MEDIA_DIR. Dipakai route
 // publik /media (baca) dan API admin (upload, hapus, pratinjau).
-import { createLocalMediaStorage, splitStorageKey, type MediaStorage } from '@framework/core'
+import { createLocalMediaStorage, MAX_IMAGE_BYTES, splitStorageKey, type MediaStorage } from '@framework/core'
 import { getRouterParam, type RequestEvent } from 'nuxt/server'
 
 /** Batas ukuran satu file upload. */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES
 
 let storage: MediaStorage | null | undefined
 
@@ -22930,7 +22956,9 @@ async function buildGenerated(site: Site, id: string, url: URL, prefix: string):
   try {
     found = await repos.generated.preview(site.id, id, useMediaStorage())
   } catch (error) {
-    if (error instanceof EditorError && error.kind === 'not-found') return { status: 404, text: 'Hasil AI tidak ditemukan.' }
+    if (error instanceof EditorError && error.kind === 'not-found') {
+      return { status: 404, text: error.message.startsWith('Hasil AI') ? 'Hasil AI tidak ditemukan.' : `${error.message}.` }
+    }
     throw error
   }
   if (!found.preview) return { status: 422, text: 'Hasil AI ini masih punya galat. Perbaiki dulu, lalu buka pratinjau lagi.' }
@@ -23854,7 +23882,9 @@ export type ReferenceKind = (typeof REFERENCE_KINDS)[number]
 const slug = z.string().trim().max(SLUG_MAX).regex(SLUG_PATTERN, 'slug hanya huruf kecil, angka, dan tanda hubung')
 const optionalText = (max: number) => z.string().trim().min(1).max(max).optional()
 /** Sumber di luar site boleh http atau https (banyak situs lama masih http). */
-const sourceUrl = z.url({ protocol: /^https?$/ }).max(2_048)
+// Regex sama dengan CHECK di database (http/https huruf kecil, tanpa spasi), agar
+// URL yang lolos di sini tidak ditolak database saat approve (menjadi 500).
+const sourceUrl = z.url({ protocol: /^https?$/ }).max(2_048).regex(/^https?:\/\/\S+$/, 'URL harus diawali http:// atau https:// (huruf kecil) tanpa spasi')
 /** Kunci gambar di dalam satu payload, mis. "cover" atau "img-2". */
 const imageKey = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'key gambar: huruf kecil, angka, _ atau -, maks 64')
 
@@ -24098,7 +24128,7 @@ Video tidak disimpan. Block `embed` memutar video dari alamat aslinya dan menamp
 | Field | Wajib | Keterangan |
 |---|---|---|
 | `key` | ya | Nama lokal di payload ini, misalnya `cover`, `img-2` (huruf kecil, angka, `_`, `-`) |
-| `storageKey` | ya | Lokasi file di object storage, diawali kode site. File harus sudah ada saat approval |
+| `storageKey` | ya | Lokasi file di object storage, diawali kode site. File harus sudah ada saat approval, berupa JPEG/PNG/WebP dengan ekstensi yang sesuai, paling besar 10 MB |
 | `altText` | ya | Deskripsi gambar untuk pembaca layar |
 | `caption` | tidak | Keterangan di bawah gambar |
 | `credit` | tidak | Pemilik hak, misalnya "Foto: Kantor Berita X" |
@@ -24112,7 +24142,7 @@ Gambar yang diambil dari sumber lain **harus** punya `credit` atau `sourceUrl`. 
 | Field | Wajib | Keterangan |
 |---|---|---|
 | `title` | ya | Judul sumber |
-| `url` | ya | `http://` atau `https://` |
+| `url` | ya | `http://` atau `https://` (huruf kecil), tanpa spasi |
 | `publisher` | tidak | Nama media atau situs |
 | `kind` | tidak | `ARTICLE` (bawaan), `VIDEO`, `IMAGE`, `OTHER` |
 
@@ -24247,6 +24277,8 @@ describe('parseGeneratedPayload', () => {
     ['gambar tanpa alt', ['images', 0, 'altText'], REMOVE, 'images.0.altText'],
     ['embed provider tidak dikenal', ['body', 'blocks', 2, 'provider'], 'tiktok', 'body.blocks.2.provider'],
     ['URL referensi javascript:', ['references', 0, 'url'], 'javascript:alert(1)', 'references.0.url'],
+    ['URL referensi huruf besar (ditolak database)', ['references', 0, 'url'], 'HTTPS://contoh.test/x', 'references.0.url'],
+    ['URL referensi berisi spasi', ['references', 0, 'url'], 'https://contoh.test/a b', 'references.0.url'],
     ['URL referensi dobel', ['references', 1], { title: 'Lagi', url: 'http://contoh.test/resep' }, 'references.1.url'],
     ['tag dobel beda tulisan', ['tags', 2], 'masakan-batak', 'tags.2'],
     ['tag tanpa huruf/angka', ['tags', 2], '!!!', 'tags.2'],
@@ -24584,7 +24616,7 @@ import type { MediaRef } from '../repositories/types'
 import { conflict, EditorError, invalid, notFound } from '../editor/errors'
 import { updatedAtSchema } from '../editor/inputs'
 import { isReservedFirstSegment, permalinkFirstToken, slugify } from '../editor/slug'
-import { sniffImage } from '../media/image-info'
+import { MAX_IMAGE_BYTES, sniffImage } from '../media/image-info'
 import type { MediaStorage } from '../media/local-storage'
 import { normalizePaging, toPage, type Page, type RepositoryContext, type SiteId } from '../repositories/types'
 import { parseSiteSettings } from '../site/settings'
@@ -24668,7 +24700,7 @@ export interface ApproveResult {
 }
 
 /** Penyimpanan yang dibaca saat memeriksa gambar. null = storage belum diatur di server. */
-export type ImageReader = Pick<MediaStorage, 'read'> | null
+export type ImageReader = Pick<MediaStorage, 'read' | 'size'> | null
 
 const EXTENSION_MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
 const NOTE_MAX = 1_000
@@ -24702,7 +24734,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
   }
 
   /** Pemeriksaan yang butuh database dan storage; payload sudah lolos skema. */
-  async function resolvePlan(tx: Db, siteId: SiteId, payload: GeneratedPayload, storage: ImageReader): Promise<{ issues: ReviewIssue[]; plan: ResolvedPlan | null }> {
+  async function resolvePlan(tx: Db, siteId: SiteId, payload: GeneratedPayload, storage: ImageReader, ownArticleId: string | null = null): Promise<{ issues: ReviewIssue[]; plan: ResolvedPlan | null }> {
     const issues: ReviewIssue[] = []
     const error = (field: string, message: string) => issues.push({ level: 'error', field, message })
     const warning = (field: string, message: string) => issues.push({ level: 'warning', field, message })
@@ -24739,7 +24771,8 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
     // Redirect lama dengan path yang sama tidak masalah: konten menang atas redirect.
     if (payload.slug) {
       const [taken] = await tx.select({ id: articles.id }).from(articles).where(and(eq(articles.siteId, siteId), eq(articles.slug, payload.slug))).limit(1)
-      if (taken) error('slug', `slug "${payload.slug}" sudah dipakai artikel lain`)
+      // Hasil yang sudah disetujui: slug itu dipakai artikel hasil approve-nya sendiri.
+      if (taken && taken.id !== ownArticleId) error('slug', `slug "${payload.slug}" sudah dipakai artikel lain`)
       const settings = parseSiteSettings(site.settings)
       if (permalinkFirstToken(settings.permalink) === ':slug' && isReservedFirstSegment(payload.slug)) error('slug', `"${payload.slug}" dipakai route sistem`)
     }
@@ -24769,7 +24802,12 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
         error(field, 'storage media belum diatur di server (MEDIA_DIR)')
         continue
       }
-      const bytes = await storage.read(image.storageKey)
+      const size = await storage.size(image.storageKey)
+      if (size !== null && size > MAX_IMAGE_BYTES) {
+        error(field, `file lebih dari ${MAX_IMAGE_BYTES / 1024 / 1024} MB`)
+        continue
+      }
+      const bytes = size === null ? null : await storage.read(image.storageKey)
       if (!bytes) {
         error(field, `file ${image.storageKey} tidak ada di storage`)
         continue
@@ -24961,7 +24999,7 @@ export function createGeneratedRepository(ctx: RepositoryContext, editor: Editor
       // Hasil yang sudah diputuskan tetap bisa dipratinjau bila payload-nya sah.
       const plan = review.plan ?? (await (async () => {
         const parsed = parseGeneratedPayload(review.record.payload)
-        return parsed.ok ? (await resolvePlan(db, siteId, parsed.payload, storage)).plan : null
+        return parsed.ok ? (await resolvePlan(db, siteId, parsed.payload, storage, review.record.articleId)).plan : null
       })())
       return { review, preview: plan ? await previewOf(siteId, plan) : null }
     },
@@ -25091,7 +25129,12 @@ function png(width: number, height: number): Uint8Array {
 }
 
 const files = new Map<string, Uint8Array>()
-const storage: ImageReader = { read: async (key) => files.get(key) ?? null }
+/** Ukuran palsu per key (untuk menguji batas ukuran tanpa file besar). */
+const fakeSizes = new Map<string, number>()
+const storage: ImageReader = {
+  read: async (key) => files.get(key) ?? null,
+  size: async (key) => fakeSizes.get(key) ?? files.get(key)?.length ?? null,
+}
 
 async function rejects(promise: Promise<unknown>, kind: EditorError['kind'], field?: string) {
   const error = await promise.then(() => null, (e: unknown) => e)
@@ -25228,6 +25271,13 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
       expect(errors(noStorage.issues)).toEqual(['images.0.storageKey'])
     })
 
+    it('gambar lebih dari batas ukuran = galat, tanpa membaca isinya', async () => {
+      files.set(`${code}/besar.png`, png(10, 10))
+      fakeSizes.set(`${code}/besar.png`, 11 * 1024 * 1024)
+      const review = await generated.review(SITE, await ingest(payload({ images: [{ key: 'a', storageKey: `${code}/besar.png`, altText: 'x', credit: 'F' }] })), storage)
+      expect(review.issues.find((i) => i.field === 'images.0.storageKey')?.message).toMatch(/lebih dari 10 MB/)
+    })
+
     it('media yang sudah tercatat: site sendiri dipakai ulang, site lain = galat', async () => {
       const [own] = await db.insert(media).values({ siteId: SITE, storageKey: `${code}/lama.webp`, mimeType: 'image/webp', sizeBytes: 10, width: 1, height: 1 }).returning({ id: media.id })
       const [seedMedia] = await db.select({ storageKey: media.storageKey }).from(media).where(eq(media.siteId, OTHER)).limit(1)
@@ -25286,6 +25336,8 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
       await rejects(reject(id, 'telat'), 'conflict')
       const review = await generated.review(SITE, id, storage)
       expect(review.canApprove).toBe(false)
+      // Masih bisa dipratinjau: slug eksplisit dipakai artikel hasil approve-nya sendiri.
+      expect((await generated.preview(SITE, id, storage)).preview?.article.slug).toBe(`sambal-${run}`)
     })
 
     it('jadwalkan: tanggal wajib, di masa depan, dengan zona waktu', async () => {
@@ -25505,8 +25557,10 @@ export default defineEventHandler(async (event) => {
       const { article } = await generated.approve(siteId, id, { mode: 'publish', expectedUpdatedAt: String(item.expectedUpdatedAt ?? '') }, admin.user.id, storage)
       results.push({ siteId, id, ok: true, articleId: article.id, publicPath: article.publicPath })
     } catch (error) {
-      if (!(error instanceof EditorError)) throw error
-      results.push({ siteId, id, ok: false, message: error.message })
+      // Item sebelumnya sudah terbit (transaksi sendiri), jadi galat apa pun
+      // dilaporkan per item, tidak menggagalkan seluruh respons.
+      if (!(error instanceof EditorError)) console.error('[approve-bulk]', siteId, id, error)
+      results.push({ siteId, id, ok: false, message: error instanceof EditorError ? error.message : 'galat server; lihat log' })
     }
   }
   return { results }
@@ -25884,7 +25938,10 @@ const payload = computed<PayloadView>(() => {
     excerpt: str(p['excerpt']),
     category: str(p['category']),
     tags: Array.isArray(p['tags']) ? p['tags'].filter((t): t is string => typeof t === 'string') : [],
-    references: refs.filter((r): r is PayloadView['references'][number] => typeof r === 'object' && r !== null && typeof (r as { url?: unknown }).url === 'string'),
+    // Payload mentah dari agent (belum tentu lolos skema): hanya URL http(s) yang
+    // boleh menjadi href, agar `javascript:` dari agent tidak bisa dijalankan di origin admin.
+    references: refs.filter((r): r is PayloadView['references'][number] =>
+      typeof r === 'object' && r !== null && typeof (r as { url?: unknown }).url === 'string' && /^https?:\/\//i.test((r as { url: string }).url)),
   }
 })
 
@@ -26469,3 +26526,298 @@ const KIND_LABEL: Record<ReferenceView['kind'], string | null> = { ARTICLE: null
 BASE_URL='http://{host}:3000' pnpm --filter @framework/web browser-check
 # [browser] OK: 26 halaman ter-hydrate tanpa mismatch atau error
 ```
+
+# Membuktikan Alur Konten AI
+
+Bab terakhir alur konten AI: satu skrip gate membuktikan seluruh alur terhadap server hasil build, lalu code review dan security review atas semua perubahannya.
+
+1. Tulis gate sebagai TypeScript yang dijalankan dengan `tsx` (seperti `admin:create`), karena skrip di `apps/web` tidak bisa meng-import `pg` langsung, sedangkan `@framework/db` adalah source TypeScript. Gate meniru agent dengan dua cara:
+   - di CI, `AGENT_DATABASE_URL` login langsung sebagai `blog_agent`, sekaligus membuktikan role agent bisa login;
+   - di lokal, role agent masih `NOLOGIN`, jadi gate memakai koneksi pemilik schema lalu `SET LOCAL ROLE blog_agent` di setiap transaksi. Hak aksesnya sama persis.
+
+   Gate menulis satu gambar PNG ke `MEDIA_DIR` dan dua hasil AI (satu valid, satu dengan kategori yang tidak ada), lalu memeriksa: agent tidak bisa menulis `articles`, mengisi status, atau menyetujui sendiri; hasil AI tidak ada di URL artikel, home, sitemap, RSS, dan pencarian; hasil rusak diblokir dan ditolak; pratinjau memuat referensi dan `noindex`; setelah approve lewat API admin, artikel tampil di semua tempat tadi dengan referensi berurutan, sumber gambar, tautan sumber video, dan JSON-LD `citation`; terakhir, agent tidak bisa mengubah hasil yang sudah diputuskan. Artikel uji diarsipkan di blok `finally`.
+
+`apps/web/scripts/gate-content.ts`
+
+```ts
+// Gate M5a (ADR-010, usulan K5) terhadap server hasil build.
+//
+// Meniru AI agent: hasil AI ditulis langsung ke database sebagai role agent
+// (blog_agent), lalu dibuktikan bahwa:
+//  - agent tidak bisa menulis tabel konten atau mengisi status/keputusan;
+//  - hasil AI tidak tampil di web (URL artikel, home, sitemap, RSS, pencarian);
+//  - hasil yang rusak tidak bisa di-approve, dan tolak = ARCHIVED;
+//  - approve lewat API admin membuat artikel tampil di semua tempat itu,
+//    dengan bagian referensi, sumber gambar, tautan sumber video, dan JSON-LD citation;
+//  - hasil yang sudah diputuskan tidak bisa diubah agent.
+// Pemilik proyek tidak menulis SQL apa pun. Artikel uji diarsipkan di akhir.
+//
+// Koneksi agent:
+//  - AGENT_DATABASE_URL (CI): login langsung sebagai role agent, sekaligus
+//    membuktikan role itu bisa login;
+//  - tanpa itu (lokal, role agent NOLOGIN): koneksi pemilik schema
+//    (POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB, host PGHOST atau localhost)
+//    lalu SET LOCAL ROLE <AGENT_DB_USER> di setiap transaksi.
+// Butuh juga MEDIA_DIR (file gambar uji ditulis ke sana) dan env gate admin
+// (ADMIN_HOST, ADMIN_SESSION_SECRET, ADMIN_PASSWORD).
+//
+//   pnpm build && pnpm --filter @framework/web gate:content
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { createDatabase, sql, type Database } from '@framework/db'
+import { requestWithHost, startBuiltServer } from './lib/built-server.mjs'
+
+const env = process.env
+const port = env['GATE_CONTENT_PORT'] ?? '3995'
+const adminHost = env['ADMIN_HOST']
+const password = env['ADMIN_PASSWORD']
+const mediaDir = env['MEDIA_DIR']
+const agentUser = env['AGENT_DB_USER'] ?? 'blog_agent'
+const siteCode = 'dapur-nusantara'
+const siteHost = env['GATE_CONTENT_SITE_HOST'] ?? 'kuliner.localhost'
+
+if (!adminHost || !password || !env['ADMIN_SESSION_SECRET'] || !mediaDir) {
+  console.error('[gate-content] ADMIN_HOST, ADMIN_SESSION_SECRET, ADMIN_PASSWORD, dan MEDIA_DIR wajib diisi')
+  process.exit(1)
+}
+
+const ownerUrl = () => {
+  const user = env['PGUSER'] ?? env['POSTGRES_USER']
+  const pass = env['PGPASSWORD'] ?? env['POSTGRES_PASSWORD']
+  const db = env['PGDATABASE'] ?? env['POSTGRES_DB']
+  const host = env['PGHOST'] ?? 'localhost'
+  const dbPort = env['PGPORT'] ?? env['POSTGRES_PORT'] ?? '5432'
+  if (!user || !pass || !db) throw new Error('tanpa AGENT_DATABASE_URL, isi POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (pemilik schema)')
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${dbPort}/${db}`
+}
+
+const direct = Boolean(env['AGENT_DATABASE_URL'])
+const agentDb: Database = createDatabase({ connectionString: env['AGENT_DATABASE_URL'] ?? ownerUrl(), max: 1, applicationName: 'gate-content' })
+
+/** Jalankan SQL sebagai agent, dalam transaksi; `rollback` = jangan simpan. */
+async function asAgent<T>(run: (tx: Database) => Promise<T>, { rollback = false } = {}): Promise<T> {
+  const ROLLBACK = Symbol('rollback')
+  let result: T | undefined
+  try {
+    await agentDb.transaction(async (tx) => {
+      if (!direct) await tx.execute(sql.raw(`SET LOCAL ROLE "${agentUser.replace(/"/g, '""')}"`))
+      result = await run(tx as unknown as Database)
+      if (rollback) throw ROLLBACK
+    })
+  } catch (error) {
+    if (error !== ROLLBACK) throw error
+  }
+  return result as T
+}
+
+/** Kode SQLSTATE dari galat pg (juga yang dibungkus Drizzle). */
+async function sqlState(run: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await run()
+    return null
+  } catch (error) {
+    for (let e: unknown = error; e; e = (e as { cause?: unknown }).cause) {
+      const code = (e as { code?: unknown }).code
+      if (typeof code === 'string') return code
+    }
+    return 'unknown'
+  }
+}
+
+const failures: string[] = []
+let passed = 0
+function check(label: string, condition: boolean, detail = '') {
+  if (condition) passed++
+  else failures.push(`${label}${detail ? `: ${detail}` : ''}`)
+}
+
+const adminOrigin = `http://${adminHost}:${port}`
+function admin(path: string, { method = 'GET', body, cookie }: { method?: string; body?: unknown; cookie?: string } = {}) {
+  const headers: Record<string, string> = {}
+  if (method !== 'GET') headers['origin'] = adminOrigin
+  if (cookie) headers['cookie'] = cookie
+  return requestWithHost(port, { method, path, host: `${adminHost}:${port}`, headers, body })
+}
+const site = (path: string) => requestWithHost(port, { path, host: siteHost })
+const json = (body: string) => JSON.parse(body) as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+
+/** PNG minimal yang lolos pemeriksaan isi gambar (signature + IHDR). */
+function png(width: number, height: number): Uint8Array {
+  const b = new Uint8Array(33)
+  b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
+  new DataView(b.buffer).setUint32(16, width)
+  new DataView(b.buffer).setUint32(20, height)
+  return b
+}
+
+const run = `${Date.now().toString(36)}${process.pid}`
+const slug = `gate-konten-${run}`
+const marker = `penandagate${run}`
+const storageKey = `${siteCode}/gate/${run}.png`
+const video = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+const payload = {
+  version: 1,
+  title: `Gate konten ${run}`,
+  slug,
+  excerpt: 'Hasil AI uji gate.',
+  category: 'resep',
+  author: 'redaksi',
+  tags: ['Pedas'],
+  cover: 'sampul',
+  images: [{ key: 'sampul', storageKey, altText: 'Gambar uji', credit: 'Foto: Gate', sourceUrl: 'https://contoh.test/gate/foto' }],
+  body: { version: 1, blocks: [{ type: 'paragraph', text: `Isi uji ${marker}.` }, { type: 'embed', provider: 'youtube', url: video }] },
+  references: [
+    { title: `Sumber gate ${run}`, url: `https://contoh.test/gate/${run}`, publisher: 'Contoh' },
+    { title: 'Video sumber', url: video, publisher: 'YouTube', kind: 'VIDEO' },
+  ],
+}
+
+const server = await startBuiltServer({ port, label: 'gate-content' })
+let articleToArchive: { siteId: string; id: string; cookie: string } | null = null
+try {
+  if (server.response?.status !== 200) throw new Error(`server/database tidak siap (${server.healthUrl} -> ${server.response?.status ?? 'tidak menjawab'})`)
+
+  // ---- Agent menulis hasil AI -----------------------------------------
+  const file = join(mediaDir, ...storageKey.split('/'))
+  await mkdir(dirname(file), { recursive: true })
+  await writeFile(file, png(1200, 630))
+
+  const who = await asAgent(async (tx) => (await tx.execute<{ u: string }>(sql`SELECT current_user AS u`)).rows[0]?.u)
+  check('koneksi agent memakai role agent', who === agentUser, String(who))
+  const [siteRow] = (await asAgent((tx) => tx.execute<{ id: string }>(sql`SELECT id FROM sites WHERE code = ${siteCode}`))).rows
+  if (!siteRow) throw new Error(`site ${siteCode} tidak ada (database belum di-seed?)`)
+  const siteId = siteRow.id
+
+  const ids = await asAgent(async (tx) => {
+    const insert = (externalId: string, p: unknown) =>
+      tx.execute<{ id: string }>(sql`
+        INSERT INTO generated_articles (site_id, external_id, payload, agent_note)
+        VALUES (${siteId}, ${externalId}, ${JSON.stringify(p)}::jsonb, 'catatan gate')
+        RETURNING id`)
+    const valid = (await insert(`gate/${run}/valid`, payload)).rows[0]?.id
+    const broken = (await insert(`gate/${run}/rusak`, { ...payload, slug: `${slug}-rusak`, category: 'tidak-ada' })).rows[0]?.id
+    return { valid: valid ?? '', broken: broken ?? '' }
+  })
+  check('agent menulis hasil AI', Boolean(ids.valid && ids.broken))
+
+  const denied = (state: string | null) => state === '42501'
+  check('agent tidak bisa menulis articles', denied(await sqlState(() => asAgent((tx) => tx.execute(sql`
+    INSERT INTO articles (site_id, category_id, title, slug) SELECT ${siteId}, id, 'x', ${`${slug}-langsung`} FROM categories WHERE site_id = ${siteId} LIMIT 1`), { rollback: true }))))
+  check('agent tidak bisa mengisi status', denied(await sqlState(() => asAgent((tx) => tx.execute(sql`
+    INSERT INTO generated_articles (site_id, external_id, payload, status) VALUES (${siteId}, ${`gate/${run}/status`}, '{}', 'APPROVED')`), { rollback: true }))))
+  check('agent tidak bisa menyetujui sendiri', denied(await sqlState(() => asAgent((tx) => tx.execute(sql`
+    UPDATE generated_articles SET status = 'APPROVED', reviewed_at = now() WHERE id = ${ids.valid}`), { rollback: true }))))
+
+  // ---- Belum tampil di web ----------------------------------------------
+  const articlePath = `/resep/${slug}`
+  const publicState = async () => {
+    const [page, home, sitemap, rss, search] = await Promise.all([site(articlePath), site('/'), site('/sitemap.xml'), site('/rss.xml'), site(`/search?q=${marker}`)])
+    return { page: page.status, home: home.body.includes(slug), sitemap: sitemap.body.includes(slug), rss: rss.body.includes(slug), search: search.body.includes(slug), html: page.body }
+  }
+  const before = await publicState()
+  check('sebelum approve: URL artikel 404', before.page === 404, String(before.page))
+  check('sebelum approve: tidak ada di home, sitemap, RSS, pencarian', !before.home && !before.sitemap && !before.rss && !before.search, JSON.stringify({ ...before, html: undefined }))
+
+  // ---- Admin memutuskan ------------------------------------------------
+  const login = await admin('/api/admin/login', { method: 'POST', body: { email: env['ADMIN_EMAIL'] ?? 'admin@local.test', password } })
+  const cookie = [login.headers['set-cookie'] ?? []].flat().find((c) => c.startsWith('blog_admin='))?.split(';')[0] ?? ''
+  check('login admin', login.status === 200 && Boolean(cookie), String(login.status))
+
+  let r = await admin('/api/admin/generated', { cookie })
+  check('antrian memuat kedua hasil AI', r.status === 200 && [ids.valid, ids.broken].every((id) => r.body.includes(id)), String(r.status))
+
+  const base = `/api/admin/sites/${siteId}/generated`
+  r = await admin(`${base}/${ids.broken}`, { cookie })
+  const broken = json(r.body)
+  check('hasil rusak: pemeriksaan memblokir', r.status === 200 && broken['canApprove'] === false && JSON.stringify(broken['issues']).includes('category'), r.body.slice(0, 200))
+  r = await admin(`${base}/${ids.broken}/approve`, { method: 'POST', cookie, body: { mode: 'publish', expectedUpdatedAt: broken['record']?.updatedAt } })
+  check('hasil rusak tidak bisa di-approve (422)', r.status === 422, String(r.status))
+  r = await admin(`${base}/${ids.broken}/reject`, { method: 'POST', cookie, body: { note: 'Kategori tidak ada (gate)', expectedUpdatedAt: broken['record']?.updatedAt } })
+  check('tolak: ARCHIVED dengan alasan', r.status === 200 && json(r.body)['status'] === 'ARCHIVED', `${r.status} ${r.body.slice(0, 120)}`)
+
+  r = await admin(`${base}/${ids.valid}`, { cookie })
+  const valid = json(r.body)
+  check('hasil valid: bisa di-approve', valid['canApprove'] === true, JSON.stringify(valid['issues']))
+  r = await admin(`/admin/preview/${siteCode}/?generated=${ids.valid}`, { cookie })
+  check('pratinjau: artikel dengan referensi, noindex', r.status === 200 && r.body.includes(`Gate konten ${run}`) && r.body.includes('Sumber dan referensi') && String(r.headers['x-robots-tag']).includes('noindex'), String(r.status))
+  r = await admin(`${base}/${ids.valid}/approve`, { method: 'POST', cookie, body: { mode: 'publish', expectedUpdatedAt: valid['record']?.updatedAt } })
+  const approved = json(r.body)
+  check('approve: artikel terbit dari hasil AI', r.status === 200 && approved['article']?.status === 'PUBLISHED' && approved['generated']?.status === 'APPROVED', `${r.status} ${r.body.slice(0, 200)}`)
+  if (approved['article']?.id) articleToArchive = { siteId, id: approved['article'].id, cookie }
+
+  // ---- Tampil di web, dengan sumbernya ----------------------------------
+  const after = await publicState()
+  check('setelah approve: URL artikel 200', after.page === 200, String(after.page))
+  check('setelah approve: ada di home, sitemap, RSS, pencarian', after.home && after.sitemap && after.rss && after.search, JSON.stringify({ ...after, html: undefined }))
+  check('halaman: bagian referensi berurutan', after.html.includes('Sumber dan referensi') && after.html.indexOf(`Sumber gate ${run}`) < after.html.indexOf('Video sumber'))
+  check('halaman: sumber gambar dan sumber video', after.html.includes('https://contoh.test/gate/foto') && after.html.includes('Tonton di sumber asli'))
+  check('halaman: JSON-LD citation', /application\/ld\+json[^>]*>[^<]*"citation":\[/.test(after.html) && after.html.includes(`https://contoh.test/gate/${run}`))
+
+  check('agent tidak bisa mengubah hasil yang sudah diputuskan', (await sqlState(() => asAgent((tx) => tx.execute(sql`
+    UPDATE generated_articles SET payload = '{"version": 1}' WHERE id = ${ids.valid}`), { rollback: true }))) === 'P0001')
+} catch (error) {
+  failures.push(`galat: ${(error as Error).message}`)
+} finally {
+  if (articleToArchive) {
+    const { siteId, id, cookie } = articleToArchive
+    const r = await admin(`/api/admin/sites/${siteId}/articles/${id}/archive`, { method: 'POST', cookie, body: { version: 1 } })
+    if (r.status !== 200) failures.push(`arsip artikel uji gagal: ${r.status}`)
+  }
+  await agentDb.$client.end()
+  await server.stop()
+}
+
+if (failures.length) {
+  console.error(`[gate-content] GAGAL (${failures.length}):`)
+  for (const f of failures) console.error(`  - ${f}`)
+  process.exit(1)
+}
+console.log(`[gate-content] OK: ${passed} pemeriksaan konten AI lulus`)
+```
+
+   Skrip gate lain berupa `.mjs`; agar TypeScript mengenal helper-nya, tambahkan deklarasi tipe di sebelahnya:
+
+`apps/web/scripts/lib/built-server.d.mts`
+
+```ts
+// Tipe untuk built-server.mjs, dipakai skrip gate TypeScript (gate-content.ts).
+export interface HttpResult {
+  status: number
+  headers: Record<string, string | string[] | undefined>
+  body: string
+}
+
+export interface BuiltServer {
+  healthUrl: string
+  /** Respons fetch /api/health saat server siap; undefined bila tidak menjawab. */
+  response: Response | undefined
+  stop(): Promise<void> | void
+}
+
+export function startBuiltServer(options: { port: string; label: string; timeoutMs?: number }): Promise<BuiltServer>
+export function getWithHost(port: string, path: string, host: string): Promise<HttpResult>
+export function requestWithHost(
+  port: string,
+  options: { method?: string; path: string; host: string; headers?: Record<string, string>; body?: unknown; rawBody?: Buffer },
+): Promise<HttpResult>
+```
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content
+# [gate-content] OK: 21 pemeriksaan konten AI lulus
+```
+
+   Di CI, langkah ini ditambahkan di job `build` setelah gate admin, dengan `AGENT_DATABASE_URL=postgres://blog_agent:ci_agent_password@db:5432/blog_dev`.
+
+2. Jalankan code review atas seluruh diff alur konten AI. Temuannya dan perbaikannya:
+   - `dateModified` di JSON-LD berasal dari waktu seed, sehingga snapshot gagal di setiap database baru. `stable()` di test snapshot kini menyamarkannya seperti `modifiedTime`.
+   - `z.url()` menerima URL yang ditolak CHECK database (huruf besar `HTTPS://`, spasi). URL itu lolos pemeriksaan lalu menjadi galat 500 saat approve. Skema `sourceUrl` di payload kini memakai regex yang sama dengan database.
+   - Approve massal berhenti dengan 500 pada galat selain `EditorError`, padahal item sebelumnya sudah terbit. Kini setiap galat dilaporkan per item.
+   - Hasil AI yang sudah disetujui dengan slug eksplisit tidak bisa dipratinjau lagi, karena slug-nya "dipakai" artikel hasil approve-nya sendiri. `resolvePlan` menerima `ownArticleId` untuk kasus itu.
+   - Pesan "Hasil AI tidak ditemukan" juga muncul saat yang hilang adalah kategori. Kini pesannya sesuai data yang hilang.
+   - Gambar dari agent melewati batas 10 MB upload dan dibaca utuh ke memori. Storage kini punya `size()`, dan ukuran diperiksa sebelum file dibaca, dengan batas yang sama dengan upload (`MAX_IMAGE_BYTES`).
+
+3. Jalankan security review. Satu temuan diperbaiki walau keyakinannya di bawah ambang: halaman detail antrian membaca payload mentah dari agent, dan URL referensi `javascript:` bisa menjadi `href` di origin admin. Hanya URL `http(s)` yang kini dijadikan tautan. Prinsipnya: payload dari agent tidak dipercaya, termasuk di layar admin, sampai lolos skema.
+
+4. Lengkapi kontrak agent dengan aturan yang ditemukan di sini: URL huruf kecil `http(s)` tanpa spasi, dan gambar paling besar 10 MB.

@@ -107,7 +107,7 @@ Video tidak disimpan. Block `embed` memutar video dari alamat aslinya dan menamp
 | Field | Wajib | Keterangan |
 |---|---|---|
 | `key` | ya | Nama lokal di payload ini, misalnya `cover`, `img-2` (huruf kecil, angka, `_`, `-`) |
-| `storageKey` | ya | Lokasi file di object storage, diawali kode site. File harus sudah ada saat approval |
+| `storageKey` | ya | Lokasi file di object storage, diawali kode site. File harus sudah ada saat approval, berupa JPEG/PNG/WebP dengan ekstensi yang sesuai, paling besar 10 MB |
 | `altText` | ya | Deskripsi gambar untuk pembaca layar |
 | `caption` | tidak | Keterangan di bawah gambar |
 | `credit` | tidak | Pemilik hak, misalnya "Foto: Kantor Berita X" |
@@ -121,7 +121,7 @@ Gambar yang diambil dari sumber lain **harus** punya `credit` atau `sourceUrl`. 
 | Field | Wajib | Keterangan |
 |---|---|---|
 | `title` | ya | Judul sumber |
-| `url` | ya | `http://` atau `https://` |
+| `url` | ya | `http://` atau `https://` (huruf kecil), tanpa spasi |
 | `publisher` | tidak | Nama media atau situs |
 | `kind` | tidak | `ARTICLE` (bawaan), `VIDEO`, `IMAGE`, `OTHER` |
 

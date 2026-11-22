@@ -11,6 +11,9 @@ export interface ImageInfo {
   height: number
 }
 
+/** Batas ukuran file gambar (upload admin dan gambar hasil AI). */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
 /** Batas dimensi agar file "gambar" berukuran raksasa ditolak. */
 export const MAX_IMAGE_SIDE = 12_000
 

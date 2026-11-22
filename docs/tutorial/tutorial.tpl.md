@@ -1273,6 +1273,8 @@ event.context.page = lastPage as typeof event.context.page
    - Jam dipatok. Kolom `updated_at` seed berisi waktu saat seed dijalankan, jadi diganti penanda tetap agar snapshot sama di setiap mesin dan di CI.
    - Di CI, Vitest tidak menulis snapshot baru, sehingga snapshot yang hilang atau berbeda membuat job gagal.
 
+   (Penyamaran `dateModified` (JSON-LD) ditambahkan di bab "Membuktikan Alur Konten AI".)
+
 @@include packages/core/src/views/view-models.snapshot.test.ts ts@@
 
 8. Jalankan sekali untuk menulis snapshot, periksa isinya, lalu commit file `packages/core/src/views/__snapshots__/view-models.snapshot.test.ts.snap`. Setelah perubahan view model yang disengaja:
@@ -1768,6 +1770,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 2. Tulis deteksi tipe dan dimensi dari header gambar. Gambar tidak di-decode; dimensi di luar 1..12000 piksel ditolak:
 
+   (`MAX_IMAGE_BYTES` ditambahkan di bab "Membuktikan Alur Konten AI".)
+
 @@include packages/core/src/media/image-info.ts ts@@
 
 @@include packages/core/src/media/image-info.test.ts ts@@
@@ -1776,6 +1780,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 4. Tulis sisi tulis storage. Penulisan atomik (file sementara lalu `rename`) agar pembaca tidak pernah melihat file setengah jadi; path dicek tetap di dalam folder dasar:
 
+   (`size()` ditambahkan di bab "Membuktikan Alur Konten AI".)
+
 @@include packages/core/src/media/local-storage.ts ts@@
 
 @@include packages/core/src/media/local-storage.test.ts ts@@
@@ -1783,6 +1789,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 5. Tambahkan media ke repository editor (bab "Menyimpan Konten dari Admin"): `createMedia` (key wajib diawali kode site itu), `updateMedia` (teks alternatif, keterangan, kredit, titik fokus; skema `mediaMetaSchema`), `mediaUsage`, dan `deleteMedia`. Pemakaian di body dicari dengan containment JSONB, `body->'blocks' @> '[{"type":"image","mediaId":"..."}]'`, ditambah gambar utama, gambar OG, avatar penulis, dan logo site. `listMedia` mengembalikan keterangan lengkap untuk form. Penguncian baris agar media tidak terhapus di tengah simpan artikel ditambahkan di bab "Menjadwalkan Artikel dan Menutup Admin".
 
 6. Satukan logika baca file di server, dipakai route publik `/media` dan API admin. Header `nosniff` dan CSP `sandbox` dipasang untuk semua file media:
+
+   (`MAX_UPLOAD_BYTES` memakai `MAX_IMAGE_BYTES` dari core sejak bab "Membuktikan Alur Konten AI".)
 
 @@include apps/web/server/utils/media.ts ts@@
 
@@ -2101,3 +2109,39 @@ Referensi sudah tersimpan di `article_references` dan sumber gambar di `media.so
 BASE_URL='http://{host}:3000' pnpm --filter @framework/web browser-check
 # [browser] OK: 26 halaman ter-hydrate tanpa mismatch atau error
 ```
+
+# Membuktikan Alur Konten AI
+
+Bab terakhir alur konten AI: satu skrip gate membuktikan seluruh alur terhadap server hasil build, lalu code review dan security review atas semua perubahannya.
+
+1. Tulis gate sebagai TypeScript yang dijalankan dengan `tsx` (seperti `admin:create`), karena skrip di `apps/web` tidak bisa meng-import `pg` langsung, sedangkan `@framework/db` adalah source TypeScript. Gate meniru agent dengan dua cara:
+   - di CI, `AGENT_DATABASE_URL` login langsung sebagai `blog_agent`, sekaligus membuktikan role agent bisa login;
+   - di lokal, role agent masih `NOLOGIN`, jadi gate memakai koneksi pemilik schema lalu `SET LOCAL ROLE blog_agent` di setiap transaksi. Hak aksesnya sama persis.
+
+   Gate menulis satu gambar PNG ke `MEDIA_DIR` dan dua hasil AI (satu valid, satu dengan kategori yang tidak ada), lalu memeriksa: agent tidak bisa menulis `articles`, mengisi status, atau menyetujui sendiri; hasil AI tidak ada di URL artikel, home, sitemap, RSS, dan pencarian; hasil rusak diblokir dan ditolak; pratinjau memuat referensi dan `noindex`; setelah approve lewat API admin, artikel tampil di semua tempat tadi dengan referensi berurutan, sumber gambar, tautan sumber video, dan JSON-LD `citation`; terakhir, agent tidak bisa mengubah hasil yang sudah diputuskan. Artikel uji diarsipkan di blok `finally`.
+
+@@include apps/web/scripts/gate-content.ts ts@@
+
+   Skrip gate lain berupa `.mjs`; agar TypeScript mengenal helper-nya, tambahkan deklarasi tipe di sebelahnya:
+
+@@include apps/web/scripts/lib/built-server.d.mts ts@@
+
+```bash
+pnpm build
+ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content
+# [gate-content] OK: 21 pemeriksaan konten AI lulus
+```
+
+   Di CI, langkah ini ditambahkan di job `build` setelah gate admin, dengan `AGENT_DATABASE_URL=postgres://blog_agent:ci_agent_password@db:5432/blog_dev`.
+
+2. Jalankan code review atas seluruh diff alur konten AI. Temuannya dan perbaikannya:
+   - `dateModified` di JSON-LD berasal dari waktu seed, sehingga snapshot gagal di setiap database baru. `stable()` di test snapshot kini menyamarkannya seperti `modifiedTime`.
+   - `z.url()` menerima URL yang ditolak CHECK database (huruf besar `HTTPS://`, spasi). URL itu lolos pemeriksaan lalu menjadi galat 500 saat approve. Skema `sourceUrl` di payload kini memakai regex yang sama dengan database.
+   - Approve massal berhenti dengan 500 pada galat selain `EditorError`, padahal item sebelumnya sudah terbit. Kini setiap galat dilaporkan per item.
+   - Hasil AI yang sudah disetujui dengan slug eksplisit tidak bisa dipratinjau lagi, karena slug-nya "dipakai" artikel hasil approve-nya sendiri. `resolvePlan` menerima `ownArticleId` untuk kasus itu.
+   - Pesan "Hasil AI tidak ditemukan" juga muncul saat yang hilang adalah kategori. Kini pesannya sesuai data yang hilang.
+   - Gambar dari agent melewati batas 10 MB upload dan dibaca utuh ke memori. Storage kini punya `size()`, dan ukuran diperiksa sebelum file dibaca, dengan batas yang sama dengan upload (`MAX_IMAGE_BYTES`).
+
+3. Jalankan security review. Satu temuan diperbaiki walau keyakinannya di bawah ambang: halaman detail antrian membaca payload mentah dari agent, dan URL referensi `javascript:` bisa menjadi `href` di origin admin. Hanya URL `http(s)` yang kini dijadikan tautan. Prinsipnya: payload dari agent tidak dipercaya, termasuk di layar admin, sampai lolos skema.
+
+4. Lengkapi kontrak agent dengan aturan yang ditemukan di sini: URL huruf kecil `http(s)` tanpa spasi, dan gambar paling besar 10 MB.

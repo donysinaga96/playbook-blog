@@ -29,8 +29,10 @@ export default defineEventHandler(async (event) => {
       const { article } = await generated.approve(siteId, id, { mode: 'publish', expectedUpdatedAt: String(item.expectedUpdatedAt ?? '') }, admin.user.id, storage)
       results.push({ siteId, id, ok: true, articleId: article.id, publicPath: article.publicPath })
     } catch (error) {
-      if (!(error instanceof EditorError)) throw error
-      results.push({ siteId, id, ok: false, message: error.message })
+      // Item sebelumnya sudah terbit (transaksi sendiri), jadi galat apa pun
+      // dilaporkan per item, tidak menggagalkan seluruh respons.
+      if (!(error instanceof EditorError)) console.error('[approve-bulk]', siteId, id, error)
+      results.push({ siteId, id, ok: false, message: error instanceof EditorError ? error.message : 'galat server; lihat log' })
     }
   }
   return { results }

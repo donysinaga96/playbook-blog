@@ -99,7 +99,9 @@ async function buildGenerated(site: Site, id: string, url: URL, prefix: string):
   try {
     found = await repos.generated.preview(site.id, id, useMediaStorage())
   } catch (error) {
-    if (error instanceof EditorError && error.kind === 'not-found') return { status: 404, text: 'Hasil AI tidak ditemukan.' }
+    if (error instanceof EditorError && error.kind === 'not-found') {
+      return { status: 404, text: error.message.startsWith('Hasil AI') ? 'Hasil AI tidak ditemukan.' : `${error.message}.` }
+    }
     throw error
   }
   if (!found.preview) return { status: 422, text: 'Hasil AI ini masih punya galat. Perbaiki dulu, lalu buka pratinjau lagi.' }

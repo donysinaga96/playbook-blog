@@ -30,7 +30,9 @@ export type ReferenceKind = (typeof REFERENCE_KINDS)[number]
 const slug = z.string().trim().max(SLUG_MAX).regex(SLUG_PATTERN, 'slug hanya huruf kecil, angka, dan tanda hubung')
 const optionalText = (max: number) => z.string().trim().min(1).max(max).optional()
 /** Sumber di luar site boleh http atau https (banyak situs lama masih http). */
-const sourceUrl = z.url({ protocol: /^https?$/ }).max(2_048)
+// Regex sama dengan CHECK di database (http/https huruf kecil, tanpa spasi), agar
+// URL yang lolos di sini tidak ditolak database saat approve (menjadi 500).
+const sourceUrl = z.url({ protocol: /^https?$/ }).max(2_048).regex(/^https?:\/\/\S+$/, 'URL harus diawali http:// atau https:// (huruf kecil) tanpa spasi')
 /** Kunci gambar di dalam satu payload, mis. "cover" atau "img-2". */
 const imageKey = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'key gambar: huruf kecil, angka, _ atau -, maks 64')
 

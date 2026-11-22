@@ -25,7 +25,12 @@ function png(width: number, height: number): Uint8Array {
 }
 
 const files = new Map<string, Uint8Array>()
-const storage: ImageReader = { read: async (key) => files.get(key) ?? null }
+/** Ukuran palsu per key (untuk menguji batas ukuran tanpa file besar). */
+const fakeSizes = new Map<string, number>()
+const storage: ImageReader = {
+  read: async (key) => files.get(key) ?? null,
+  size: async (key) => fakeSizes.get(key) ?? files.get(key)?.length ?? null,
+}
 
 async function rejects(promise: Promise<unknown>, kind: EditorError['kind'], field?: string) {
   const error = await promise.then(() => null, (e: unknown) => e)
@@ -162,6 +167,13 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
       expect(errors(noStorage.issues)).toEqual(['images.0.storageKey'])
     })
 
+    it('gambar lebih dari batas ukuran = galat, tanpa membaca isinya', async () => {
+      files.set(`${code}/besar.png`, png(10, 10))
+      fakeSizes.set(`${code}/besar.png`, 11 * 1024 * 1024)
+      const review = await generated.review(SITE, await ingest(payload({ images: [{ key: 'a', storageKey: `${code}/besar.png`, altText: 'x', credit: 'F' }] })), storage)
+      expect(review.issues.find((i) => i.field === 'images.0.storageKey')?.message).toMatch(/lebih dari 10 MB/)
+    })
+
     it('media yang sudah tercatat: site sendiri dipakai ulang, site lain = galat', async () => {
       const [own] = await db.insert(media).values({ siteId: SITE, storageKey: `${code}/lama.webp`, mimeType: 'image/webp', sizeBytes: 10, width: 1, height: 1 }).returning({ id: media.id })
       const [seedMedia] = await db.select({ storageKey: media.storageKey }).from(media).where(eq(media.siteId, OTHER)).limit(1)
@@ -220,6 +232,8 @@ describe.skipIf(!process.env['DATABASE_URL'])('repository hasil AI (database dev
       await rejects(reject(id, 'telat'), 'conflict')
       const review = await generated.review(SITE, id, storage)
       expect(review.canApprove).toBe(false)
+      // Masih bisa dipratinjau: slug eksplisit dipakai artikel hasil approve-nya sendiri.
+      expect((await generated.preview(SITE, id, storage)).preview?.article.slug).toBe(`sambal-${run}`)
     })
 
     it('jadwalkan: tanggal wajib, di masa depan, dengan zona waktu', async () => {

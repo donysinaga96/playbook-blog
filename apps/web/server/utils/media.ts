@@ -1,10 +1,10 @@
 // Storage media di server (M4 4.3): disk lokal di MEDIA_DIR. Dipakai route
 // publik /media (baca) dan API admin (upload, hapus, pratinjau).
-import { createLocalMediaStorage, splitStorageKey, type MediaStorage } from '@framework/core'
+import { createLocalMediaStorage, MAX_IMAGE_BYTES, splitStorageKey, type MediaStorage } from '@framework/core'
 import { getRouterParam, type RequestEvent } from 'nuxt/server'
 
 /** Batas ukuran satu file upload. */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES
 
 let storage: MediaStorage | null | undefined
 

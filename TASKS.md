@@ -12,10 +12,10 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
-| M5a — Alur konten AI dan approval | 20 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5a — Alur konten AI dan approval | 22 / 22 | ⏳ Lulus lokal 22 Nov 2026; menunggu pipeline |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
-**Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus lokal 22 Nov 2026, menunggu pipeline. Task deploy M5 **ditahan**; berikutnya task lokal M5 (5.1b `site:create`, header cache di aplikasi, log JSON, skrip backup/restore). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -334,11 +334,18 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 - [x] JSON-LD artikel: `citation`; snapshot view model diperbarui; cek browser 3.4 untuk tiga template — JSON-LD belum ada sebelumnya, jadi dibuat minimal: `Article` (headline, tanggal, gambar, penulis, penerbit, kategori, tag, citation) hanya untuk artikel; `<` di-escape. browser-check: 26 halaman OK (di server dev; build produksi + seed memberi 404 untuk file media seed yang memang tidak ada)
 
 **5a.5 Gate dan penutup [K5]**
-- [ ] Skrip `gate-content.mjs` di CI: INSERT hasil AI sebagai `blog_agent` → tidak ada yang tampil di web → agent tidak bisa menulis `articles` → hasil rusak tidak bisa di-approve → tolak = `ARCHIVED` → approve lewat API admin → artikel tampil dengan referensinya, juga di home, sitemap, RSS
-- [ ] Bab tutorial, commit, pipeline hijau, retro mini M5a
+- [x] Skrip `gate-content.mjs` di CI: INSERT hasil AI sebagai `blog_agent` → tidak ada yang tampil di web → agent tidak bisa menulis `articles` → hasil rusak tidak bisa di-approve → tolak = `ARCHIVED` → approve lewat API admin → artikel tampil dengan referensinya, juga di home, sitemap, RSS — `apps/web/scripts/gate-content.ts` (TypeScript lewat tsx, karena `pg` tidak bisa di-import dari `apps/web`); CI login langsung sebagai `blog_agent` (`AGENT_DATABASE_URL`), lokal `SET LOCAL ROLE` dari pemilik schema; juga pencarian, pratinjau, sumber gambar, sumber video, JSON-LD citation, dan perubahan setelah diputuskan; 21 pemeriksaan
+- [x] Bab tutorial, commit, pipeline hijau, retro mini M5a — bab "Membuktikan Alur Konten AI"; pipeline menunggu konfirmasi
 - › Skill: `/security-review` (role dan trigger agent, pratinjau, API antrian) dan `/code-review` (level high) untuk seluruh diff M5a
+- Code review (level high, 22 Nov 2026, `bbc42fb..HEAD`): 6 temuan diperbaiki: `dateModified` JSON-LD membuat snapshot gagal di database baru (kini disamarkan), URL yang lolos `z.url()` tetapi ditolak CHECK database (huruf besar, spasi) menjadi 500 saat approve (regex sama dengan database), approve massal 500 pada galat non-editor padahal item sebelumnya sudah terbit (kini per item), hasil yang sudah disetujui dengan slug eksplisit tidak bisa dipratinjau (`ownArticleId`), pesan "Hasil AI tidak ditemukan" untuk kategori yang hilang, gambar agent melewati batas 10 MB dan dibaca utuh ke memori (`storage.size()` + `MAX_IMAGE_BYTES`).
+- Security review (22 Nov 2026, seluruh diff M5a): tidak ada temuan dengan keyakinan ≥ 8. Satu temuan keyakinan 7 tetap diperbaiki: halaman detail antrian menjadikan URL referensi dari payload mentah sebagai `href`, jadi `javascript:` dari agent bisa sampai ke origin admin; kini hanya `http(s)` yang menjadi tautan. Diperiksa aman: otorisasi API dan pratinjau per site, path storage, hak `blog_agent` dan trigger, URL publik, JSON-LD, SQL berparameter.
 
 **Gate:** hasil AI di database tidak tampil di web sampai di-approve di admin; hasil yang tidak sesuai aturan tidak bisa dipindahkan ke tabel konten; konten yang terbit menampilkan semua referensinya.
+
+**Retro mini M5a**
+- Lebih lama dari dugaan: menyepakati model datanya. Rencana pertama (status baru di `articles`, lalu API ingest) dua kali diganti sebelum ada kode; tabel hasil AI terpisah ternyata yang paling sederhana dan paling aman. Detail yang hanya ketahuan saat dikerjakan: `uq_media_storage_key` unik global, konten menang atas redirect (pemeriksaan slug vs redirect tidak perlu), dan agent bisa memperbarui hasil yang sedang dibaca admin (butuh token versi). Kesalahan URL ditemukan review, bukan test: skema Zod dan CHECK database harus memakai aturan yang sama persis.
+- Ternyata tidak perlu: API ingest, queue, dan jumlah galat di daftar antrian. Role database dengan hak per kolom + trigger cukup membatasi agent; pratinjau tidak butuh jalur render sendiri karena pembangun halaman cukup diberi repository konten yang dibungkus.
+- Perlu diubah di roadmap: lanjutkan task lokal M5 (5.1b `site:create`, header cache di aplikasi, log JSON, skrip backup/restore) sebelum deploy. Adapter object storage menunggu provider dipilih; agent bisa mulai dibangun memakai `docs/kontrak-agent.md` dan storage lokal. Payload apa pun dari agent tetap dianggap tidak tepercaya, juga di layar admin.
 
 ---
 

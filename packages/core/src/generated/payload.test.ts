@@ -63,6 +63,8 @@ describe('parseGeneratedPayload', () => {
     ['gambar tanpa alt', ['images', 0, 'altText'], REMOVE, 'images.0.altText'],
     ['embed provider tidak dikenal', ['body', 'blocks', 2, 'provider'], 'tiktok', 'body.blocks.2.provider'],
     ['URL referensi javascript:', ['references', 0, 'url'], 'javascript:alert(1)', 'references.0.url'],
+    ['URL referensi huruf besar (ditolak database)', ['references', 0, 'url'], 'HTTPS://contoh.test/x', 'references.0.url'],
+    ['URL referensi berisi spasi', ['references', 0, 'url'], 'https://contoh.test/a b', 'references.0.url'],
     ['URL referensi dobel', ['references', 1], { title: 'Lagi', url: 'http://contoh.test/resep' }, 'references.1.url'],
     ['tag dobel beda tulisan', ['tags', 2], 'masakan-batak', 'tags.2'],
     ['tag tanpa huruf/angka', ['tags', 2], '!!!', 'tags.2'],

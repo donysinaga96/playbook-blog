@@ -20,7 +20,7 @@ const SEED_TIME = '<updated_at seed>'
 /** Ganti nilai yang bergantung pada waktu seed dengan penanda tetap. */
 function stable(result: PageResult): unknown {
   return JSON.parse(JSON.stringify(result), (key, value) => {
-    if (key === 'modifiedTime') return SEED_TIME
+    if (key === 'modifiedTime' || key === 'dateModified') return SEED_TIME
     if (key === 'updatedAt' && value !== null) return SEED_TIME
     return value
   })

@@ -6,7 +6,7 @@
 //  - Tulis atomik: file sementara di folder yang sama, lalu rename, sehingga
 //    pembaca tidak pernah melihat file setengah jadi.
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { splitStorageKey } from './storage'
 
@@ -14,6 +14,8 @@ export interface MediaStorage {
   put(storageKey: string, data: Uint8Array): Promise<void>
   /** Isi file; null bila tidak ada. */
   read(storageKey: string): Promise<Uint8Array | null>
+  /** Ukuran file dalam byte tanpa membacanya; null bila tidak ada. */
+  size(storageKey: string): Promise<number | null>
   /** Hapus file; tidak error bila sudah tidak ada. */
   delete(storageKey: string): Promise<void>
 }
@@ -54,6 +56,14 @@ export function createLocalMediaStorage(directory: string): MediaStorage {
     async read(storageKey) {
       try {
         return new Uint8Array(await readFile(pathOf(storageKey)))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    },
+    async size(storageKey) {
+      try {
+        return (await stat(pathOf(storageKey))).size
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
         throw error
