@@ -13,9 +13,9 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
 | M5a — Alur konten AI dan approval | 22 / 22 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit e7a7cdb) |
-| M5 — Produksi pertama (titik evaluasi) | 6 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
+| M5 — Produksi pertama (titik evaluasi) | 6 / 28 | — task lokal selesai, pipeline hijau 9d18074; task deploy ditahan sejak 22 Nov 2026 |
 
-**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5 selesai (5.1b `site:create`, header cache di aplikasi, log JSON, backup/restore); sisa M5 adalah deploy (ditahan). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5 selesai dan pipeline hijau pada 9d18074 (22 Nov 2026): 5.1b `site:create`, header cache di aplikasi, log JSON, backup/restore; sisa M5 adalah deploy (ditahan). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
