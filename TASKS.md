@@ -360,7 +360,7 @@ Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesa
   - [ ] Pemilik proyek meninjau dan meng-approve/menolak contoh di Antrian terbit; hapus atau arsipkan contoh setelah agent menghasilkan konten asli
   - [ ] Domain asli: `pnpm site:domain --site beritakonoha --add beritakonoha.id --primary` setelah dibeli (bersama deploy)
   - [ ] Logo dan favicon site (upload media; belum ada layar admin untuk memasangnya, lihat di bawah)
-- [x] Celah dari penyiapan Berita Konoha (dikerjakan 22 Nov 2026):
+- [x] Celah dari penyiapan Berita Konoha (dikerjakan 22 Nov 2026; pipeline hijau pada eeb9ed8):
   - [x] Tautan di halaman dan artikel: block `link` (http(s) dan `mailto:`) di body versi 2; v1 tetap sah tanpa migrasi; editor admin, template base, kontrak agent diperbarui. Halaman Latihan CPNS dan Kontak Berita Konoha kini memakai tautan
   - [x] Pengaturan site dari admin: nama, tagline, logo, favicon, pola judul, deskripsi dan gambar bagikan bawaan (`/admin/<site>/settings`); permalink baca-saja
   - [ ] Media sosial dan analytics: ada di skema settings tetapi belum dirender template; buka di form bila template menampilkannya
