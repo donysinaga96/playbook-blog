@@ -2,6 +2,7 @@
 import { getQuery } from 'nuxt/server'
 import { defineAdminSiteHandler, param } from '../../../../../utils/admin-api'
 import { useMediaStorage } from '../../../../../utils/media'
+import { log } from '../../../../../utils/log'
 
 export default defineAdminSiteHandler(async ({ editor, site, event }) => {
   const { storageKey } = await editor.deleteMedia(site.id, param(event, 'id'), String(getQuery(event)['updatedAt'] ?? ''))
@@ -10,7 +11,7 @@ export default defineAdminSiteHandler(async ({ editor, site, event }) => {
   try {
     await useMediaStorage()?.delete(storageKey)
   } catch (error) {
-    console.error(`[media] file ${storageKey} gagal dihapus (catatan sudah terhapus):`, error)
+    log('error', 'media: file gagal dihapus (catatan sudah terhapus)', { storageKey, error })
   }
   return { ok: true }
 })

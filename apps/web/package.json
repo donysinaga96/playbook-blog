@@ -17,6 +17,7 @@
     "site:create": "node --env-file-if-exists=../../.env --import tsx scripts/site-create.ts",
     "site:domain": "node --env-file-if-exists=../../.env --import tsx scripts/site-domain.ts",
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
+    "log:report": "node scripts/log-report.mjs",
     "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },

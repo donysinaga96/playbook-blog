@@ -6,10 +6,11 @@
 // padanannya. Saat upgrade ke Nuxt 5, cukup folder ini yang diperiksa.
 import { publicCacheTtl } from '../utils/cache-control'
 import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
 
 export default defineNitroPlugin(() => {
   const mode = useSiteMode()
-  console.info(mode.mode === 'single' ? `[site] mode single, SITE_CODE=${mode.siteCode}` : '[site] mode multi')
+  log('info', 'site mode', { mode: mode.mode, siteCode: mode.mode === 'single' ? mode.siteCode : undefined })
   // PUBLIC_CACHE_TTL salah = gagal start, bukan galat di request pertama.
-  console.info(`[site] cache publik s-maxage=${publicCacheTtl()} detik`)
+  log('info', 'cache publik', { sMaxAge: publicCacheTtl() })
 })

@@ -4,13 +4,14 @@
 import { sql } from '@framework/db'
 import { defineEventHandler, setResponseStatus } from 'nuxt/server'
 import { useDatabase } from '../utils/database'
+import { log } from '../utils/log'
 
 export default defineEventHandler(async (event) => {
   try {
     await useDatabase().execute(sql`select 1`)
     return { status: 'ok' as const, database: 'ok' as const }
   } catch (error) {
-    console.error('[health] database tidak bisa dihubungi', error)
+    log('error', 'health: database tidak bisa dihubungi', { error })
     setResponseStatus(event, 503)
     return { status: 'error' as const, database: 'unreachable' as const }
   }

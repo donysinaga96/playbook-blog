@@ -510,6 +510,8 @@ pnpm install
 
 9. Tulis server route pertama dengan import `nuxt/server` (ADR-002), bukan `h3`. `GET /api/health` menjalankan `select 1`. Bila database tidak bisa dihubungi, route ini mengembalikan HTTP 503. Detail error hanya ditulis ke log server dan tidak dikirim ke klien:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 @@include apps/web/server/api/health.get.ts ts@@
 
 10. Buat halaman sementara di `apps/web/app/app.vue`. Isinya nanti diganti oleh template (versi lengkapnya ada di bab "Membangun Sistem Template"). Untuk sekarang cukup:
@@ -727,9 +729,13 @@ export * from './site/resolve'
 
    (Validasi `PUBLIC_CACHE_TTL` ditambahkan di bab "Mengatur Cache Halaman Publik".)
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 @@include apps/web/server/plugins/site-mode.ts ts@@
 
 10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template" dan berubah menjadi `ResolvedTheme` di bab "Menyusun Halaman Depan dari Section") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
+
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
 
 @@include apps/web/shared/types/site-context.d.ts ts@@
 
@@ -742,6 +748,8 @@ export * from './site/resolve'
     - Penanganan path admin (host admin, 404 di domain site) ditambahkan di bab "Membangun Login Admin".
 
    (Header cache (`setPublicCache`, `adminNoStore`) ditambahkan di bab "Mengatur Cache Halaman Publik".)
+
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
 
 @@include apps/web/server/middleware/site.ts ts@@
 
@@ -1366,6 +1374,8 @@ git diff packages/core/src/views/__snapshots__/
 
 15. Di aplikasi web, buat registry manifest untuk server. Issue theme dicatat sekali per proses di sini, tidak lagi di plugin Vue:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 @@include apps/web/server/utils/templates.ts ts@@
 
 16. Ubah middleware: `resolveSiteTheme` dipanggil dulu, lalu `theme.layouts` diteruskan ke `usePageBuilder().build(...)`, dan `event.context.theme` berisi `ResolvedTheme`. Plugin `site.server.ts` hanya menyalin field yang dibutuhkan renderer (tipe `PublicTheme` di `useSiteTheme.ts`); `issues` dan `layouts` tidak ikut payload Nuxt yang bisa dibaca siapa pun dari source halaman. Tambahkan paket template ke `nitro.externals.inline` di `nuxt.config.ts`. File-file itu ditampilkan di bab-bab sebelumnya.
@@ -1589,6 +1599,8 @@ pnpm admin:create --email admin@local.test --reset-password
 @@include apps/web/server/utils/admin.ts ts@@
 
 11. Validasi konfigurasi saat start dan tambahkan penjaga API admin:
+
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
 
 @@include apps/web/server/plugins/admin.ts ts@@
 
@@ -1915,6 +1927,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 5. Hapus file setelah catatan terhapus tidak boleh menggagalkan request. Bila `rm` gagal (izin, disk), galat dicatat ke log dan API tetap menjawab `{ ok: true }`; tanpa itu admin melihat galat, lalu 404 saat mencoba lagi:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 @@include apps/web/server/api/admin/sites/[siteId]/media/[id].delete.ts ts@@
 
 6. Percent-encoding rusak di URL media (`/media/%E0%A4%A.png`) membuat `decodeURIComponent` melempar dan request menjadi 500. `mediaKeyParam` di `apps/web/server/utils/media.ts` menangkapnya dan route `/media` maupun `/admin/preview-media` menjawab 404.
@@ -2069,6 +2083,8 @@ Aturan keputusan sudah ada di core. Bab ini memberinya layar: daftar hasil AI da
 
 @@include apps/web/server/api/admin/generated/index.get.ts ts@@
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 @@include apps/web/server/api/admin/generated/approve-bulk.post.ts ts@@
 
 @@include apps/web/server/api/admin/sites/[siteId]/generated/[id].get.ts ts@@
@@ -2218,3 +2234,37 @@ curl -sI http://tekno.localhost:3000/tidak/ada | grep -i cache-control
 ```
 
    Gate admin kini juga memeriksa header: halaman admin `no-store`, request dengan cookie sesi admin `private, no-store`, URL artikel terjadwal `no-store` selama masih 404, dan `s-maxage` setelah terbit.
+
+# Mencatat Request sebagai Log JSON
+
+Untuk tahu site mana yang lambat atau sering galat, log harus bisa dihitung mesin. Bab ini mengganti log teks bebas dengan satu baris JSON per kejadian, mencatat setiap request, dan menyediakan dua alat kecil: ringkasan latency per site dari log, dan ukuran database per tabel.
+
+1. Tulis logger kecil tanpa dependensi. Setiap kejadian menjadi satu baris JSON (`time`, `level`, `msg`, lalu field lain) ke stdout, atau ke stderr untuk `error`. Galat diserialisasi menjadi `{ name, message, stack }` dengan stack pendek. `LOG_FORMAT=text` mencetak satu baris yang mudah dibaca untuk dev:
+
+@@include apps/web/server/utils/log.ts ts@@
+
+@@include apps/web/server/utils/log.test.ts ts@@
+
+2. Catat setiap request di plugin Nitro: request id (dari `x-request-id` bila `TRUST_PROXY=true` dan bentuknya wajar, selain itu UUID baru, selalu dikirim balik sebagai header), site, method, host, path, status, dan durasi. Dua hal sengaja tidak dicatat: query string (bisa berisi kata pencarian pembaca) dan `/api/health` yang sukses (uptime check memanggilnya terus-menerus).
+
+   Request yang berakhir dengan galat yang dilempar (401 dari `requireAdmin`, 422, 500) tidak melewati hook `afterResponse`, jadi tidak tercatat bila hanya hook itu yang dipakai. Hook `error` menangkapnya, dan penanda `requestLogged` mencegah satu request tercatat dua kali:
+
+@@include apps/web/server/plugins/request-log.ts ts@@
+
+   Field baru di `event.context` (`requestId`, `requestStart`, `requestLogged`) ditambahkan ke deklarasi tipe `site-context.d.ts`. Sembilan log teks bebas yang lama (mode site, admin, peringatan halaman dan theme, galat health, media, approve massal) diganti `log()`; peringatan halaman kini membawa request id.
+
+3. Ringkas log per site: jumlah request, 4xx, 5xx, p50, p95, dan maksimum. Skrip membaca file atau stdin dan melewati baris yang bukan log request JSON:
+
+@@include apps/web/scripts/log-report.mjs js@@
+
+```bash
+PORT=3102 node .output/server/index.mjs > server.log
+pnpm --filter @framework/web log:report server.log
+# │ site              │ request │ 4xx │ 5xx │ p50 ms │ p95 ms │ maks ms │
+```
+
+4. Ukuran database dan 20 tabel terbesar, dengan `pnpm db:size`:
+
+@@include packages/db/scripts/size.sql sql@@
+
+   Menjalankannya setiap hari dan mengirim galat ke pemilik proyek butuh layanan di luar mesin ini, jadi dikerjakan bersama deploy.

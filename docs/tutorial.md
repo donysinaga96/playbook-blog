@@ -131,6 +131,7 @@ allowBuilds:
     "db:test": "docker compose --profile test run --rm db-test",
     "db:reset": "docker compose down -v && docker compose up -d",
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
+    "db:size": "docker compose exec -T db sh -c 'psql -X -q -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"' < packages/db/scripts/size.sql",
     "db:adminer": "docker compose --profile tools up -d adminer",
     "tutorial": "node docs/tutorial/build.mjs",
     "admin:create": "pnpm --filter @framework/web admin:create",
@@ -378,6 +379,12 @@ SITE_MODE=multi
 # ada cache bersama (reverse proxy/CDN) di depan aplikasi.
 # PUBLIC_CACHE_TTL=60
 
+# --- Log ---
+# Satu baris JSON per kejadian (request, peringatan, galat) ke stdout/stderr.
+# text = satu baris yang mudah dibaca, untuk dev. Ringkasan per site:
+#   pnpm --filter @framework/web log:report <file-log>
+# LOG_FORMAT=text
+
 # Admin (ADR-009). Tanpa ADMIN_SESSION_SECRET, admin nonaktif (semua path
 # admin 404). Secret minimal 32 karakter, mis. hasil `openssl rand -base64 48`.
 # Mode multi: admin hanya di ADMIN_HOST (dev: http://admin.localhost:3000/admin).
@@ -546,6 +553,8 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
 | Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
+| Ukuran database dan tabel terbesar | `pnpm db:size` |
+| Ringkasan log request per site (p50, p95, 4xx, 5xx) | `pnpm --filter @framework/web log:report <file-log>` (log JSON; `LOG_FORMAT=text` untuk dev) |
 | Membuat site baru / mengelola domainnya | `pnpm site:create ...`, `pnpm site:domain ...` (lihat "Site baru") |
 | Gate konten AI (hasil agent → approval → tampil) | `pnpm build`, lalu `ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content` |
 | Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
@@ -5507,6 +5516,7 @@ pnpm install
     "site:create": "node --env-file-if-exists=../../.env --import tsx scripts/site-create.ts",
     "site:domain": "node --env-file-if-exists=../../.env --import tsx scripts/site-domain.ts",
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
+    "log:report": "node scripts/log-report.mjs",
     "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
   },
@@ -5633,6 +5643,8 @@ export default defineNitroPlugin((nitroApp) => {
 
 9. Tulis server route pertama dengan import `nuxt/server` (ADR-002), bukan `h3`. `GET /api/health` menjalankan `select 1`. Bila database tidak bisa dihubungi, route ini mengembalikan HTTP 503. Detail error hanya ditulis ke log server dan tidak dikirim ke klien:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 `apps/web/server/api/health.get.ts`
 
 ```ts
@@ -5642,13 +5654,14 @@ export default defineNitroPlugin((nitroApp) => {
 import { sql } from '@framework/db'
 import { defineEventHandler, setResponseStatus } from 'nuxt/server'
 import { useDatabase } from '../utils/database'
+import { log } from '../utils/log'
 
 export default defineEventHandler(async (event) => {
   try {
     await useDatabase().execute(sql`select 1`)
     return { status: 'ok' as const, database: 'ok' as const }
   } catch (error) {
-    console.error('[health] database tidak bisa dihubungi', error)
+    log('error', 'health: database tidak bisa dihubungi', { error })
     setResponseStatus(event, 503)
     return { status: 'error' as const, database: 'unreachable' as const }
   }
@@ -6200,6 +6213,8 @@ export function useSiteMode(): SiteMode {
 
    (Validasi `PUBLIC_CACHE_TTL` ditambahkan di bab "Mengatur Cache Halaman Publik".)
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 `apps/web/server/plugins/site-mode.ts`
 
 ```ts
@@ -6211,16 +6226,19 @@ export function useSiteMode(): SiteMode {
 // padanannya. Saat upgrade ke Nuxt 5, cukup folder ini yang diperiksa.
 import { publicCacheTtl } from '../utils/cache-control'
 import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
 
 export default defineNitroPlugin(() => {
   const mode = useSiteMode()
-  console.info(mode.mode === 'single' ? `[site] mode single, SITE_CODE=${mode.siteCode}` : '[site] mode multi')
+  log('info', 'site mode', { mode: mode.mode, siteCode: mode.mode === 'single' ? mode.siteCode : undefined })
   // PUBLIC_CACHE_TTL salah = gagal start, bukan galat di request pertama.
-  console.info(`[site] cache publik s-maxage=${publicCacheTtl()} detik`)
+  log('info', 'cache publik', { sMaxAge: publicCacheTtl() })
 })
 ```
 
 10. Daftarkan tipe `event.context.site` dan `event.context.siteDomain` (field `theme` menyusul di bab "Membangun Sistem Template" dan berubah menjadi `ResolvedTheme` di bab "Menyusun Halaman Depan dari Section") dengan augmentasi `RequestEventContext` dari `nuxt/schema`. File di `shared/types/` terbaca oleh tsconfig app maupun server, sehingga `useRequestEvent()` di komponen juga mengenal tipenya:
+
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
 
 `apps/web/shared/types/site-context.d.ts`
 
@@ -6247,6 +6265,12 @@ declare module 'nuxt/schema' {
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
     /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
     themePreview?: { draft: boolean }
+    /** Id request untuk log dan header x-request-id (plugins/request-log.ts). */
+    requestId?: string
+    /** performance.now() saat request masuk, untuk durasi di log. */
+    requestStart?: number
+    /** Sudah dicatat (hook error atau afterResponse), agar tidak dua kali. */
+    requestLogged?: boolean
   }
 }
 
@@ -6262,6 +6286,8 @@ export {}
     - Penanganan path admin (host admin, 404 di domain site) ditambahkan di bab "Membangun Login Admin".
 
    (Header cache (`setPublicCache`, `adminNoStore`) ditambahkan di bab "Mengatur Cache Halaman Publik".)
+
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
 
 `apps/web/server/middleware/site.ts`
 
@@ -6290,6 +6316,7 @@ import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
 import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
@@ -6332,7 +6359,7 @@ export default defineEventHandler(async (event) => {
       layouts: theme.layouts,
     })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
-    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    for (const issue of built.issues) log('warn', 'page issue', { id: event.context.requestId, site: site.code, path: url.pathname, issue })
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
     // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
@@ -11808,6 +11835,7 @@ import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
 import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
@@ -11850,7 +11878,7 @@ export default defineEventHandler(async (event) => {
       layouts: theme.layouts,
     })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
-    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    for (const issue of built.issues) log('warn', 'page issue', { id: event.context.requestId, site: site.code, path: url.pathname, issue })
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
     // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
@@ -11908,6 +11936,12 @@ declare module 'nuxt/schema' {
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
     /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
     themePreview?: { draft: boolean }
+    /** Id request untuk log dan header x-request-id (plugins/request-log.ts). */
+    requestId?: string
+    /** performance.now() saat request masuk, untuk durasi di log. */
+    requestStart?: number
+    /** Sudah dicatat (hook error atau afterResponse), agar tidak dua kali. */
+    requestLogged?: boolean
   }
 }
 
@@ -12834,6 +12868,7 @@ import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
 import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
@@ -12876,7 +12911,7 @@ export default defineEventHandler(async (event) => {
       layouts: theme.layouts,
     })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
-    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    for (const issue of built.issues) log('warn', 'page issue', { id: event.context.requestId, site: site.code, path: url.pathname, issue })
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
     // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).
@@ -12934,6 +12969,12 @@ declare module 'nuxt/schema' {
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
     /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
     themePreview?: { draft: boolean }
+    /** Id request untuk log dan header x-request-id (plugins/request-log.ts). */
+    requestId?: string
+    /** performance.now() saat request masuk, untuk durasi di log. */
+    requestStart?: number
+    /** Sudah dicatat (hook error atau afterResponse), agar tidak dua kali. */
+    requestLogged?: boolean
   }
 }
 
@@ -14406,6 +14447,8 @@ git diff packages/core/src/views/__snapshots__/
 
 15. Di aplikasi web, buat registry manifest untuk server. Issue theme dicatat sekali per proses di sini, tidak lagi di plugin Vue:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 `apps/web/server/utils/templates.ts`
 
 ```ts
@@ -14418,6 +14461,7 @@ import baseManifest from '@framework/template-base/manifest'
 import { createTemplateRegistry, type ResolvedTheme, type StoredTheme } from '@framework/template-kit'
 import magazineManifest from '@framework/template-magazine/manifest'
 import newsManifest from '@framework/template-news/manifest'
+import { log } from './log'
 
 export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest, newsManifest], { fallback: 'base' })
 
@@ -14432,7 +14476,7 @@ export function resolveSiteTheme(site: { id: string; code: string }, stored: Sto
     const key = `${site.id}:${issue}`
     if (loggedIssues.has(key) || loggedIssues.size >= MAX_LOGGED) continue
     loggedIssues.add(key)
-    console.warn(`[theme] site ${site.code}: ${issue}`)
+    log('warn', 'theme issue', { site: site.code, issue })
   }
   return theme
 }
@@ -16509,17 +16553,20 @@ export function requireSite(admin: AdminContext, siteId: string | undefined): Ad
 
 11. Validasi konfigurasi saat start dan tambahkan penjaga API admin:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 `apps/web/server/plugins/admin.ts`
 
 ```ts
 // Validasi konfigurasi admin saat server start (ADR-009): nilai yang salah
 // membuat proses gagal start; tanpa secret, admin nonaktif dan dicatat.
 import { useAdminConfig } from '../utils/admin'
+import { log } from '../utils/log'
 
 export default defineNitroPlugin(() => {
   const config = useAdminConfig()
-  if (!config.enabled) console.info(`[admin] nonaktif: ${config.reason}`)
-  else console.info(config.mode === 'multi' ? `[admin] aktif di host ${config.host}` : '[admin] aktif di domain site')
+  if (!config.enabled) log('info', 'admin nonaktif', { reason: config.reason })
+  else log('info', 'admin aktif', { mode: config.mode, host: config.mode === 'multi' ? config.host : undefined })
 })
 ```
 
@@ -23763,6 +23810,8 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 
 5. Hapus file setelah catatan terhapus tidak boleh menggagalkan request. Bila `rm` gagal (izin, disk), galat dicatat ke log dan API tetap menjawab `{ ok: true }`; tanpa itu admin melihat galat, lalu 404 saat mencoba lagi:
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 `apps/web/server/api/admin/sites/[siteId]/media/[id].delete.ts`
 
 ```ts
@@ -23770,6 +23819,7 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:admin
 import { getQuery } from 'nuxt/server'
 import { defineAdminSiteHandler, param } from '../../../../../utils/admin-api'
 import { useMediaStorage } from '../../../../../utils/media'
+import { log } from '../../../../../utils/log'
 
 export default defineAdminSiteHandler(async ({ editor, site, event }) => {
   const { storageKey } = await editor.deleteMedia(site.id, param(event, 'id'), String(getQuery(event)['updatedAt'] ?? ''))
@@ -23778,7 +23828,7 @@ export default defineAdminSiteHandler(async ({ editor, site, event }) => {
   try {
     await useMediaStorage()?.delete(storageKey)
   } catch (error) {
-    console.error(`[media] file ${storageKey} gagal dihapus (catatan sudah terhapus):`, error)
+    log('error', 'media: file gagal dihapus (catatan sudah terhapus)', { storageKey, error })
   }
   return { ok: true }
 })
@@ -25611,6 +25661,8 @@ export default defineEventHandler(async (event) => {
 })
 ```
 
+   (Log teks bebas di file ini diganti `log()` terstruktur di bab "Mencatat Request sebagai Log JSON".)
+
 `apps/web/server/api/admin/generated/approve-bulk.post.ts`
 
 ```ts
@@ -25622,6 +25674,7 @@ import { createError, defineEventHandler, readBody } from 'nuxt/server'
 import { requireAdmin } from '../../../utils/admin'
 import { useRepositories } from '../../../utils/database'
 import { useMediaStorage } from '../../../utils/media'
+import { log } from '../../../utils/log'
 
 const MAX_ITEMS = 50
 
@@ -25647,7 +25700,7 @@ export default defineEventHandler(async (event) => {
     } catch (error) {
       // Item sebelumnya sudah terbit (transaksi sendiri), jadi galat apa pun
       // dilaporkan per item, tidak menggagalkan seluruh respons.
-      if (!(error instanceof EditorError)) console.error('[approve-bulk]', siteId, id, error)
+      if (!(error instanceof EditorError)) log('error', 'approve-bulk gagal', { id: event.context.requestId, siteId, generatedId: id, error })
       results.push({ siteId, id, ok: false, message: error instanceof EditorError ? error.message : 'galat server; lihat log' })
     }
   }
@@ -27463,3 +27516,238 @@ curl -sI http://tekno.localhost:3000/tidak/ada | grep -i cache-control
 ```
 
    Gate admin kini juga memeriksa header: halaman admin `no-store`, request dengan cookie sesi admin `private, no-store`, URL artikel terjadwal `no-store` selama masih 404, dan `s-maxage` setelah terbit.
+
+# Mencatat Request sebagai Log JSON
+
+Untuk tahu site mana yang lambat atau sering galat, log harus bisa dihitung mesin. Bab ini mengganti log teks bebas dengan satu baris JSON per kejadian, mencatat setiap request, dan menyediakan dua alat kecil: ringkasan latency per site dari log, dan ukuran database per tabel.
+
+1. Tulis logger kecil tanpa dependensi. Setiap kejadian menjadi satu baris JSON (`time`, `level`, `msg`, lalu field lain) ke stdout, atau ke stderr untuk `error`. Galat diserialisasi menjadi `{ name, message, stack }` dengan stack pendek. `LOG_FORMAT=text` mencetak satu baris yang mudah dibaca untuk dev:
+
+`apps/web/server/utils/log.ts`
+
+```ts
+// Log terstruktur (M5 5.5, usulan M5-E): satu baris JSON per kejadian ke
+// stdout (info/warn) atau stderr (error), agar error dan latency per site bisa
+// dihitung dari log tanpa layanan tambahan (scripts/log-report.mjs).
+//
+//   {"time":"…","level":"info","msg":"request","site":"kabar-tekno","status":200,"ms":12.3,…}
+//
+// LOG_FORMAT=text (dev) mencetak satu baris yang mudah dibaca manusia; bawaan json.
+// Galat diserialisasi sebagai { name, message, stack } (stack hanya baris awal).
+
+export type LogLevel = 'info' | 'warn' | 'error'
+export type LogFields = Record<string, unknown>
+
+const textFormat = () => process.env['LOG_FORMAT'] === 'text'
+
+function serialize(value: unknown): unknown {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack?.split('\n').slice(0, 6).join('\n') }
+  }
+  return value
+}
+
+export function log(level: LogLevel, msg: string, fields: LogFields = {}) {
+  const entry: LogFields = { time: new Date().toISOString(), level, msg }
+  for (const [key, value] of Object.entries(fields)) if (value !== undefined) entry[key] = serialize(value)
+  const line = textFormat()
+    ? `${entry['time'] as string} ${level.toUpperCase()} ${msg} ${Object.entries(entry).filter(([k]) => !['time', 'level', 'msg'].includes(k)).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' ')}`
+    : JSON.stringify(entry)
+  if (level === 'error') process.stderr.write(`${line}\n`)
+  else process.stdout.write(`${line}\n`)
+}
+```
+
+`apps/web/server/utils/log.test.ts`
+
+```ts
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { log } from './log'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  delete process.env['LOG_FORMAT']
+})
+
+function capture(stream: 'stdout' | 'stderr') {
+  const lines: string[] = []
+  vi.spyOn(process[stream], 'write').mockImplementation((chunk) => {
+    lines.push(String(chunk))
+    return true
+  })
+  return lines
+}
+
+describe('log', () => {
+  it('satu baris JSON; field undefined dibuang; info ke stdout', () => {
+    const out = capture('stdout')
+    log('info', 'request', { site: 'kabar-tekno', status: 200, ms: 1.5, user: undefined })
+    expect(out).toHaveLength(1)
+    expect(out[0]?.endsWith('\n')).toBe(true)
+    const entry = JSON.parse(out[0] ?? '')
+    expect(entry).toMatchObject({ level: 'info', msg: 'request', site: 'kabar-tekno', status: 200, ms: 1.5 })
+    expect(entry).not.toHaveProperty('user')
+    expect(Number.isNaN(Date.parse(entry.time))).toBe(false)
+  })
+
+  it('error ke stderr; Error diserialisasi (name, message, stack pendek)', () => {
+    const err = capture('stderr')
+    log('error', 'gagal', { error: new TypeError('rusak') })
+    const entry = JSON.parse(err[0] ?? '')
+    expect(entry.error).toMatchObject({ name: 'TypeError', message: 'rusak' })
+    expect(entry.error.stack.split('\n').length).toBeLessThanOrEqual(6)
+  })
+
+  it('LOG_FORMAT=text: satu baris mudah dibaca', () => {
+    process.env['LOG_FORMAT'] = 'text'
+    const out = capture('stdout')
+    log('warn', 'theme issue', { site: 'x', issue: 'opsi lama' })
+    expect(out[0]).toMatch(/^\S+ WARN theme issue site=x issue=opsi lama\n$/)
+  })
+})
+```
+
+2. Catat setiap request di plugin Nitro: request id (dari `x-request-id` bila `TRUST_PROXY=true` dan bentuknya wajar, selain itu UUID baru, selalu dikirim balik sebagai header), site, method, host, path, status, dan durasi. Dua hal sengaja tidak dicatat: query string (bisa berisi kata pencarian pembaca) dan `/api/health` yang sukses (uptime check memanggilnya terus-menerus).
+
+   Request yang berakhir dengan galat yang dilempar (401 dari `requireAdmin`, 422, 500) tidak melewati hook `afterResponse`, jadi tidak tercatat bila hanya hook itu yang dipakai. Hook `error` menangkapnya, dan penanda `requestLogged` mencegah satu request tercatat dua kali:
+
+`apps/web/server/plugins/request-log.ts`
+
+```ts
+// Log per request (M5 5.5): request id, site, method, host, path, status,
+// durasi. Request id dari header x-request-id bila TRUST_PROXY=true dan
+// bentuknya wajar (proxy kita yang mengisinya), selain itu dibuat baru; selalu
+// dikirim balik sebagai header x-request-id.
+//
+// Yang tidak dicatat: query string (bisa berisi kata pencarian pembaca) dan
+// /api/health yang sukses (uptime check memanggilnya terus-menerus).
+// Folder plugins/ boleh memakai API Nitro (lihat site-mode.ts).
+import { randomUUID } from 'node:crypto'
+import type { H3Event } from 'h3'
+import { log } from '../utils/log'
+
+const INCOMING_ID = /^[A-Za-z0-9._-]{8,100}$/
+
+export default defineNitroPlugin((nitroApp) => {
+  nitroApp.hooks.hook('request', (event) => {
+    const incoming = process.env['TRUST_PROXY'] === 'true' ? getRequestHeader(event, 'x-request-id') : undefined
+    const id = incoming && INCOMING_ID.test(incoming) ? incoming : randomUUID()
+    event.context.requestId = id
+    event.context.requestStart = performance.now()
+    setResponseHeader(event, 'x-request-id', id)
+  })
+
+  // Request yang berakhir dengan galat yang dilempar (401, 404, 422, 500 dari
+  // createError atau exception) tidak melewati afterResponse; dicatat di sini.
+  nitroApp.hooks.hook('error', (error, { event }) => {
+    if (!event) return
+    const status = (error as { statusCode?: number }).statusCode ?? 500
+    logRequest(event, status, status >= 500 ? error : undefined)
+  })
+
+  nitroApp.hooks.hook('afterResponse', (event) => {
+    logRequest(event, getResponseStatus(event))
+  })
+})
+
+function logRequest(event: H3Event, status: number, error?: unknown) {
+  const start = event.context.requestStart
+  if (start === undefined || event.context.requestLogged) return
+  event.context.requestLogged = true
+  const path = event.path.split('?')[0] ?? event.path
+  if (path === '/api/health' && status === 200) return
+  log(status >= 500 ? 'error' : 'info', 'request', {
+    id: event.context.requestId,
+    site: event.context.site?.code,
+    method: event.method,
+    host: getRequestHost(event),
+    path,
+    status,
+    ms: Math.round((performance.now() - start) * 10) / 10,
+    error,
+  })
+}
+```
+
+   Field baru di `event.context` (`requestId`, `requestStart`, `requestLogged`) ditambahkan ke deklarasi tipe `site-context.d.ts`. Sembilan log teks bebas yang lama (mode site, admin, peringatan halaman dan theme, galat health, media, approve massal) diganti `log()`; peringatan halaman kini membawa request id.
+
+3. Ringkas log per site: jumlah request, 4xx, 5xx, p50, p95, dan maksimum. Skrip membaca file atau stdin dan melewati baris yang bukan log request JSON:
+
+`apps/web/scripts/log-report.mjs`
+
+```js
+// Ringkasan log request per site (M5 5.5): jumlah, 4xx, 5xx, p50, p95, maks.
+// Membaca log JSON (plugins/request-log.ts) dari file atau stdin; baris lain
+// (log teks, peringatan) dilewati.
+//
+//   node scripts/log-report.mjs server.log
+//   docker compose logs app --no-log-prefix | node scripts/log-report.mjs
+//   ... | node scripts/log-report.mjs --since 2026-11-22T00:00:00Z
+import { createReadStream } from 'node:fs'
+import { createInterface } from 'node:readline'
+
+const args = process.argv.slice(2)
+const sinceAt = args.indexOf('--since')
+const since = sinceAt >= 0 ? new Date(args[sinceAt + 1] ?? '') : null
+if (since && Number.isNaN(since.getTime())) {
+  console.error('[log-report] --since butuh tanggal ISO 8601')
+  process.exit(1)
+}
+const file = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--since')
+
+const bySite = new Map()
+const lines = createInterface({ input: file ? createReadStream(file) : process.stdin, crlfDelay: Infinity })
+for await (const line of lines) {
+  if (!line.startsWith('{')) continue
+  let entry
+  try {
+    entry = JSON.parse(line)
+  } catch {
+    continue
+  }
+  if (entry.msg !== 'request' || typeof entry.ms !== 'number') continue
+  if (since && new Date(entry.time) < since) continue
+  const key = entry.site ?? (String(entry.path).startsWith('/api/admin') || String(entry.path).startsWith('/admin') ? '(admin)' : '(tanpa site)')
+  const s = bySite.get(key) ?? { ms: [], c4: 0, c5: 0 }
+  s.ms.push(entry.ms)
+  if (entry.status >= 500) s.c5++
+  else if (entry.status >= 400) s.c4++
+  bySite.set(key, s)
+}
+
+const pct = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0
+const rows = [...bySite.entries()].sort((a, b) => b[1].ms.length - a[1].ms.length).map(([site, s]) => {
+  const sorted = [...s.ms].sort((a, b) => a - b)
+  return { site, request: sorted.length, '4xx': s.c4, '5xx': s.c5, 'p50 ms': pct(sorted, 50), 'p95 ms': pct(sorted, 95), 'maks ms': sorted.at(-1) ?? 0 }
+})
+if (rows.length === 0) console.log('[log-report] tidak ada log request JSON')
+else console.table(rows)
+```
+
+```bash
+PORT=3102 node .output/server/index.mjs > server.log
+pnpm --filter @framework/web log:report server.log
+# │ site              │ request │ 4xx │ 5xx │ p50 ms │ p95 ms │ maks ms │
+```
+
+4. Ukuran database dan 20 tabel terbesar, dengan `pnpm db:size`:
+
+`packages/db/scripts/size.sql`
+
+```sql
+-- Ukuran database dan tabel terbesar (M5 5.5). Dipanggil `pnpm db:size`.
+\pset footer off
+SELECT current_database() AS database, pg_size_pretty(pg_database_size(current_database())) AS ukuran;
+SELECT c.relname AS tabel,
+       pg_size_pretty(pg_total_relation_size(c.oid)) AS total,
+       pg_size_pretty(pg_relation_size(c.oid))       AS data,
+       pg_size_pretty(pg_indexes_size(c.oid))        AS index,
+       c.reltuples::bigint                            AS perkiraan_baris
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'public' AND c.relkind = 'r'
+ ORDER BY pg_total_relation_size(c.oid) DESC
+ LIMIT 20;
+```
+
+   Menjalankannya setiap hari dan mengirim galat ke pemilik proyek butuh layanan di luar mesin ini, jadi dikerjakan bersama deploy.

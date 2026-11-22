@@ -20,6 +20,12 @@ declare module 'nuxt/schema' {
     page?: { status: 200 | 404; chrome: ChromeView; vm: PageViewModel; seo: SeoMeta }
     /** Request pratinjau tema dari admin (M4 4.4); draft = memakai config draf dari sesi. */
     themePreview?: { draft: boolean }
+    /** Id request untuk log dan header x-request-id (plugins/request-log.ts). */
+    requestId?: string
+    /** performance.now() saat request masuk, untuk durasi di log. */
+    requestStart?: number
+    /** Sudah dicatat (hook error atau afterResponse), agar tidak dua kali. */
+    requestLogged?: boolean
   }
 }
 

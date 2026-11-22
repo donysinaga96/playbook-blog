@@ -7,6 +7,7 @@ import baseManifest from '@framework/template-base/manifest'
 import { createTemplateRegistry, type ResolvedTheme, type StoredTheme } from '@framework/template-kit'
 import magazineManifest from '@framework/template-magazine/manifest'
 import newsManifest from '@framework/template-news/manifest'
+import { log } from './log'
 
 export const templateManifests = createTemplateRegistry([baseManifest, magazineManifest, newsManifest], { fallback: 'base' })
 
@@ -21,7 +22,7 @@ export function resolveSiteTheme(site: { id: string; code: string }, stored: Sto
     const key = `${site.id}:${issue}`
     if (loggedIssues.has(key) || loggedIssues.size >= MAX_LOGGED) continue
     loggedIssues.add(key)
-    console.warn(`[theme] site ${site.code}: ${issue}`)
+    log('warn', 'theme issue', { site: site.code, issue })
   }
   return theme
 }

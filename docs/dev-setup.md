@@ -29,6 +29,8 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
 | Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
+| Ukuran database dan tabel terbesar | `pnpm db:size` |
+| Ringkasan log request per site (p50, p95, 4xx, 5xx) | `pnpm --filter @framework/web log:report <file-log>` (log JSON; `LOG_FORMAT=text` untuk dev) |
 | Membuat site baru / mengelola domainnya | `pnpm site:create ...`, `pnpm site:domain ...` (lihat "Site baru") |
 | Gate konten AI (hasil agent → approval → tampil) | `pnpm build`, lalu `ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content` |
 | Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |

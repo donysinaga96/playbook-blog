@@ -22,6 +22,7 @@ import { usePageBuilder } from '../utils/pages'
 import { resolveSiteTheme } from '../utils/templates'
 import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
+import { log } from '../utils/log'
 
 /** Route yang tidak butuh site: health check container dan aset build Nuxt. */
 const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
@@ -64,7 +65,7 @@ export default defineEventHandler(async (event) => {
       layouts: theme.layouts,
     })
     if (built.kind === 'redirect') return sendRedirect(event, built.location, built.status)
-    for (const issue of built.issues) console.warn(`[page] site ${site.code} ${url.pathname}: ${issue}`)
+    for (const issue of built.issues) log('warn', 'page issue', { id: event.context.requestId, site: site.code, path: url.pathname, issue })
     event.context.theme = theme
     event.context.page = { status: built.status, ...built.page }
     // TTL cache = batas keterlambatan artikel terjadwal (utils/cache-control.ts).

@@ -6,6 +6,7 @@ import { createError, defineEventHandler, readBody } from 'nuxt/server'
 import { requireAdmin } from '../../../utils/admin'
 import { useRepositories } from '../../../utils/database'
 import { useMediaStorage } from '../../../utils/media'
+import { log } from '../../../utils/log'
 
 const MAX_ITEMS = 50
 
@@ -31,7 +32,7 @@ export default defineEventHandler(async (event) => {
     } catch (error) {
       // Item sebelumnya sudah terbit (transaksi sendiri), jadi galat apa pun
       // dilaporkan per item, tidak menggagalkan seluruh respons.
-      if (!(error instanceof EditorError)) console.error('[approve-bulk]', siteId, id, error)
+      if (!(error instanceof EditorError)) log('error', 'approve-bulk gagal', { id: event.context.requestId, siteId, generatedId: id, error })
       results.push({ siteId, id, ok: false, message: error instanceof EditorError ? error.message : 'galat server; lihat log' })
     }
   }
