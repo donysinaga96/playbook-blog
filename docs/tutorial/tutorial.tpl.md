@@ -2145,3 +2145,38 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content
 3. Jalankan security review. Satu temuan diperbaiki walau keyakinannya di bawah ambang: halaman detail antrian membaca payload mentah dari agent, dan URL referensi `javascript:` bisa menjadi `href` di origin admin. Hanya URL `http(s)` yang kini dijadikan tautan. Prinsipnya: payload dari agent tidak dipercaya, termasuk di layar admin, sampai lolos skema.
 
 4. Lengkapi kontrak agent dengan aturan yang ditemukan di sini: URL huruf kecil `http(s)` tanpa spasi, dan gambar paling besar 10 MB.
+
+# Membuat Site Baru dari Terminal
+
+Sampai di sini, site hanya ada lewat data seed. Untuk menjalankan banyak web dari satu codebase, site baru harus bisa dibuat tanpa menulis SQL, sama seperti admin pertama dibuat lewat `admin:create`.
+
+1. Tulis logikanya di core. `createSite` memvalidasi input (kode, nama, domain, alias, template, locale, zona waktu IANA, settings site lewat `siteSettingsSchema`), lalu dalam satu transaksi membuat: baris `sites`, domain primary dan alias, theme aktif untuk template yang dipilih, menu kosong untuk setiap lokasi menu yang dikenal template terdaftar, penulis "Redaksi", dan keanggotaan OWNER bila `owner` diisi. Beberapa keputusan:
+   - Domain dinormalisasi dengan `normalizeHost`, fungsi yang sama dengan resolver Host, jadi yang tersimpan selalu cocok dengan request (huruf kecil, tanpa port). Protokol dan path ditolak.
+   - Config theme disimpan kosong. Token, opsi, dan layout memakai default manifest sampai diatur di layar Tema, sehingga perbaikan default template ikut terpakai.
+   - Menu dibuat untuk semua lokasi yang dikenal template terdaftar, bukan hanya template yang dipilih, supaya berganti template di admin tidak butuh menu baru.
+   - Core tidak meng-import template. Pemanggil memberi `TemplateCatalog` (versi per key dan lokasi menu) dari registry yang sama dengan server.
+   - Domain primary dan domain terakhir tidak bisa dihapus; primary dipindah dulu dengan `setPrimaryDomain`.
+
+@@include packages/core/src/site/provision.ts ts@@
+
+2. Uji terhadap database dev dengan kode site unik yang dihapus di akhir (CASCADE):
+
+@@include packages/core/src/site/provision.test.ts ts@@
+
+3. Tulis dua CLI tipis di `apps/web/scripts` (dijalankan lewat `tsx`, seperti `admin:create`) dan daftarkan sebagai `pnpm site:create` dan `pnpm site:domain` di root dan di `apps/web`:
+
+@@include apps/web/scripts/site-create.ts ts@@
+
+@@include apps/web/scripts/site-domain.ts ts@@
+
+4. Coba di dev. Domain `*.localhost` tidak butuh file hosts:
+
+```bash
+pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
+  --domain sumatera.localhost --alias www.sumatera.localhost --owner admin@local.test
+# [site] dapur-sumatera dibuat (template news): sumatera.localhost, www.sumatera.localhost
+```
+
+   http://sumatera.localhost:3000 langsung tampil dengan template news (beranda kosong, RSS dan sitemap 200), www dialihkan 301 ke domain primary, dan site muncul di pemilih site admin. Buat kategori di admin sebelum menerima hasil AI untuk site itu.
+
+5. Buktikan di CI: job `build` membuat site ketiga lewat CLI di database hasil migrate, lalu smoke test memeriksa ketiga domain dengan template masing-masing. Gate isolasi, gate admin, dan gate konten berjalan setelahnya dengan site ketiga itu ada.

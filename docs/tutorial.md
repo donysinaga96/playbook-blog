@@ -133,7 +133,9 @@ allowBuilds:
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
     "db:adminer": "docker compose --profile tools up -d adminer",
     "tutorial": "node docs/tutorial/build.mjs",
-    "admin:create": "pnpm --filter @framework/web admin:create"
+    "admin:create": "pnpm --filter @framework/web admin:create",
+    "site:create": "pnpm --filter @framework/web site:create",
+    "site:domain": "pnpm --filter @framework/web site:domain"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -538,6 +540,8 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
 | Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
+| Membuat site baru / mengelola domainnya | `pnpm site:create ...`, `pnpm site:domain ...` (lihat "Site baru") |
+| Gate konten AI (hasil agent → approval → tampil) | `pnpm build`, lalu `ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content` |
 | Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
 | Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
 | Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
@@ -646,6 +650,32 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 - Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Site baru
+
+Site dibuat lewat CLI, bukan SQL (M5 5.1b). Contoh untuk dev (domain `*.localhost` tidak butuh
+file hosts):
+
+```bash
+pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
+  --domain sumatera.localhost --alias www.sumatera.localhost --owner admin@local.test \
+  --tagline "Resep dari Sumatera"
+# lalu buka http://sumatera.localhost:3000 dan http://admin.localhost:3000/admin
+```
+
+Site baru berisi theme aktif (config default template), menu `header` dan `footer` kosong, dan
+penulis "Redaksi" (slug `redaksi`). Kategori dibuat di admin; hasil AI butuh kategori yang sudah
+ada. Opsi lain: `--timezone`, `--locale`, `--permalink`. Domain:
+
+```bash
+pnpm site:domain --site dapur-sumatera                                  # daftar
+pnpm site:domain --site dapur-sumatera --add sumatera.example --primary # tambah, jadikan primary
+pnpm site:domain --site dapur-sumatera --primary-domain sumatera.localhost
+pnpm site:domain --site dapur-sumatera --remove www.sumatera.localhost  # hapus alias
+```
+
+Domain primary dan domain terakhir tidak bisa dihapus. Site tidak dihapus lewat CLI (status
+ARCHIVED, lihat komentar tabel `sites`).
 
 ## Admin
 
@@ -4566,6 +4596,7 @@ export * from './media/local-storage'
 export * from './generated/payload'
 export * from './generated/generated-repository'
 export * from './generated/preview-content'
+export * from './site/provision'
 ```
 
 9. Tulis test untuk helper murni (normalisasi Host, normalisasi path, paginasi). Test ini tidak butuh database:
@@ -5368,7 +5399,9 @@ build:
     #    (menangkap bug yang hanya muncul di bundle produksi).
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - sh packages/db/scripts/setup.sh
-    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news pnpm --filter @framework/web smoke
+    #    Site ketiga dibuat lewat CLI (M5 5.1b), bukan seed/SQL, lalu ikut diperiksa.
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm site:create --code ci-baru --name "Site CI" --template magazine --domain baru.localhost --alias www.baru.localhost
+    - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" SMOKE_HOSTS=tekno.localhost=magazine,kuliner.localhost=news,baru.localhost=magazine pnpm --filter @framework/web smoke
     # 3. Gate M2: request paralel ke dua domain tidak saling tertukar.
     - DATABASE_URL="postgres://blog_app:ci_app_password@db:5432/blog_dev" pnpm --filter @framework/web gate
     # 4. Gate admin (M4): admin pertama dibuat lewat CLI, bukan SQL manual.
@@ -5465,6 +5498,8 @@ pnpm install
     "gate": "node --env-file-if-exists=../../.env scripts/gate-parallel.mjs",
     "browser-check": "node scripts/browser-check.mjs",
     "admin:create": "node --env-file-if-exists=../../.env --import tsx scripts/admin-create.ts",
+    "site:create": "node --env-file-if-exists=../../.env --import tsx scripts/site-create.ts",
+    "site:domain": "node --env-file-if-exists=../../.env --import tsx scripts/site-domain.ts",
     "gate:admin": "node --env-file-if-exists=../../.env scripts/gate-admin.mjs",
     "gate:content": "node --env-file-if-exists=../../.env --import tsx scripts/gate-content.ts",
     "demo:saksang": "node --env-file-if-exists=../../.env --import tsx scripts/demo-saksang.ts"
@@ -26821,3 +26856,454 @@ ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content
 3. Jalankan security review. Satu temuan diperbaiki walau keyakinannya di bawah ambang: halaman detail antrian membaca payload mentah dari agent, dan URL referensi `javascript:` bisa menjadi `href` di origin admin. Hanya URL `http(s)` yang kini dijadikan tautan. Prinsipnya: payload dari agent tidak dipercaya, termasuk di layar admin, sampai lolos skema.
 
 4. Lengkapi kontrak agent dengan aturan yang ditemukan di sini: URL huruf kecil `http(s)` tanpa spasi, dan gambar paling besar 10 MB.
+
+# Membuat Site Baru dari Terminal
+
+Sampai di sini, site hanya ada lewat data seed. Untuk menjalankan banyak web dari satu codebase, site baru harus bisa dibuat tanpa menulis SQL, sama seperti admin pertama dibuat lewat `admin:create`.
+
+1. Tulis logikanya di core. `createSite` memvalidasi input (kode, nama, domain, alias, template, locale, zona waktu IANA, settings site lewat `siteSettingsSchema`), lalu dalam satu transaksi membuat: baris `sites`, domain primary dan alias, theme aktif untuk template yang dipilih, menu kosong untuk setiap lokasi menu yang dikenal template terdaftar, penulis "Redaksi", dan keanggotaan OWNER bila `owner` diisi. Beberapa keputusan:
+   - Domain dinormalisasi dengan `normalizeHost`, fungsi yang sama dengan resolver Host, jadi yang tersimpan selalu cocok dengan request (huruf kecil, tanpa port). Protokol dan path ditolak.
+   - Config theme disimpan kosong. Token, opsi, dan layout memakai default manifest sampai diatur di layar Tema, sehingga perbaikan default template ikut terpakai.
+   - Menu dibuat untuk semua lokasi yang dikenal template terdaftar, bukan hanya template yang dipilih, supaya berganti template di admin tidak butuh menu baru.
+   - Core tidak meng-import template. Pemanggil memberi `TemplateCatalog` (versi per key dan lokasi menu) dari registry yang sama dengan server.
+   - Domain primary dan domain terakhir tidak bisa dihapus; primary dipindah dulu dengan `setPrimaryDomain`.
+
+`packages/core/src/site/provision.ts`
+
+```ts
+// Membuat site dan mengelola domainnya tanpa SQL manual (M5 5.1b, usulan
+// M5-G). Dipakai CLI `pnpm site:create` dan `pnpm site:domain`.
+//
+// Site baru berisi:
+//  - baris sites (kode, nama, locale, zona waktu, settings tervalidasi);
+//  - domain primary (+ alias), dinormalisasi seperti resolver Host;
+//  - theme aktif untuk template yang dipilih, dengan config kosong: token,
+//    opsi, dan layout memakai default manifest sampai diatur di admin;
+//  - menu kosong untuk setiap lokasi menu yang dikenal template terdaftar,
+//    supaya berganti template di admin tidak butuh menu baru;
+//  - penulis "Redaksi" (slug redaksi) untuk byline artikel, termasuk hasil AI;
+//  - opsional: pemilik (user yang sudah ada) sebagai OWNER.
+// Semua dalam satu transaksi. Kategori dibuat lewat admin.
+import {
+  and,
+  asc,
+  authors,
+  count,
+  desc,
+  eq,
+  menus,
+  siteDomains,
+  siteMembers,
+  sites,
+  siteThemes,
+  users,
+  type Database,
+} from '@framework/db'
+import { z } from 'zod'
+import { editorErrorMap, invalid, notFound } from '../editor/errors'
+import { normalizeHost } from '../repositories/site-repository'
+import { siteSettingsSchema } from './settings'
+
+const CODE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+const domainSchema = z.string().transform((raw, ctx) => {
+  const host = normalizeHost(raw)
+  // Port dan titik di akhir dibuang normalizeHost; protokol atau path tidak diterima.
+  if (!host || /[/:]/.test(raw.replace(/:\d{1,5}$/, ''))) {
+    ctx.addIssue({ code: 'custom', message: `domain tidak sah: ${raw}` })
+    return z.NEVER
+  }
+  return host
+})
+
+const timezone = z.string().refine((tz) => {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}, 'zona waktu IANA tidak dikenal, mis. Asia/Jakarta')
+
+export const newSiteSchema = z.strictObject({
+  code: z.string().max(50).regex(CODE, 'kode: huruf kecil, angka, tanda hubung'),
+  name: z.string().trim().min(1).max(120),
+  domain: domainSchema,
+  aliases: z.array(domainSchema).max(20).default([]),
+  template: z.string().min(1),
+  locale: z.string().regex(/^[a-z]{2}-[A-Z]{2}$/, 'locale mis. id-ID').default('id-ID'),
+  timezone: timezone.default('Asia/Jakarta'),
+  settings: siteSettingsSchema.default({ permalink: '/:category/:slug', seo: {}, social: {}, analytics: {} }),
+  /** Email user yang sudah ada; menjadi OWNER site. */
+  owner: z.email().optional(),
+})
+export type NewSiteInput = z.input<typeof newSiteSchema>
+
+/** Template yang boleh dipakai: key -> versi manifest; plus semua lokasi menu yang dikenal. */
+export interface TemplateCatalog {
+  versionOf(key: string): string | null
+  menuLocations: readonly string[]
+}
+
+export interface CreatedSite {
+  id: string
+  code: string
+  domains: string[]
+  template: string
+}
+
+function parse<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
+  const result = schema.safeParse(raw, { error: editorErrorMap })
+  if (result.success) return result.data
+  throw invalid(result.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })))
+}
+
+const MENU_NAMES: Record<string, string> = { header: 'Menu utama', footer: 'Menu bawah' }
+
+export function createSiteProvisioner(db: Database) {
+  async function siteByCode(code: string) {
+    const [site] = await db.select({ id: sites.id, code: sites.code }).from(sites).where(eq(sites.code, code)).limit(1)
+    if (!site) throw notFound(`Site ${code}`)
+    return site
+  }
+
+  async function domainOwner(domain: string) {
+    const [row] = await db.select({ code: sites.code }).from(siteDomains).innerJoin(sites, eq(sites.id, siteDomains.siteId)).where(eq(siteDomains.domain, domain)).limit(1)
+    return row?.code ?? null
+  }
+
+  return {
+    async createSite(raw: unknown, catalog: TemplateCatalog): Promise<CreatedSite> {
+      const input = parse(newSiteSchema, raw)
+      const version = catalog.versionOf(input.template)
+      if (!version) throw invalid([{ field: 'template', message: `template "${input.template}" tidak terdaftar` }])
+      const domains = [input.domain, ...input.aliases.filter((d) => d !== input.domain)]
+      if (new Set(domains).size !== domains.length) throw invalid([{ field: 'aliases', message: 'domain dobel' }])
+
+      return db.transaction(async (tx) => {
+        const [taken] = await tx.select({ id: sites.id }).from(sites).where(eq(sites.code, input.code)).limit(1)
+        if (taken) throw invalid([{ field: 'code', message: `kode "${input.code}" sudah dipakai` }])
+        for (const domain of domains) {
+          const [row] = await tx.select({ code: sites.code }).from(siteDomains).innerJoin(sites, eq(sites.id, siteDomains.siteId)).where(eq(siteDomains.domain, domain)).limit(1)
+          if (row) throw invalid([{ field: 'domain', message: `domain ${domain} sudah dipakai site ${row.code}` }])
+        }
+        let ownerId: string | null = null
+        if (input.owner) {
+          const [user] = await tx.select({ id: users.id }).from(users).where(eq(users.email, input.owner.toLowerCase())).limit(1)
+          if (!user) throw invalid([{ field: 'owner', message: `user ${input.owner} belum ada; buat dulu dengan pnpm admin:create` }])
+          ownerId = user.id
+        }
+
+        const [site] = await tx.insert(sites).values({
+          code: input.code, name: input.name, defaultLocale: input.locale, timezone: input.timezone, settings: input.settings,
+        }).returning({ id: sites.id })
+        if (!site) throw new Error('insert site tidak mengembalikan baris')
+        await tx.insert(siteDomains).values(domains.map((domain, i) => ({ siteId: site.id, domain, isPrimary: i === 0 })))
+        await tx.insert(siteThemes).values({ siteId: site.id, templateKey: input.template, templateVersion: version, isActive: true })
+        if (catalog.menuLocations.length) {
+          await tx.insert(menus).values(catalog.menuLocations.map((location) => ({ siteId: site.id, location, name: MENU_NAMES[location] ?? location })))
+        }
+        await tx.insert(authors).values({ siteId: site.id, name: 'Redaksi', slug: 'redaksi' })
+        if (ownerId) await tx.insert(siteMembers).values({ siteId: site.id, userId: ownerId, role: 'OWNER' })
+        return { id: site.id, code: input.code, domains, template: input.template }
+      })
+    },
+
+    /** Tambah domain ke site; primary = jadikan domain utama (yang lama menjadi alias). */
+    async addDomain(code: string, rawDomain: string, primary = false): Promise<string> {
+      const domain = parse(domainSchema, rawDomain)
+      const site = await siteByCode(code)
+      const owner = await domainOwner(domain)
+      if (owner) throw invalid([{ field: 'domain', message: `domain ${domain} sudah dipakai site ${owner}` }])
+      await db.transaction(async (tx) => {
+        if (primary) await tx.update(siteDomains).set({ isPrimary: false }).where(eq(siteDomains.siteId, site.id))
+        await tx.insert(siteDomains).values({ siteId: site.id, domain, isPrimary: primary })
+      })
+      return domain
+    },
+
+    /** Jadikan domain yang sudah ada milik site ini sebagai primary. */
+    async setPrimaryDomain(code: string, rawDomain: string): Promise<string> {
+      const domain = parse(domainSchema, rawDomain)
+      const site = await siteByCode(code)
+      await db.transaction(async (tx) => {
+        const [row] = await tx.select({ id: siteDomains.id }).from(siteDomains).where(and(eq(siteDomains.siteId, site.id), eq(siteDomains.domain, domain))).limit(1)
+        if (!row) throw notFound(`Domain ${domain} di site ${code}`)
+        await tx.update(siteDomains).set({ isPrimary: false }).where(eq(siteDomains.siteId, site.id))
+        await tx.update(siteDomains).set({ isPrimary: true }).where(eq(siteDomains.id, row.id))
+      })
+      return domain
+    },
+
+    /** Hapus alias. Domain primary tidak bisa dihapus (pindahkan primary dulu), domain terakhir juga tidak. */
+    async removeDomain(code: string, rawDomain: string): Promise<void> {
+      const domain = parse(domainSchema, rawDomain)
+      const site = await siteByCode(code)
+      await db.transaction(async (tx) => {
+        const [row] = await tx.select({ id: siteDomains.id, isPrimary: siteDomains.isPrimary }).from(siteDomains)
+          .where(and(eq(siteDomains.siteId, site.id), eq(siteDomains.domain, domain))).limit(1)
+        if (!row) throw notFound(`Domain ${domain} di site ${code}`)
+        if (row.isPrimary) throw invalid([{ field: 'domain', message: 'domain primary tidak bisa dihapus; jadikan domain lain primary dulu' }])
+        const [total] = await tx.select({ n: count() }).from(siteDomains).where(eq(siteDomains.siteId, site.id))
+        if ((total?.n ?? 0) <= 1) throw invalid([{ field: 'domain', message: 'domain terakhir site tidak bisa dihapus' }])
+        await tx.delete(siteDomains).where(eq(siteDomains.id, row.id))
+      })
+    },
+
+    /** Domain site, primary dulu. */
+    async listDomains(code: string): Promise<{ domain: string; isPrimary: boolean; status: string }[]> {
+      const site = await siteByCode(code)
+      return db.select({ domain: siteDomains.domain, isPrimary: siteDomains.isPrimary, status: siteDomains.status }).from(siteDomains)
+        .where(eq(siteDomains.siteId, site.id)).orderBy(desc(siteDomains.isPrimary), asc(siteDomains.domain))
+    },
+  }
+}
+
+export type SiteProvisioner = ReturnType<typeof createSiteProvisioner>
+```
+
+2. Uji terhadap database dev dengan kode site unik yang dihapus di akhir (CASCADE):
+
+`packages/core/src/site/provision.test.ts`
+
+```ts
+// Pembuatan site (M5 5.1b) terhadap database dev (dilewati tanpa DATABASE_URL).
+// Site uji berkode unik dihapus di afterAll beserta isinya (CASCADE).
+import { authors, createDatabase, eq, inArray, menus, siteDomains, siteMembers, sites, siteThemes } from '@framework/db'
+import { afterAll, describe, expect, it } from 'vitest'
+import { EditorError } from '../editor/errors'
+import { createSiteProvisioner, type TemplateCatalog } from './provision'
+
+const run = `p${process.pid}x${Date.now().toString(36)}`
+const catalog: TemplateCatalog = { versionOf: (key) => ({ news: '1.0.0', magazine: '1.1.0' } as Record<string, string>)[key] ?? null, menuLocations: ['header', 'footer'] }
+
+async function rejects(promise: Promise<unknown>, field: string) {
+  const error = await promise.then(() => null, (e: unknown) => e)
+  expect(error).toBeInstanceOf(EditorError)
+  expect((error as EditorError).issues.map((i) => i.field)).toContain(field)
+}
+
+describe.skipIf(!process.env['DATABASE_URL'])('createSiteProvisioner (database dev, role blog_app)', () => {
+  const db = createDatabase({ connectionString: process.env['DATABASE_URL'] ?? '', max: 2, applicationName: 'vitest-provision' })
+  const provision = createSiteProvisioner(db)
+  const A = `uji-${run}`
+  const B = `uji-${run}-b`
+  const codes = [A, B]
+
+  afterAll(async () => {
+    await db.delete(sites).where(inArray(sites.code, codes))
+    await db.$client.end()
+  })
+
+  it('site lengkap: domain primary + alias, theme aktif tanpa config, menu, penulis, pemilik', async () => {
+    const created = await provision.createSite({
+      code: A, name: 'Site Uji', template: 'news', domain: `Uji-${run}.Localhost:3000`, aliases: [`www.uji-${run}.localhost`],
+      owner: 'ADMIN@local.test', settings: { tagline: 'Tagline uji' },
+    }, catalog)
+    expect(created.domains).toEqual([`uji-${run}.localhost`, `www.uji-${run}.localhost`])
+    const [site] = await db.select().from(sites).where(eq(sites.id, created.id))
+    expect(site).toMatchObject({ status: 'ACTIVE', defaultLocale: 'id-ID', timezone: 'Asia/Jakarta' })
+    expect(site?.settings).toMatchObject({ tagline: 'Tagline uji', permalink: '/:category/:slug' })
+    const domains = await db.select({ domain: siteDomains.domain, isPrimary: siteDomains.isPrimary }).from(siteDomains).where(eq(siteDomains.siteId, created.id))
+    expect(domains.filter((d) => d.isPrimary).map((d) => d.domain)).toEqual([`uji-${run}.localhost`])
+    expect(await db.select({ key: siteThemes.templateKey, version: siteThemes.templateVersion, active: siteThemes.isActive, tokens: siteThemes.tokens }).from(siteThemes).where(eq(siteThemes.siteId, created.id)))
+      .toEqual([{ key: 'news', version: '1.0.0', active: true, tokens: {} }])
+    expect((await db.select({ l: menus.location }).from(menus).where(eq(menus.siteId, created.id))).map((m) => m.l).sort()).toEqual(['footer', 'header'])
+    expect(await db.select({ slug: authors.slug }).from(authors).where(eq(authors.siteId, created.id))).toEqual([{ slug: 'redaksi' }])
+    expect(await db.select({ role: siteMembers.role }).from(siteMembers).where(eq(siteMembers.siteId, created.id))).toEqual([{ role: 'OWNER' }])
+  })
+
+  it.each([
+    ['kode dipakai', () => ({ code: A }), 'code'],
+    ['kode huruf besar', () => ({ code: 'Uji' }), 'code'],
+    ['domain dipakai site lain', () => ({ domain: 'tekno.localhost' }), 'domain'],
+    ['domain dengan protokol', () => ({ domain: 'https://x.localhost' }), 'domain'],
+    ['alias sama dengan domain lain di input', () => ({ aliases: [`x-${run}.localhost`, `x-${run}.localhost`] }), 'aliases'],
+    ['template tidak terdaftar', () => ({ template: 'tidak-ada' }), 'template'],
+    ['zona waktu tidak dikenal', () => ({ timezone: 'Mars/Olympus' }), 'timezone'],
+    ['permalink tanpa :slug', () => ({ settings: { permalink: '/:category' } }), 'settings.permalink'],
+    ['pemilik belum ada', () => ({ owner: `tidak-ada-${run}@local.test` }), 'owner'],
+  ])('ditolak: %s', async (_name, override, field) => {
+    await rejects(provision.createSite({ code: B, name: 'B', template: 'news', domain: `b-${run}.localhost`, ...override() }, catalog), field)
+    expect(await db.select({ id: sites.id }).from(sites).where(eq(sites.code, B))).toEqual([])
+  })
+
+  it('domain: tambah, pindahkan primary, hapus alias; primary dan domain site lain dilindungi', async () => {
+    const code = A
+    expect(await provision.addDomain(code, `Baru-${run}.localhost`, true)).toBe(`baru-${run}.localhost`)
+    expect((await provision.listDomains(code))[0]).toMatchObject({ domain: `baru-${run}.localhost`, isPrimary: true })
+    await rejects(provision.removeDomain(code, `baru-${run}.localhost`), 'domain')
+    await provision.setPrimaryDomain(code, `uji-${run}.localhost`)
+    await provision.removeDomain(code, `baru-${run}.localhost`)
+    expect((await provision.listDomains(code)).map((d) => d.domain)).toEqual([`uji-${run}.localhost`, `www.uji-${run}.localhost`])
+    await rejects(provision.addDomain(code, 'kuliner.localhost'), 'domain')
+    await expect(provision.removeDomain(code, 'kuliner.localhost')).rejects.toBeInstanceOf(EditorError)
+    await expect(provision.addDomain('tidak-ada', `z-${run}.localhost`)).rejects.toBeInstanceOf(EditorError)
+  })
+})
+```
+
+3. Tulis dua CLI tipis di `apps/web/scripts` (dijalankan lewat `tsx`, seperti `admin:create`) dan daftarkan sebagai `pnpm site:create` dan `pnpm site:domain` di root dan di `apps/web`:
+
+`apps/web/scripts/site-create.ts`
+
+```ts
+// Membuat site baru tanpa menyentuh database manual (M5 5.1b, usulan M5-G).
+//
+//   pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
+//     --domain sumatera.localhost [--alias www.sumatera.localhost]... [--owner admin@local.test] \
+//     [--tagline "..."] [--timezone Asia/Jakarta] [--locale id-ID] [--permalink /:category/:slug]
+//
+// Template divalidasi terhadap registry yang sama dengan server; menu dibuat
+// untuk setiap lokasi menu yang dikenal template terdaftar. Kategori dibuat
+// lewat admin.
+import { parseArgs } from 'node:util'
+import { createSiteProvisioner, EditorError } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv } from '@framework/db'
+import { templateManifests } from '../server/utils/templates'
+
+const USAGE = `Pemakaian:
+  pnpm site:create --code <kode> --name <nama> --template <${templateManifests.templates.map((t) => t.key).join('|')}> --domain <domain>
+                   [--alias <domain>]... [--owner <email>] [--tagline <teks>]
+                   [--timezone <IANA>] [--locale <xx-XX>] [--permalink <pola>]`
+
+function fail(message: string): never {
+  console.error(`[site] ${message}`)
+  process.exit(1)
+}
+
+const { values } = (() => {
+  try {
+    return parseArgs({
+      options: {
+        code: { type: 'string' },
+        name: { type: 'string' },
+        template: { type: 'string' },
+        domain: { type: 'string' },
+        alias: { type: 'string', multiple: true, default: [] },
+        owner: { type: 'string' },
+        tagline: { type: 'string' },
+        timezone: { type: 'string' },
+        locale: { type: 'string' },
+        permalink: { type: 'string' },
+        help: { type: 'boolean', default: false },
+      },
+      strict: true,
+    })
+  } catch (error) {
+    return fail(`${error instanceof Error ? error.message : String(error)}\n${USAGE}`)
+  }
+})()
+
+if (values.help) {
+  console.log(USAGE)
+  process.exit(0)
+}
+if (!values.code || !values.name || !values.template || !values.domain) fail(`--code, --name, --template, dan --domain wajib\n${USAGE}`)
+
+const menuLocations = [...new Set(templateManifests.templates.flatMap((t) => t.menuLocations))]
+const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 1, applicationName: 'site-create' })
+try {
+  const site = await createSiteProvisioner(db).createSite(
+    {
+      code: values.code,
+      name: values.name,
+      template: values.template,
+      domain: values.domain,
+      aliases: values.alias,
+      owner: values.owner,
+      timezone: values.timezone,
+      locale: values.locale,
+      settings: {
+        ...(values.tagline && { tagline: values.tagline }),
+        ...(values.permalink && { permalink: values.permalink }),
+      },
+    },
+    { versionOf: (key) => (templateManifests.has(key) ? templateManifests.get(key).version : null), menuLocations },
+  )
+  console.log(`[site] ${site.code} dibuat (template ${site.template}): ${site.domains.join(', ')}`)
+  console.log('[site] berikutnya: buat kategori dan menu di admin; atur tema di menu Tema.')
+} catch (error) {
+  if (error instanceof EditorError) fail(error.issues.length ? error.issues.map((i) => `${i.field}: ${i.message}`).join('\n  ') : error.message)
+  throw error
+} finally {
+  await db.$client.end()
+}
+```
+
+`apps/web/scripts/site-domain.ts`
+
+```ts
+// Mengelola domain site tanpa SQL manual (M5 5.1b).
+//
+//   pnpm site:domain --site <kode>                          daftar domain
+//   pnpm site:domain --site <kode> --add <domain> [--primary]
+//   pnpm site:domain --site <kode> --primary-domain <domain>  jadikan primary
+//   pnpm site:domain --site <kode> --remove <domain>          hapus alias
+import { parseArgs } from 'node:util'
+import { createSiteProvisioner, EditorError } from '@framework/core'
+import { createDatabase, databaseUrlFromEnv } from '@framework/db'
+
+const USAGE = `Pemakaian:
+  pnpm site:domain --site <kode> [--add <domain> [--primary] | --primary-domain <domain> | --remove <domain>]`
+
+function fail(message: string): never {
+  console.error(`[site] ${message}`)
+  process.exit(1)
+}
+
+const { values } = (() => {
+  try {
+    return parseArgs({
+      options: {
+        site: { type: 'string' },
+        add: { type: 'string' },
+        primary: { type: 'boolean', default: false },
+        'primary-domain': { type: 'string' },
+        remove: { type: 'string' },
+        help: { type: 'boolean', default: false },
+      },
+      strict: true,
+    })
+  } catch (error) {
+    return fail(`${error instanceof Error ? error.message : String(error)}\n${USAGE}`)
+  }
+})()
+
+if (values.help) {
+  console.log(USAGE)
+  process.exit(0)
+}
+if (!values.site) fail(`--site wajib\n${USAGE}`)
+const actions = [values.add, values['primary-domain'], values.remove].filter(Boolean)
+if (actions.length > 1) fail(`pilih satu: --add, --primary-domain, atau --remove\n${USAGE}`)
+
+const db = createDatabase({ connectionString: databaseUrlFromEnv(), max: 1, applicationName: 'site-domain' })
+const sites = createSiteProvisioner(db)
+try {
+  if (values.add) console.log(`[site] ${await sites.addDomain(values.site, values.add, values.primary)} ditambahkan${values.primary ? ' sebagai primary' : ''}`)
+  else if (values['primary-domain']) console.log(`[site] ${await sites.setPrimaryDomain(values.site, values['primary-domain'])} kini primary`)
+  else if (values.remove) {
+    await sites.removeDomain(values.site, values.remove)
+    console.log(`[site] ${values.remove} dihapus`)
+  }
+  for (const d of await sites.listDomains(values.site)) console.log(`  ${d.isPrimary ? '*' : ' '} ${d.domain} (${d.status})`)
+} catch (error) {
+  if (error instanceof EditorError) fail(error.issues.length ? error.issues.map((i) => `${i.field}: ${i.message}`).join('\n  ') : error.message)
+  throw error
+} finally {
+  await db.$client.end()
+}
+```
+
+4. Coba di dev. Domain `*.localhost` tidak butuh file hosts:
+
+```bash
+pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
+  --domain sumatera.localhost --alias www.sumatera.localhost --owner admin@local.test
+# [site] dapur-sumatera dibuat (template news): sumatera.localhost, www.sumatera.localhost
+```
+
+   http://sumatera.localhost:3000 langsung tampil dengan template news (beranda kosong, RSS dan sitemap 200), www dialihkan 301 ke domain primary, dan site muncul di pemilih site admin. Buat kategori di admin sebelum menerima hasil AI untuk site itu.
+
+5. Buktikan di CI: job `build` membuat site ketiga lewat CLI di database hasil migrate, lalu smoke test memeriksa ketiga domain dengan template masing-masing. Gate isolasi, gate admin, dan gate konten berjalan setelahnya dengan site ketiga itu ada.

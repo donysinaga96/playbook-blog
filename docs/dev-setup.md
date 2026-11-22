@@ -29,6 +29,8 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 | Build produksi lalu menjalankannya | `pnpm build`, lalu `pnpm --filter @framework/web preview` |
 | Smoke test hasil build (server start, `/api/health` = 200) | `pnpm build`, lalu `pnpm --filter @framework/web smoke` |
 | Membuat admin / mengganti password admin | `pnpm admin:create --email <email> ...` (lihat "Admin") |
+| Membuat site baru / mengelola domainnya | `pnpm site:create ...`, `pnpm site:domain ...` (lihat "Site baru") |
+| Gate konten AI (hasil agent → approval → tampil) | `pnpm build`, lalu `ADMIN_PASSWORD=<password> pnpm --filter @framework/web gate:content` |
 | Cek hidrasi + screenshot di browser (lokal, butuh `pnpm dev` jalan) | `pnpm --filter @framework/web browser-check` (lihat "Cek di browser") |
 | Gate M2: request paralel ke dua domain tidak tertukar | `pnpm build`, lalu `pnpm --filter @framework/web gate` |
 | Memperbarui snapshot view model (setelah perubahan yang disengaja) | `pnpm vitest run packages/core/src/views -u`, lalu periksa diff `.snap` |
@@ -137,6 +139,32 @@ lalu disalin ke state Vue. Block body yang dilewati atau media yang hilang dicat
 - Kode di `apps/web/app/` (Vue) hanya boleh import **tipe** dari `@framework/core` dan
   `@framework/db` (dijaga ESLint). Entry core membawa driver `pg`, yang rusak bila ikut ke bundle
   SSR Vue. Fungsi murni tersedia lewat subpath, mis. `@framework/core/media`.
+
+## Site baru
+
+Site dibuat lewat CLI, bukan SQL (M5 5.1b). Contoh untuk dev (domain `*.localhost` tidak butuh
+file hosts):
+
+```bash
+pnpm site:create --code dapur-sumatera --name "Dapur Sumatera" --template news \
+  --domain sumatera.localhost --alias www.sumatera.localhost --owner admin@local.test \
+  --tagline "Resep dari Sumatera"
+# lalu buka http://sumatera.localhost:3000 dan http://admin.localhost:3000/admin
+```
+
+Site baru berisi theme aktif (config default template), menu `header` dan `footer` kosong, dan
+penulis "Redaksi" (slug `redaksi`). Kategori dibuat di admin; hasil AI butuh kategori yang sudah
+ada. Opsi lain: `--timezone`, `--locale`, `--permalink`. Domain:
+
+```bash
+pnpm site:domain --site dapur-sumatera                                  # daftar
+pnpm site:domain --site dapur-sumatera --add sumatera.example --primary # tambah, jadikan primary
+pnpm site:domain --site dapur-sumatera --primary-domain sumatera.localhost
+pnpm site:domain --site dapur-sumatera --remove www.sumatera.localhost  # hapus alias
+```
+
+Domain primary dan domain terakhir tidak bisa dihapus. Site tidak dihapus lewat CLI (status
+ARCHIVED, lihat komentar tabel `sites`).
 
 ## Admin
 

@@ -24,7 +24,9 @@
     "db:psql": "docker compose exec db sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
     "db:adminer": "docker compose --profile tools up -d adminer",
     "tutorial": "node docs/tutorial/build.mjs",
-    "admin:create": "pnpm --filter @framework/web admin:create"
+    "admin:create": "pnpm --filter @framework/web admin:create",
+    "site:create": "pnpm --filter @framework/web site:create",
+    "site:domain": "pnpm --filter @framework/web site:domain"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
