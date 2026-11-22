@@ -10,31 +10,14 @@ import { defineRelations } from "drizzle-orm";
 import * as schema from "./schema";
 
 export const relations = defineRelations(schema, (r) => ({
-	users: {
-		articlesViaArticleRevisions: r.many.articles({
-			from: r.users.id.through(r.articleRevisions.createdBy),
-			to: [r.articles.siteId.through(r.articleRevisions.siteId), r.articles.id.through(r.articleRevisions.articleId)],
-			alias: "users_id_articles_siteId_id_via_articleRevisions"
+	articleReferences: {
+		article: r.one.articles({
+			from: [r.articleReferences.siteId, r.articleReferences.articleId],
+			to: [r.articles.siteId, r.articles.id]
 		}),
-		articleRevisions: r.many.articleRevisions(),
-		articlesCreatedBy: r.many.articles({
-			alias: "articles_createdBy_users_id"
-		}),
-		articlesUpdatedBy: r.many.articles({
-			alias: "articles_updatedBy_users_id"
-		}),
-		sitesViaMedia: r.many.sites({
-			from: r.users.id.through(r.media.createdBy),
-			to: r.sites.id.through(r.media.siteId),
-			alias: "users_id_sites_id_via_media"
-		}),
-		media: r.many.media(),
-		sitesViaSiteMembers: r.many.sites({
-			alias: "sites_id_users_id_via_siteMembers"
-		}),
-		siteMembers: r.many.siteMembers(),
 	},
 	articles: {
+		articleReferences: r.many.articleReferences(),
 		users: r.many.users({
 			alias: "users_id_articles_siteId_id_via_articleRevisions"
 		}),
@@ -70,7 +53,33 @@ export const relations = defineRelations(schema, (r) => ({
 			from: [r.articles.siteId, r.articles.featuredMediaId],
 			to: [r.media.siteId, r.media.id]
 		}),
+		generatedArticles: r.many.generatedArticles(),
 		menuItems: r.many.menuItems(),
+	},
+	users: {
+		articlesViaArticleRevisions: r.many.articles({
+			from: r.users.id.through(r.articleRevisions.createdBy),
+			to: [r.articles.siteId.through(r.articleRevisions.siteId), r.articles.id.through(r.articleRevisions.articleId)],
+			alias: "users_id_articles_siteId_id_via_articleRevisions"
+		}),
+		articleRevisions: r.many.articleRevisions(),
+		articlesCreatedBy: r.many.articles({
+			alias: "articles_createdBy_users_id"
+		}),
+		articlesUpdatedBy: r.many.articles({
+			alias: "articles_updatedBy_users_id"
+		}),
+		generatedArticles: r.many.generatedArticles(),
+		sitesViaMedia: r.many.sites({
+			from: r.users.id.through(r.media.createdBy),
+			to: r.sites.id.through(r.media.siteId),
+			alias: "users_id_sites_id_via_media"
+		}),
+		media: r.many.media(),
+		sitesViaSiteMembers: r.many.sites({
+			alias: "sites_id_users_id_via_siteMembers"
+		}),
+		siteMembers: r.many.siteMembers(),
 	},
 	articleRevisions: {
 		user: r.one.users({
@@ -105,6 +114,7 @@ export const relations = defineRelations(schema, (r) => ({
 		articles: r.many.articles(),
 		authors: r.many.authors(),
 		categories: r.many.categories(),
+		generatedArticles: r.many.generatedArticles(),
 		usersViaMedia: r.many.users({
 			alias: "users_id_sites_id_via_media"
 		}),
@@ -193,6 +203,20 @@ export const relations = defineRelations(schema, (r) => ({
 		user: r.one.users({
 			from: r.siteMembers.userId,
 			to: r.users.id
+		}),
+	},
+	generatedArticles: {
+		article: r.one.articles({
+			from: [r.generatedArticles.siteId, r.generatedArticles.articleId],
+			to: [r.articles.siteId, r.articles.id]
+		}),
+		user: r.one.users({
+			from: r.generatedArticles.reviewedBy,
+			to: r.users.id
+		}),
+		site: r.one.sites({
+			from: r.generatedArticles.siteId,
+			to: r.sites.id
 		}),
 	},
 	menuItems: {

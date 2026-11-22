@@ -325,7 +325,7 @@ logs/
    - Pemilik schema (`blog`) dipakai migration, test, dan tool admin.
    - Role aplikasi (`blog_app`) dipakai Nuxt. Role ini hanya boleh SELECT/INSERT/UPDATE/DELETE, tanpa DDL.
    Pemisahan ini membatasi dampak bila aplikasi bocor, dan menjadi prasyarat RLS di kemudian hari.
-3. Buat `.env.example` sebagai contoh konfigurasi. File ini masuk Git; isinya hanya placeholder. Bagian `SITE_MODE` baru dipakai di bab "Memilih Site dari Domain Request":
+3. Buat `.env.example` sebagai contoh konfigurasi. File ini masuk Git; isinya hanya placeholder. Bagian `SITE_MODE` baru dipakai di bab "Memilih Site dari Domain Request", dan `AGENT_DB_USER`/`AGENT_DB_PASSWORD` di bab "Menyiapkan Database untuk Konten AI":
 
 `.env.example`
 
@@ -341,6 +341,11 @@ POSTGRES_PORT=5432
 # --- Role aplikasi (dipakai Nuxt; hanya baca/tulis data, tanpa DDL) ---
 APP_DB_USER=blog_app
 APP_DB_PASSWORD=ganti_password_aplikasi
+
+# --- Role AI agent (ADR-010; agent di luar repo, lihat docs/kontrak-agent.md) ---
+# Hanya boleh menulis generated_articles. Password kosong = role NOLOGIN.
+AGENT_DB_USER=blog_agent
+AGENT_DB_PASSWORD=
 
 # --- Development ---
 SEED_DEV_DATA=true
@@ -385,6 +390,8 @@ ADMIN_HOST=admin.localhost
    - `db-test` (profile `test`): uji lengkap database di database terpisah.
    - `adminer` (profile `tools`): UI database opsional.
 
+   Variabel `AGENT_DB_*` di `db-migrate` dan `db-test` ditambahkan di bab "Menyiapkan Database untuk Konten AI".
+
 `docker-compose.yml`
 
 ```yaml
@@ -392,7 +399,7 @@ ADMIN_HOST=admin.localhost
 # Development stack - framework web artikel multi-site / multi-template
 #
 #   docker compose up -d                              # db + migration + role app + seed
-#   docker compose --profile test  run --rm db-test   # 50 pemeriksaan packages/db
+#   docker compose --profile test  run --rm db-test   # 81 pemeriksaan packages/db
 #   docker compose --profile tools up -d adminer      # UI database di http://localhost:8080
 #
 # Aplikasi Nuxt TIDAK jalan di sini saat development: jalankan `pnpm dev`
@@ -439,7 +446,7 @@ services:
       retries: 20
       start_period: 10s
 
-  # Sekali jalan: migration -> role aplikasi -> seed dev. Aman diulang.
+  # Sekali jalan: migration -> role aplikasi -> role AI agent -> seed dev. Aman diulang.
   db-migrate:
     image: *pg-image
     depends_on:
@@ -451,6 +458,8 @@ services:
       <<: *pg-owner-env
       APP_DB_USER: ${APP_DB_USER:-blog_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+      AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:-}
       SEED_DEV_DATA: ${SEED_DEV_DATA:-true}
     volumes:
       - ./packages/db:/db:ro
@@ -469,6 +478,7 @@ services:
       PGDATABASE: postgres
       APP_DB_USER: ${APP_DB_USER:-blog_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+      AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
     volumes:
       - ./packages/db:/db:ro
 
@@ -510,7 +520,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 2. `docker compose up -d`
 3. `docker compose logs db-migrate` harus berakhir dengan `database blog_dev siap`.
 4. `docker compose --profile test run --rm db-test` harus berakhir dengan
-   `SELESAI: semua pemeriksaan lulus` (50 pemeriksaan).
+   `SELESAI: semua pemeriksaan lulus` (81 pemeriksaan).
 
 ## Perintah sehari-hari
 
@@ -1448,20 +1458,21 @@ for f in "$DIR"/seed/*.sql; do
 done
 ```
 
-5. Tulis entry point service `db-migrate` yang merangkai ketiganya:
+5. Tulis entry point service `db-migrate` yang merangkai ketiganya (langkah role AI agent ditambahkan di bab "Menyiapkan Database untuk Konten AI"):
 
 `packages/db/scripts/setup.sh`
 
 ```sh
 #!/bin/sh
 # setup.sh  -  Entry point service db-migrate di docker-compose:
-#   1. migration   2. role aplikasi   3. seed dev (bila SEED_DEV_DATA=true)
+#   1. migration   2. role aplikasi   3. role AI agent   4. seed dev (bila SEED_DEV_DATA=true)
 set -eu
 
 DIR=$(cd "$(dirname "$0")" && pwd)
 
 sh "$DIR/migrate.sh"
 sh "$DIR/app_role.sh"
+sh "$DIR/agent_role.sh"
 
 if [ "${SEED_DEV_DATA:-false}" = "true" ]; then
   sh "$DIR/seed.sh"
@@ -1496,6 +1507,8 @@ docker compose logs db-migrate     # harus berakhir dengan "database blog_dev si
 | Query publik | 3 | Feed tanpa draft dan artikel terjadwal; pencarian |
 | Hard delete site | 1 | Tidak ada baris tersisa |
 | Index pada 100.000 artikel | 4 | Feed, listing kategori, pencarian, cek slug |
+
+   Bab "Menyiapkan Database untuk Konten AI" menambah 19 test (bagian 7), sehingga file di bawah berisi 61 test dan bagian index menjadi bagian 8.
 
 4. Test ini membaca dua site contoh (site A dan site B) dari data seed Anda. Sesuaikan UUID di bagian atas file dengan data seed yang Anda tulis:
 
@@ -1716,7 +1729,80 @@ SELECT pg_temp.expect_true('tidak ada baris tersisa milik site yang dihapus',
         + (SELECT count(*) FROM article_tags WHERE site_id = '01930000-0000-7000-8000-00000000d001')
         + (SELECT count(*) FROM menu_items   WHERE site_id = '01930000-0000-7000-8000-00000000d001') = 0));
 
-\echo '--- 7. Index dipakai pada 100.000 artikel ---'
+\echo '--- 7. Hasil AI, referensi, sumber media (0002, ADR-010) ---'
+-- Artikel uji di site B (dihapus di akhir bagian ini, semuanya di-ROLLBACK).
+INSERT INTO articles (id, site_id, category_id, title, slug)
+VALUES ('01930000-0000-7000-8000-000000009801', '01930000-0000-7000-8000-000000000102',
+        '01930000-0000-7000-8000-000000000411', 'Uji referensi', 'uji-referensi');
+
+SELECT pg_temp.expect_error('referensi site A menunjuk artikel site B', '23503', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000009801', 1, 'x', 'https://x.test') $q$);
+SELECT pg_temp.expect_error('URL referensi javascript:', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'x', 'javascript:alert(1)') $q$);
+SELECT pg_temp.expect_error('URL referensi berisi spasi', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'x', 'https://x.test/a b') $q$);
+SELECT pg_temp.expect_error('posisi referensi 0', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 0, 'x', 'https://x.test') $q$);
+SELECT pg_temp.expect_error('jenis referensi tidak dikenal', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url, kind)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'x', 'https://x.test', 'PODCAST') $q$);
+INSERT INTO article_references (site_id, article_id, position, title, url, publisher, kind)
+VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'Sumber', 'http://x.test/a', 'X', 'ARTICLE');
+SELECT pg_temp.expect_error('URL referensi dobel di artikel yang sama', '23505', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 2, 'y', 'http://x.test/a') $q$);
+SELECT pg_temp.expect_error('source_url media bukan http(s)', '23514', $q$
+  UPDATE media SET source_url = 'ftp://x.test/a.jpg' WHERE id = '01930000-0000-7000-8000-000000000211' $q$);
+
+SELECT pg_temp.expect_error('status hasil AI tidak dikenal', '23514', $q$
+  INSERT INTO generated_articles (site_id, external_id, payload, status)
+  VALUES ('01930000-0000-7000-8000-000000000102', 'uji-status', '{}', 'PUBLISHED') $q$);
+SELECT pg_temp.expect_error('payload hasil AI bukan object', '23514', $q$
+  INSERT INTO generated_articles (site_id, external_id, payload)
+  VALUES ('01930000-0000-7000-8000-000000000102', 'uji-array', '[]') $q$);
+INSERT INTO generated_articles (id, site_id, external_id, payload)
+VALUES ('01930000-0000-7000-8000-000000009901', '01930000-0000-7000-8000-000000000102', 'uji-1', '{"version": 1}');
+SELECT pg_temp.expect_error('external_id dobel di site yang sama', '23505', $q$
+  INSERT INTO generated_articles (site_id, external_id, payload)
+  VALUES ('01930000-0000-7000-8000-000000000102', 'uji-1', '{}') $q$);
+INSERT INTO generated_articles (site_id, external_id, payload)
+VALUES ('01930000-0000-7000-8000-000000000101', 'uji-1', '{}');
+SELECT pg_temp.expect_true('external_id sama boleh di site lain',
+  (SELECT count(*) FROM generated_articles WHERE external_id = 'uji-1') = 2);
+SELECT pg_temp.expect_error('ditolak tanpa alasan', '23514', $q$
+  UPDATE generated_articles SET status = 'ARCHIVED', reviewed_at = now()
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('diputuskan tanpa reviewed_at', '23514', $q$
+  UPDATE generated_articles SET status = 'APPROVED', article_id = '01930000-0000-7000-8000-000000009801'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('article_id pada hasil yang belum diputuskan', '23514', $q$
+  UPDATE generated_articles SET article_id = '01930000-0000-7000-8000-000000009801'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('hasil AI site B menunjuk artikel site A', '23503', $q$
+  UPDATE generated_articles SET status = 'APPROVED', reviewed_at = now(), article_id = '01930000-0000-7000-8000-000000000601'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+UPDATE generated_articles
+   SET status = 'APPROVED', reviewed_at = now(), article_id = '01930000-0000-7000-8000-000000009801'
+ WHERE id = '01930000-0000-7000-8000-000000009901';
+SELECT pg_temp.expect_error('payload hasil yang sudah diputuskan diubah', 'P0001', $q$
+  UPDATE generated_articles SET payload = '{"version": 2}' WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('keputusan diubah (APPROVED -> ARCHIVED)', 'P0001', $q$
+  UPDATE generated_articles SET status = 'ARCHIVED', review_note = 'ganti pikiran'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('hasil yang sudah diputuskan dipindah ke artikel lain', 'P0001', $q$
+  UPDATE generated_articles SET article_id = '01930000-0000-7000-8000-000000000611'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+DELETE FROM articles WHERE id = '01930000-0000-7000-8000-000000009801';
+SELECT pg_temp.expect_true('hapus artikel: referensi ikut terhapus, hasil AI tetap APPROVED tanpa article_id',
+  NOT EXISTS (SELECT 1 FROM article_references WHERE article_id = '01930000-0000-7000-8000-000000009801')
+  AND (SELECT status = 'APPROVED' AND article_id IS NULL FROM generated_articles
+        WHERE id = '01930000-0000-7000-8000-000000009901'));
+
+\echo '--- 8. Index dipakai pada 100.000 artikel ---'
 INSERT INTO articles (site_id, category_id, title, slug, body_text, status, published_at)
 SELECT '01930000-0000-7000-8000-000000000101',
        CASE WHEN g % 2 = 0 THEN '01930000-0000-7000-8000-000000000401'::uuid
@@ -1753,7 +1839,7 @@ SELECT pg_temp.expect_index('cek slug memakai uq_articles_site_slug', 'uq_articl
 ROLLBACK;
 ```
 
-5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan:
+5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan (bab "Menyiapkan Database untuk Konten AI" menambah 19 test integritas dan 12 pemeriksaan role AI agent, menjadi 81):
    - migration dijalankan dua kali (run kedua harus melewati semua file),
    - runner harus menolak migration yang diubah,
    - role aplikasi dibuat,
@@ -1772,8 +1858,9 @@ ROLLBACK;
 #   2. runner menolak migration yang sudah diubah
 #   3. role aplikasi
 #   4. seed (2x; jumlah baris harus sama)
-#   5. 42 test integritas
+#   5. 61 test integritas
 #   6. hak akses role aplikasi
+#   7. hak akses role AI agent (ADR-010)
 #
 # Pemakaian:  APP_DB_PASSWORD=... ./run_all.sh [nama_db]
 # Koneksi lewat PGHOST, PGPORT, PGUSER, PGPASSWORD (pemilik schema).
@@ -1788,6 +1875,7 @@ set -euo pipefail
 DB="${1:-blog_framework_test}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_USER="${APP_DB_USER:-blog_app}"
+AGENT_USER="${AGENT_DB_USER:-blog_agent}"
 APP_PASS="${APP_DB_PASSWORD:?APP_DB_PASSWORD wajib diisi (samakan dengan .env); tidak ada default agar password blog_app di database dev tidak tertimpa}"
 export PGOPTIONS="-c client_min_messages=warning"
 
@@ -1816,8 +1904,11 @@ fi
 rm -rf "$TMP"
 pass "runner menolak migration yang sudah diubah"
 
-echo "== 3. Role aplikasi"
+echo "== 3. Role aplikasi dan role AI agent"
 APP_DB_USER="$APP_USER" APP_DB_PASSWORD="$APP_PASS" sh "$DIR/scripts/app_role.sh"
+# Tanpa password: role agent yang sudah ada (mis. milik database dev) tidak
+# diubah login/password-nya; pemeriksaan di bagian 7 memakai SET ROLE.
+AGENT_DB_USER="$AGENT_USER" AGENT_DB_PASSWORD="" sh "$DIR/scripts/agent_role.sh"
 
 count_rows() {
   psql -X -tA -c "
@@ -1837,7 +1928,9 @@ count_rows() {
       SELECT 'pages', count(*) FROM pages UNION ALL
       SELECT 'menus', count(*) FROM menus UNION ALL
       SELECT 'menu_items', count(*) FROM menu_items UNION ALL
-      SELECT 'redirects', count(*) FROM redirects) x"
+      SELECT 'redirects', count(*) FROM redirects UNION ALL
+      SELECT 'article_references', count(*) FROM article_references UNION ALL
+      SELECT 'generated_articles', count(*) FROM generated_articles) x"
 }
 
 echo "== 4. Seed"
@@ -1867,6 +1960,59 @@ if app_psql -c "DROP TABLE redirects" >/dev/null 2>&1; then fail "role aplikasi 
 pass "role aplikasi tidak bisa menghapus tabel"
 if app_psql -c "SELECT 1 FROM schema_migrations" >/dev/null 2>&1; then fail "role aplikasi bisa membaca schema_migrations"; fi
 pass "role aplikasi tidak bisa membaca schema_migrations"
+
+echo "== 7. Hak akses role AI agent ($AGENT_USER)"
+# Setiap pemeriksaan berjalan sebagai agent (SET LOCAL ROLE) di transaksi
+# yang di-ROLLBACK. Hasil yang sudah diputuskan disiapkan pemilik schema.
+SITE_B="01930000-0000-7000-8000-000000000102"
+agent_sql() {
+  psql -X -tA -v ON_ERROR_STOP=1 2>&1 <<SQL
+BEGIN;
+INSERT INTO generated_articles (id, site_id, external_id, payload, status, review_note, reviewed_at)
+VALUES ('01930000-0000-7000-8000-000000009902', '$SITE_B', 'uji-agent-diputuskan', '{}', 'ARCHIVED', 'uji', now());
+SET LOCAL ROLE "$AGENT_USER";
+$1;
+ROLLBACK;
+SQL
+}
+agent_ok() {
+  local out
+  out="$(agent_sql "$2")" || fail "$1 -> $out"
+  pass "$1"
+}
+agent_denied() {
+  local out
+  if out="$(agent_sql "$2")"; then fail "$1 -> berhasil, padahal harus ditolak"; fi
+  grep -q "$3" <<<"$out" || fail "$1 -> galat lain: $out"
+  pass "$1"
+}
+agent_ok "agent membaca kode site, kategori, penulis, tag" \
+  "SELECT s.code, c.slug, a.slug, t.slug FROM sites s JOIN categories c ON c.site_id = s.id
+     LEFT JOIN authors a ON a.site_id = s.id LEFT JOIN tags t ON t.site_id = s.id LIMIT 1"
+agent_ok "agent menulis hasil AI lalu memperbaruinya lewat external_id (status otomatis READY_TO_PUBLISH)" \
+  "INSERT INTO generated_articles (site_id, external_id, payload, agent_note) VALUES ('$SITE_B', 'uji-agent', '{\"version\": 1}', 'catatan');
+   INSERT INTO generated_articles (site_id, external_id, payload) VALUES ('$SITE_B', 'uji-agent', '{\"version\": 1, \"title\": \"baru\"}')
+     ON CONFLICT (site_id, external_id) DO UPDATE SET payload = EXCLUDED.payload, generated_at = now()
+     WHERE generated_articles.status = 'READY_TO_PUBLISH';
+   DO \$\$ BEGIN IF (SELECT status <> 'READY_TO_PUBLISH' OR payload->>'title' <> 'baru' FROM generated_articles
+     WHERE external_id = 'uji-agent') THEN RAISE EXCEPTION 'hasil upsert salah'; END IF; END \$\$"
+agent_denied "agent tidak bisa mengisi status saat INSERT" \
+  "INSERT INTO generated_articles (site_id, external_id, payload, status) VALUES ('$SITE_B', 'x', '{}', 'APPROVED')" "permission denied"
+agent_denied "agent tidak bisa mengubah status" \
+  "UPDATE generated_articles SET status = 'APPROVED'" "permission denied"
+agent_denied "agent tidak bisa mengisi keputusan (review_note)" \
+  "UPDATE generated_articles SET review_note = 'x'" "permission denied"
+agent_denied "agent tidak bisa mengubah isi hasil yang sudah diputuskan" \
+  "UPDATE generated_articles SET payload = '{\"diubah\": true}' WHERE external_id = 'uji-agent-diputuskan'" "sudah diputuskan"
+agent_denied "agent tidak bisa menghapus hasil AI" \
+  "DELETE FROM generated_articles" "permission denied"
+agent_denied "agent tidak bisa menulis articles" \
+  "INSERT INTO articles (site_id, category_id, title, slug) VALUES ('$SITE_B', '01930000-0000-7000-8000-000000000411', 'x', 'x')" "permission denied"
+agent_denied "agent tidak bisa membaca articles" "SELECT 1 FROM articles" "permission denied"
+agent_denied "agent tidak bisa membaca users" "SELECT 1 FROM users" "permission denied"
+agent_denied "agent tidak bisa membaca sites.settings" "SELECT settings FROM sites" "permission denied"
+agent_denied "agent tidak bisa menulis media" \
+  "UPDATE media SET source_url = 'https://x.test'" "permission denied"
 
 echo "== SELESAI: semua pemeriksaan lulus"
 ```
@@ -2555,7 +2701,7 @@ rmSync(outDir, { recursive: true, force: true })
 ```
 
 6. Jalankan `pnpm db:pull`. Hasilnya `packages/db/src/schema/schema.ts` dan `relations.ts`. Kedua file ini hasil generate; buat ulang setiap kali ada migration baru, jangan diedit tangan.
-7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar:
+7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar (jumlah tabel menjadi 18 di bab "Menyiapkan Database untuk Konten AI"):
 
 `packages/db/src/schema/schema.test.ts`
 
@@ -2601,9 +2747,9 @@ function index(tableName: string, indexName: string) {
 }
 
 describe('schema hasil drizzle-kit pull', () => {
-  it('berisi 16 tabel, tanpa schema_migrations', () => {
+  it('berisi 18 tabel (0001: 16, 0002: +2), tanpa schema_migrations', () => {
     const names = tables.map(getTableName)
-    expect(names).toHaveLength(16)
+    expect(names).toHaveLength(18)
     expect(names).not.toContain('schema_migrations')
   })
 
@@ -5066,7 +5212,7 @@ it.skipIf(!process.env['CI'])('di CI, DATABASE_URL wajib ada agar test database 
 
 1. Buat `.gitlab-ci.yml` dengan dua job yang berjalan paralel:
    - `check`: Node 24 + pnpm dari corepack. Menyalakan PostgreSQL 18.7 sebagai service, menjalankan migration dan seed, lalu `pnpm lint`, `pnpm typecheck`, `pnpm test`. Test berjalan sebagai role aplikasi `blog_app`, bukan pemilik schema.
-   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan) di container PostgreSQL 18.7.
+   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan; 81 setelah bab "Menyiapkan Database untuk Konten AI") di container PostgreSQL 18.7.
    - Job ketiga, `build`, ditambahkan di bab "Mem-build Aplikasi Web di CI" setelah aplikasi Nuxt ada.
 2. Aturan `workflow` mencegah pipeline ganda saat branch punya merge request terbuka. Store pnpm di-cache berdasarkan `pnpm-lock.yaml`.
 
@@ -5078,7 +5224,7 @@ it.skipIf(!process.env['CI'])('di CI, DATABASE_URL wajib ada agar test database 
 #   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack),
 #           termasuk test repository yang membaca PostgreSQL 18 yang sudah
 #           di-migrate dan di-seed, sebagai role aplikasi blog_app
-#   db    : uji lengkap packages/db (run_all.sh, 50 pemeriksaan) di
+#   db    : uji lengkap packages/db (run_all.sh, 81 pemeriksaan) di
 #           PostgreSQL 18 sebagai service
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed
@@ -5118,6 +5264,8 @@ check:
     PGDATABASE: blog_dev
     APP_DB_USER: blog_app
     APP_DB_PASSWORD: ci_app_password
+    AGENT_DB_USER: blog_agent
+    AGENT_DB_PASSWORD: ci_agent_password
     SEED_DEV_DATA: "true"
     # Dipakai test (Vitest): koneksi sebagai role aplikasi, bukan pemilik schema
     DATABASE_URL: "postgres://blog_app:ci_app_password@db:5432/blog_dev"
@@ -5160,6 +5308,8 @@ build:
     PGDATABASE: blog_dev
     APP_DB_USER: blog_app
     APP_DB_PASSWORD: ci_app_password
+    AGENT_DB_USER: blog_agent
+    AGENT_DB_PASSWORD: ci_agent_password
     SEED_DEV_DATA: "true"
     SITE_MODE: multi
     # Admin (ADR-009). Nilai khusus CI: database dan server CI dibuang setelah job.
@@ -5220,6 +5370,8 @@ db:
     PGDATABASE: postgres
     APP_DB_USER: blog_app
     APP_DB_PASSWORD: ci_app_password
+    AGENT_DB_USER: blog_agent
+    AGENT_DB_PASSWORD: ci_agent_password
   script:
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - bash packages/db/run_all.sh blog_framework_test
@@ -23422,7 +23574,7 @@ Dokumen ini untuk pembuat AI agent konten (di luar repo ini). Isinya: apa yang b
 
 Sumber kebenaran bentuk payload adalah skema Zod `generatedPayloadSchema` di [packages/core/src/generated/payload.ts](../packages/core/src/generated/payload.ts). Contoh payload di dokumen ini diuji otomatis terhadap skema itu (`payload.test.ts`). Kalau test itu gagal, dokumen ini sudah tidak sesuai dengan kode.
 
-> Status: tabel `generated_articles`, `article_references`, dan role `blog_agent` dibuat di migration 0002 (task 5a.1). Sebelum itu, dokumen ini adalah rancangan yang sudah disetujui.
+> Tabel dibuat oleh [migration 0002](../packages/db/migrations/0002_konten_ai.sql); hak role diatur oleh [agent_role.sql](../packages/db/scripts/agent_role.sql) dan diuji di `packages/db/run_all.sh` (bagian 7).
 
 ## Alur
 
@@ -23437,7 +23589,7 @@ Sumber kebenaran bentuk payload adalah skema Zod `generatedPayloadSchema` di [pa
 
 ## Koneksi
 
-Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatur lewat env `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` saat role dibuat (`packages/db/scripts/agent_role.sh`).
+Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatur lewat env `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` saat role dibuat (`packages/db/scripts/agent_role.sh`, dijalankan otomatis oleh `pnpm db:migrate`). Bila `AGENT_DB_PASSWORD` kosong, role dibuat `NOLOGIN`: haknya terpasang, tetapi agent belum bisa login.
 
 | Tabel | Hak `blog_agent` |
 |---|---|
@@ -23445,8 +23597,10 @@ Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatu
 | `categories` | SELECT: kategori yang bisa dipakai (`slug`, `name`, `status`, `parent_id`) |
 | `authors` | SELECT: penulis (`slug`, `name`, `status`) |
 | `tags` | SELECT: tag yang sudah ada (`slug`, `name`) |
-| `generated_articles` | SELECT; INSERT dan UPDATE hanya kolom isi (`site_id`, `external_id`, `payload`, `agent_note`, `generated_at`) |
-| Tabel lain | Tidak ada akses |
+| `generated_articles` | SELECT semua kolom; INSERT hanya `site_id`, `external_id`, `payload`, `agent_note`, `generated_at`; UPDATE hanya `payload`, `agent_note`, `generated_at`. Tanpa DELETE |
+| Tabel lain (termasuk `articles`, `media`, `users`) | Tidak ada akses |
+
+Karena kolom `status` dan kolom keputusan tidak bisa diisi agent, setiap baris yang ditulis agent pasti `READY_TO_PUBLISH`. Kolom yang dipilih dengan `SELECT` harus kolom yang diizinkan: `SELECT * FROM sites` ditolak, `SELECT id, code FROM sites` diterima.
 
 Hanya kategori dan penulis dengan `status = 'ACTIVE'` yang lolos pemeriksaan approval.
 
@@ -23481,7 +23635,7 @@ ON CONFLICT (site_id, external_id) DO UPDATE
   WHERE generated_articles.status = 'READY_TO_PUBLISH';
 ```
 
-Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah apa pun (0 baris). Pakai `external_id` baru untuk hasil baru.
+Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah apa pun (0 baris). Tanpa klausa `WHERE` itu, database menolak dengan galat "sudah diputuskan" (trigger `generated_articles_guard`). Pakai `external_id` baru untuk hasil baru.
 
 ## Payload v1
 
@@ -23706,3 +23860,249 @@ pnpm vitest run packages/core/src/generated
 #  Test Files  1 passed (1)
 #       Tests  20 passed (20)
 ```
+
+# Menyiapkan Database untuk Konten AI
+
+Bab sebelumnya menetapkan kontraknya. Bab ini membuat tempatnya di database: tabel hasil AI, tabel referensi, kolom sumber gambar, dan role untuk agent. Status tabel `articles` tidak berubah.
+
+1. Tulis migration baru. Jangan mengedit `0001_core.sql`, karena file itu sudah dijalankan dan runner menolak isinya yang berubah. Isi `0002_konten_ai.sql`:
+   - `media.source_url`: halaman asal gambar yang diambil dari sumber lain, `http(s)` saja.
+   - `article_references`: urutan, judul, URL, penerbit, dan jenis referensi. Composite FK ke artikel site yang sama, URL dan urutan unik per artikel, ikut terhapus bersama artikelnya.
+   - `generated_articles`: hasil AI dengan status `READY_TO_PUBLISH`, `APPROVED`, atau `ARCHIVED`. `external_id` unik per site supaya agent bisa menulis ulang hasil yang sama. CHECK menjaga konsistensi keputusan: sudah diputuskan berarti ada `reviewed_at`, ditolak berarti ada alasan, dan `article_id` hanya boleh terisi pada hasil yang disetujui (dan harus artikel site yang sama).
+   - Trigger `generated_articles_guard`: hasil yang sudah diputuskan tidak bisa diubah oleh siapa pun. Yang masih boleh berubah hanya rujukan yang dikosongkan foreign key (`reviewed_by`, `article_id`) saat user atau artikelnya dihapus.
+
+`packages/db/migrations/0002_konten_ai.sql`
+
+```sql
+-- =====================================================================
+-- 0002_konten_ai.sql  -  Hasil AI agent, referensi artikel, sumber media
+-- (ADR-010, M5a). Status articles TIDAK berubah.
+--
+--   generated_articles  : hasil AI menunggu keputusan pemilik proyek.
+--                         Tidak pernah dibaca halaman publik. Approve di
+--                         admin memindahkan isinya ke tabel konten.
+--   article_references  : sumber yang dipakai artikel; tampil di halaman.
+--   media.source_url    : halaman asal gambar yang diambil dari sumber lain.
+--
+-- Hak role agent (blog_agent) diatur di scripts/agent_role.sql, bukan di
+-- sini, karena nama role berasal dari env.
+-- =====================================================================
+
+-- ---------- media: asal gambar --------------------------------------
+ALTER TABLE media
+  ADD COLUMN source_url text,
+  ADD CONSTRAINT media_source_url_format
+      CHECK (source_url IS NULL OR (source_url ~ '^https?://[^[:space:]]+$' AND length(source_url) <= 2048));
+
+-- ---------- referensi artikel ---------------------------------------
+CREATE TABLE article_references (
+  id          uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id     uuid        NOT NULL,
+  article_id  uuid        NOT NULL,
+  position    smallint    NOT NULL,              -- urutan tampil, mulai 1
+  title       text        NOT NULL,
+  url         text        NOT NULL,
+  publisher   text,
+  kind        text        NOT NULL DEFAULT 'ARTICLE',
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT article_references_position_positive CHECK (position > 0),
+  CONSTRAINT article_references_title_length      CHECK (length(btrim(title)) BETWEEN 1 AND 300),
+  CONSTRAINT article_references_url_format        CHECK (url ~ '^https?://[^[:space:]]+$' AND length(url) <= 2048),
+  CONSTRAINT article_references_publisher_length  CHECK (publisher IS NULL OR length(btrim(publisher)) BETWEEN 1 AND 200),
+  CONSTRAINT article_references_kind_valid        CHECK (kind IN ('ARTICLE', 'VIDEO', 'IMAGE', 'OTHER')),
+  CONSTRAINT fk_article_references_same_site      FOREIGN KEY (site_id, article_id)
+             REFERENCES articles (site_id, id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX uq_article_references_position ON article_references (article_id, position);
+CREATE UNIQUE INDEX uq_article_references_url      ON article_references (article_id, url);
+
+CREATE TRIGGER trg_article_references_updated_at BEFORE UPDATE ON article_references
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------- hasil AI --------------------------------------------------
+-- Status: READY_TO_PUBLISH -> APPROVED (dipindah ke articles) | ARCHIVED (ditolak).
+-- payload: bentuknya dijaga skema Zod generatedPayloadSchema di
+-- packages/core; database hanya menjamin object.
+CREATE TABLE generated_articles (
+  id            uuid        PRIMARY KEY DEFAULT uuidv7(),
+  site_id       uuid        NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
+  external_id   text        NOT NULL,            -- ID buatan agent, unik per site
+  status        text        NOT NULL DEFAULT 'READY_TO_PUBLISH',
+  payload       jsonb       NOT NULL,
+  agent_note    text,                            -- ringkasan tinjauan AI, tampil di approval
+  generated_at  timestamptz NOT NULL DEFAULT now(),
+  review_note   text,                            -- alasan keputusan; wajib bila ditolak
+  reviewed_by   uuid        REFERENCES users (id) ON DELETE SET NULL,
+  reviewed_at   timestamptz,
+  article_id    uuid,                            -- artikel hasil approve
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT generated_articles_status_valid       CHECK (status IN ('READY_TO_PUBLISH', 'APPROVED', 'ARCHIVED')),
+  CONSTRAINT generated_articles_external_id_length CHECK (length(external_id) BETWEEN 1 AND 200),
+  CONSTRAINT generated_articles_payload_object     CHECK (jsonb_typeof(payload) = 'object'),
+  CONSTRAINT generated_articles_agent_note_length  CHECK (agent_note IS NULL OR length(agent_note) <= 5000),
+  -- Sudah diputuskan <=> ada waktu keputusan.
+  CONSTRAINT generated_articles_reviewed_when_decided
+             CHECK ((status = 'READY_TO_PUBLISH') = (reviewed_at IS NULL)),
+  CONSTRAINT generated_articles_archived_has_note
+             CHECK (status <> 'ARCHIVED' OR length(btrim(coalesce(review_note, ''))) > 0),
+  CONSTRAINT generated_articles_article_only_approved
+             CHECK (article_id IS NULL OR status = 'APPROVED'),
+  CONSTRAINT fk_generated_articles_article_same_site FOREIGN KEY (site_id, article_id)
+             REFERENCES articles (site_id, id) ON DELETE SET NULL (article_id)
+);
+CREATE UNIQUE INDEX uq_generated_articles_external ON generated_articles (site_id, external_id);
+-- Antrian approval: yang menunggu, terbaru dulu.
+CREATE INDEX idx_generated_articles_queue ON generated_articles (site_id, generated_at DESC)
+  WHERE status = 'READY_TO_PUBLISH';
+
+CREATE TRIGGER trg_generated_articles_updated_at BEFORE UPDATE ON generated_articles
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Hasil yang sudah diputuskan tidak boleh diubah isinya atau keputusannya,
+-- oleh siapa pun (agent maupun aplikasi). Yang masih boleh berubah hanya
+-- rujukan yang dikosongkan FK: reviewed_by dan article_id (SET NULL).
+-- Transisi hanya dari READY_TO_PUBLISH; CHECK di atas menjaga sisanya.
+CREATE FUNCTION generated_articles_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status <> 'READY_TO_PUBLISH' AND (
+       NEW.status       IS DISTINCT FROM OLD.status       OR
+       NEW.site_id      IS DISTINCT FROM OLD.site_id      OR
+       NEW.external_id  IS DISTINCT FROM OLD.external_id  OR
+       NEW.payload      IS DISTINCT FROM OLD.payload      OR
+       NEW.agent_note   IS DISTINCT FROM OLD.agent_note   OR
+       NEW.generated_at IS DISTINCT FROM OLD.generated_at OR
+       NEW.review_note  IS DISTINCT FROM OLD.review_note  OR
+       NEW.reviewed_at  IS DISTINCT FROM OLD.reviewed_at  OR
+       (NEW.reviewed_by IS NOT NULL AND NEW.reviewed_by IS DISTINCT FROM OLD.reviewed_by) OR
+       (NEW.article_id  IS NOT NULL AND NEW.article_id  IS DISTINCT FROM OLD.article_id)
+     ) THEN
+    RAISE EXCEPTION 'hasil AI % sudah diputuskan (%), tidak bisa diubah', OLD.id, OLD.status
+      USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER trg_generated_articles_guard BEFORE UPDATE ON generated_articles
+  FOR EACH ROW EXECUTE FUNCTION generated_articles_guard();
+```
+
+2. Buat role agent. Agent menulis langsung ke database, jadi batasnya harus ada di database, bukan di aplikasi. Hak per kolom membuat status dan kolom keputusan tidak bisa diisi sama sekali, sehingga setiap baris dari agent pasti `READY_TO_PUBLISH`. Skrip mencabut semua hak dulu, lalu memberi yang diperlukan, agar hak yang dihapus dari skrip benar-benar hilang. Password kosong membuat role `NOLOGIN`, dan role yang sudah ada tidak diubah password-nya. Alasannya sama dengan `APP_DB_PASSWORD` di `run_all.sh`: role berlaku untuk seluruh server PostgreSQL.
+
+`packages/db/scripts/agent_role.sql`
+
+```sql
+-- =====================================================================
+-- agent_role.sql  -  Role database untuk AI agent konten (ADR-010).
+--
+-- Agent dibangun di luar repo ini dan menulis hasil AI langsung ke
+-- database. Role ini hanya boleh:
+--   - membaca pilihan yang valid: sites, categories, authors, tags
+--     (kolom tertentu saja);
+--   - membaca generated_articles (status dan alasan penolakan);
+--   - menulis kolom isi generated_articles. Kolom status dan keputusan
+--     tidak bisa diisi, jadi hasil AI selalu READY_TO_PUBLISH. Trigger
+--     generated_articles_guard menolak perubahan hasil yang sudah diputuskan.
+-- Tanpa DELETE, tanpa akses ke tabel konten lain. Kontrak: docs/kontrak-agent.md.
+--
+-- Idempotent. Dipanggil oleh scripts/agent_role.sh dengan variabel psql:
+--   -v agent_user=...  -v agent_password=...
+-- Password kosong: role dibuat NOLOGIN bila belum ada, dan role yang sudah
+-- ada tidak diubah login/password-nya (role berlaku untuk seluruh server;
+-- run_all.sh tidak boleh menimpa password agent milik database dev).
+-- =====================================================================
+
+SELECT format('CREATE ROLE %I NOLOGIN', :'agent_user')
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'agent_user')
+\gexec
+
+SELECT format('ALTER ROLE %I WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L',
+              :'agent_user', :'agent_password')
+ WHERE :'agent_password' <> ''
+\gexec
+
+SELECT format('ALTER ROLE %I WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'agent_user')
+\gexec
+
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'agent_user')
+\gexec
+
+GRANT USAGE ON SCHEMA public TO :"agent_user";
+
+-- Mulai dari nol agar hak yang pernah diberikan lalu dicabut di versi
+-- skrip ini benar-benar hilang.
+REVOKE ALL ON ALL TABLES    IN SCHEMA public FROM :"agent_user";
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM :"agent_user";
+
+GRANT SELECT (id, code, name, status)                     ON sites      TO :"agent_user";
+GRANT SELECT (id, site_id, parent_id, name, slug, status) ON categories TO :"agent_user";
+GRANT SELECT (id, site_id, name, slug, status)            ON authors    TO :"agent_user";
+GRANT SELECT (id, site_id, name, slug)                    ON tags       TO :"agent_user";
+
+GRANT SELECT ON generated_articles TO :"agent_user";
+GRANT INSERT (site_id, external_id, payload, agent_note, generated_at) ON generated_articles TO :"agent_user";
+GRANT UPDATE (payload, agent_note, generated_at)                       ON generated_articles TO :"agent_user";
+```
+
+`packages/db/scripts/agent_role.sh`
+
+```sh
+#!/bin/sh
+# agent_role.sh  -  Membuat/memperbarui role AI agent (lihat agent_role.sql).
+# AGENT_DB_USER kosong = dilewati. AGENT_DB_PASSWORD kosong = role NOLOGIN
+# (hak tetap dipasang; agent belum bisa login).
+set -eu
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+export PGOPTIONS="${PGOPTIONS:-} -c client_min_messages=warning"
+
+if [ -z "${AGENT_DB_USER:-}" ]; then
+  echo "agent_role dilewati (AGENT_DB_USER kosong)"
+  exit 0
+fi
+
+psql -X -q -v ON_ERROR_STOP=1 \
+     -v agent_user="$AGENT_DB_USER" -v agent_password="${AGENT_DB_PASSWORD:-}" \
+     -f "$DIR/agent_role.sql"
+if [ -n "${AGENT_DB_PASSWORD:-}" ]; then
+  echo "agent_role $AGENT_DB_USER siap"
+else
+  echo "agent_role $AGENT_DB_USER siap (NOLOGIN: AGENT_DB_PASSWORD kosong)"
+fi
+```
+
+3. Rangkai di `setup.sh` (setelah role aplikasi), lalu teruskan `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` ke service `db-migrate` dan `db-test` di `docker-compose.yml`, ke `.env.example`, dan ke ketiga job CI. Isi file-file itu ada di bab-bab sebelumnya. Di `.env`, tambahkan:
+
+```dotenv
+AGENT_DB_USER=blog_agent
+AGENT_DB_PASSWORD=
+```
+
+   Isi password baru saat agent siap terhubung; sampai saat itu role tetap `NOLOGIN`.
+
+4. Tambahkan test integritas bagian 7 di `integrity_test.sql`: referensi lintas site, URL `javascript:` dan berspasi, urutan 0, URL dobel, `source_url` bukan http(s), status hasil AI tidak dikenal, payload bukan object, `external_id` dobel, keputusan tanpa alasan atau tanpa waktu, `article_id` milik site lain, perubahan pada hasil yang sudah diputuskan, dan perilaku saat artikelnya dihapus. Totalnya 19 test baru.
+
+5. Tambahkan bagian 7 di `run_all.sh`: pemeriksaan hak role agent. Setiap pemeriksaan berjalan sebagai agent dengan `SET LOCAL ROLE` di transaksi yang di-`ROLLBACK`, jadi tidak butuh password agent. Agent harus bisa membaca pilihan yang valid dan menulis lalu memperbarui hasil lewat `external_id`. Agent harus ditolak saat mengisi status atau keputusan, mengubah hasil yang sudah diputuskan, menghapus, menyentuh `articles`, `media`, `users`, atau membaca `sites.settings`. Tabel baru juga ikut dihitung di pemeriksaan seed idempotent.
+
+```bash
+docker compose --profile test run --rm db-test
+# == 7. Hak akses role AI agent (blog_agent)
+# PASS  agent tidak bisa mengubah status
+# ...
+# == SELESAI: semua pemeriksaan lulus      (81 pemeriksaan)
+```
+
+6. Terapkan ke database dev, buat ulang schema Drizzle, dan perbarui test jumlah tabel menjadi 18:
+
+```bash
+pnpm db:migrate
+# apply  0002_konten_ai.sql
+# agent_role blog_agent siap (NOLOGIN: AGENT_DB_PASSWORD kosong)
+pnpm db:pull
+pnpm check
+```
+
+7. Lengkapi kontrak agent (`docs/kontrak-agent.md`, bab sebelumnya) dengan hak yang benar-benar terpasang: kolom yang boleh di-`INSERT` dan di-`UPDATE`, `SELECT` per kolom (sehingga `SELECT *` pada `sites` ditolak), dan galat "sudah diputuskan" dari trigger bila `ON CONFLICT ... DO UPDATE` ditulis tanpa `WHERE status = 'READY_TO_PUBLISH'`.

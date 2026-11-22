@@ -88,7 +88,7 @@ exports[`snapshot view model per jenis halaman > article (site kedua): dapur-nus
     "image": {
       "alt": "Rendang di piring tanah liat",
       "caption": null,
-      "credit": null,
+      "credit": "Foto: Arsip Contoh",
       "focalX": 0.45,
       "focalY": 0.55,
       "height": 1067,
@@ -633,7 +633,7 @@ exports[`snapshot view model per jenis halaman > home dengan section: dapur-nusa
             "image": {
               "alt": "Rendang di piring tanah liat",
               "caption": null,
-              "credit": null,
+              "credit": "Foto: Arsip Contoh",
               "focalX": 0.45,
               "focalY": 0.55,
               "height": 1067,
@@ -1091,7 +1091,7 @@ exports[`snapshot view model per jenis halaman > tag: dapur-nusantara /tag/pedas
         "image": {
           "alt": "Rendang di piring tanah liat",
           "caption": null,
-          "credit": null,
+          "credit": "Foto: Arsip Contoh",
           "focalX": 0.45,
           "focalY": 0.55,
           "height": 1067,

@@ -11,7 +11,7 @@ dijalankan di host dengan `pnpm dev`, bukan di container, agar hot reload cepat.
 2. `docker compose up -d`
 3. `docker compose logs db-migrate` harus berakhir dengan `database blog_dev siap`.
 4. `docker compose --profile test run --rm db-test` harus berakhir dengan
-   `SELESAI: semua pemeriksaan lulus` (50 pemeriksaan).
+   `SELESAI: semua pemeriksaan lulus` (81 pemeriksaan).
 
 ## Perintah sehari-hari
 

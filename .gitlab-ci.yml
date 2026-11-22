@@ -3,7 +3,7 @@
 #   check : lint, typecheck, unit test (Node 24 + pnpm dari corepack),
 #           termasuk test repository yang membaca PostgreSQL 18 yang sudah
 #           di-migrate dan di-seed, sebagai role aplikasi blog_app
-#   db    : uji lengkap packages/db (run_all.sh, 50 pemeriksaan) di
+#   db    : uji lengkap packages/db (run_all.sh, 81 pemeriksaan) di
 #           PostgreSQL 18 sebagai service
 #   build : nuxt build apps/web + smoke test hasil build: tanpa database
 #           (/api/health 503, bukan crash), lalu dengan database ber-seed
@@ -43,6 +43,8 @@ check:
     PGDATABASE: blog_dev
     APP_DB_USER: blog_app
     APP_DB_PASSWORD: ci_app_password
+    AGENT_DB_USER: blog_agent
+    AGENT_DB_PASSWORD: ci_agent_password
     SEED_DEV_DATA: "true"
     # Dipakai test (Vitest): koneksi sebagai role aplikasi, bukan pemilik schema
     DATABASE_URL: "postgres://blog_app:ci_app_password@db:5432/blog_dev"
@@ -85,6 +87,8 @@ build:
     PGDATABASE: blog_dev
     APP_DB_USER: blog_app
     APP_DB_PASSWORD: ci_app_password
+    AGENT_DB_USER: blog_agent
+    AGENT_DB_PASSWORD: ci_agent_password
     SEED_DEV_DATA: "true"
     SITE_MODE: multi
     # Admin (ADR-009). Nilai khusus CI: database dan server CI dibuang setelah job.
@@ -145,6 +149,8 @@ db:
     PGDATABASE: postgres
     APP_DB_USER: blog_app
     APP_DB_PASSWORD: ci_app_password
+    AGENT_DB_USER: blog_agent
+    AGENT_DB_PASSWORD: ci_agent_password
   script:
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - bash packages/db/run_all.sh blog_framework_test

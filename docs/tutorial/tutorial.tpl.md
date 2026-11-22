@@ -113,7 +113,7 @@ tests/              test lintas paket (arsitektur, CI)
    - Pemilik schema (`blog`) dipakai migration, test, dan tool admin.
    - Role aplikasi (`blog_app`) dipakai Nuxt. Role ini hanya boleh SELECT/INSERT/UPDATE/DELETE, tanpa DDL.
    Pemisahan ini membatasi dampak bila aplikasi bocor, dan menjadi prasyarat RLS di kemudian hari.
-3. Buat `.env.example` sebagai contoh konfigurasi. File ini masuk Git; isinya hanya placeholder. Bagian `SITE_MODE` baru dipakai di bab "Memilih Site dari Domain Request":
+3. Buat `.env.example` sebagai contoh konfigurasi. File ini masuk Git; isinya hanya placeholder. Bagian `SITE_MODE` baru dipakai di bab "Memilih Site dari Domain Request", dan `AGENT_DB_USER`/`AGENT_DB_PASSWORD` di bab "Menyiapkan Database untuk Konten AI":
 
 @@include .env.example dotenv@@
 
@@ -123,6 +123,8 @@ tests/              test lintas paket (arsitektur, CI)
    - `db-migrate`: berjalan sekali setiap `up`, menjalankan migration lalu membuat role aplikasi. Aman diulang.
    - `db-test` (profile `test`): uji lengkap database di database terpisah.
    - `adminer` (profile `tools`): UI database opsional.
+
+   Variabel `AGENT_DB_*` di `db-migrate` dan `db-test` ditambahkan di bab "Menyiapkan Database untuk Konten AI".
 
 @@include docker-compose.yml yaml@@
 
@@ -204,7 +206,7 @@ tests/              test lintas paket (arsitektur, CI)
 
 @@include packages/db/scripts/seed.sh sh@@
 
-5. Tulis entry point service `db-migrate` yang merangkai ketiganya:
+5. Tulis entry point service `db-migrate` yang merangkai ketiganya (langkah role AI agent ditambahkan di bab "Menyiapkan Database untuk Konten AI"):
 
 @@include packages/db/scripts/setup.sh sh@@
 
@@ -233,11 +235,13 @@ docker compose logs db-migrate     # harus berakhir dengan "database blog_dev si
 | Hard delete site | 1 | Tidak ada baris tersisa |
 | Index pada 100.000 artikel | 4 | Feed, listing kategori, pencarian, cek slug |
 
+   Bab "Menyiapkan Database untuk Konten AI" menambah 19 test (bagian 7), sehingga file di bawah berisi 61 test dan bagian index menjadi bagian 8.
+
 4. Test ini membaca dua site contoh (site A dan site B) dari data seed Anda. Sesuaikan UUID di bagian atas file dengan data seed yang Anda tulis:
 
 @@include packages/db/tests/integrity_test.sql sql@@
 
-5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan:
+5. Tulis `run_all.sh` yang menguji seluruh paket database dari database kosong, dengan total 50 pemeriksaan (bab "Menyiapkan Database untuk Konten AI" menambah 19 test integritas dan 12 pemeriksaan role AI agent, menjadi 81):
    - migration dijalankan dua kali (run kedua harus melewati semua file),
    - runner harus menolak migration yang diubah,
    - role aplikasi dibuat,
@@ -337,7 +341,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 @@include packages/db/scripts/pull-schema.mjs js@@
 
 6. Jalankan `pnpm db:pull`. Hasilnya `packages/db/src/schema/schema.ts` dan `relations.ts`. Kedua file ini hasil generate; buat ulang setiap kali ada migration baru, jangan diedit tangan.
-7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar:
+7. Periksa hasil generate. `ON DELETE SET NULL (kolom)` tertulis di schema Drizzle sebagai `"set null"` saja. Ini aman karena constraint ditegakkan database, dan schema Drizzle tidak pernah dipakai untuk membuat migration. Tulis test yang memastikan composite FK dan partial index terbaca benar (jumlah tabel menjadi 18 di bab "Menyiapkan Database untuk Konten AI"):
 
 @@include packages/db/src/schema/schema.test.ts ts@@
 
@@ -439,7 +443,7 @@ pnpm add -Dw typescript@~6.0.3 @types/node@^24.19.2 eslint@^10.15.0 @eslint/js@^
 
 1. Buat `.gitlab-ci.yml` dengan dua job yang berjalan paralel:
    - `check`: Node 24 + pnpm dari corepack. Menyalakan PostgreSQL 18.7 sebagai service, menjalankan migration dan seed, lalu `pnpm lint`, `pnpm typecheck`, `pnpm test`. Test berjalan sebagai role aplikasi `blog_app`, bukan pemilik schema.
-   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan) di container PostgreSQL 18.7.
+   - `db`: uji lengkap `run_all.sh` (50 pemeriksaan; 81 setelah bab "Menyiapkan Database untuk Konten AI") di container PostgreSQL 18.7.
    - Job ketiga, `build`, ditambahkan di bab "Mem-build Aplikasi Web di CI" setelah aplikasi Nuxt ada.
 2. Aturan `workflow` mencegah pipeline ganda saat branch punya merge request terbuka. Store pnpm di-cache berdasarkan `pnpm-lock.yaml`.
 
@@ -1907,3 +1911,54 @@ pnpm vitest run packages/core/src/generated
 #  Test Files  1 passed (1)
 #       Tests  20 passed (20)
 ```
+
+# Menyiapkan Database untuk Konten AI
+
+Bab sebelumnya menetapkan kontraknya. Bab ini membuat tempatnya di database: tabel hasil AI, tabel referensi, kolom sumber gambar, dan role untuk agent. Status tabel `articles` tidak berubah.
+
+1. Tulis migration baru. Jangan mengedit `0001_core.sql`, karena file itu sudah dijalankan dan runner menolak isinya yang berubah. Isi `0002_konten_ai.sql`:
+   - `media.source_url`: halaman asal gambar yang diambil dari sumber lain, `http(s)` saja.
+   - `article_references`: urutan, judul, URL, penerbit, dan jenis referensi. Composite FK ke artikel site yang sama, URL dan urutan unik per artikel, ikut terhapus bersama artikelnya.
+   - `generated_articles`: hasil AI dengan status `READY_TO_PUBLISH`, `APPROVED`, atau `ARCHIVED`. `external_id` unik per site supaya agent bisa menulis ulang hasil yang sama. CHECK menjaga konsistensi keputusan: sudah diputuskan berarti ada `reviewed_at`, ditolak berarti ada alasan, dan `article_id` hanya boleh terisi pada hasil yang disetujui (dan harus artikel site yang sama).
+   - Trigger `generated_articles_guard`: hasil yang sudah diputuskan tidak bisa diubah oleh siapa pun. Yang masih boleh berubah hanya rujukan yang dikosongkan foreign key (`reviewed_by`, `article_id`) saat user atau artikelnya dihapus.
+
+@@include packages/db/migrations/0002_konten_ai.sql sql@@
+
+2. Buat role agent. Agent menulis langsung ke database, jadi batasnya harus ada di database, bukan di aplikasi. Hak per kolom membuat status dan kolom keputusan tidak bisa diisi sama sekali, sehingga setiap baris dari agent pasti `READY_TO_PUBLISH`. Skrip mencabut semua hak dulu, lalu memberi yang diperlukan, agar hak yang dihapus dari skrip benar-benar hilang. Password kosong membuat role `NOLOGIN`, dan role yang sudah ada tidak diubah password-nya. Alasannya sama dengan `APP_DB_PASSWORD` di `run_all.sh`: role berlaku untuk seluruh server PostgreSQL.
+
+@@include packages/db/scripts/agent_role.sql sql@@
+
+@@include packages/db/scripts/agent_role.sh sh@@
+
+3. Rangkai di `setup.sh` (setelah role aplikasi), lalu teruskan `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` ke service `db-migrate` dan `db-test` di `docker-compose.yml`, ke `.env.example`, dan ke ketiga job CI. Isi file-file itu ada di bab-bab sebelumnya. Di `.env`, tambahkan:
+
+```dotenv
+AGENT_DB_USER=blog_agent
+AGENT_DB_PASSWORD=
+```
+
+   Isi password baru saat agent siap terhubung; sampai saat itu role tetap `NOLOGIN`.
+
+4. Tambahkan test integritas bagian 7 di `integrity_test.sql`: referensi lintas site, URL `javascript:` dan berspasi, urutan 0, URL dobel, `source_url` bukan http(s), status hasil AI tidak dikenal, payload bukan object, `external_id` dobel, keputusan tanpa alasan atau tanpa waktu, `article_id` milik site lain, perubahan pada hasil yang sudah diputuskan, dan perilaku saat artikelnya dihapus. Totalnya 19 test baru.
+
+5. Tambahkan bagian 7 di `run_all.sh`: pemeriksaan hak role agent. Setiap pemeriksaan berjalan sebagai agent dengan `SET LOCAL ROLE` di transaksi yang di-`ROLLBACK`, jadi tidak butuh password agent. Agent harus bisa membaca pilihan yang valid dan menulis lalu memperbarui hasil lewat `external_id`. Agent harus ditolak saat mengisi status atau keputusan, mengubah hasil yang sudah diputuskan, menghapus, menyentuh `articles`, `media`, `users`, atau membaca `sites.settings`. Tabel baru juga ikut dihitung di pemeriksaan seed idempotent.
+
+```bash
+docker compose --profile test run --rm db-test
+# == 7. Hak akses role AI agent (blog_agent)
+# PASS  agent tidak bisa mengubah status
+# ...
+# == SELESAI: semua pemeriksaan lulus      (81 pemeriksaan)
+```
+
+6. Terapkan ke database dev, buat ulang schema Drizzle, dan perbarui test jumlah tabel menjadi 18:
+
+```bash
+pnpm db:migrate
+# apply  0002_konten_ai.sql
+# agent_role blog_agent siap (NOLOGIN: AGENT_DB_PASSWORD kosong)
+pnpm db:pull
+pnpm check
+```
+
+7. Lengkapi kontrak agent (`docs/kontrak-agent.md`, bab sebelumnya) dengan hak yang benar-benar terpasang: kolom yang boleh di-`INSERT` dan di-`UPDATE`, `SELECT` per kolom (sehingga `SELECT *` pada `sites` ditolak), dan galat "sudah diputuskan" dari trigger bila `ON CONFLICT ... DO UPDATE` ditulis tanpa `WHERE status = 'READY_TO_PUBLISH'`.

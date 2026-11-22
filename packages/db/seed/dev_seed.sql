@@ -231,4 +231,48 @@ INSERT INTO redirects (id, site_id, from_path, to_path, status_code) VALUES
    '/gadget/ponsel-lipat-murah', '/review/ponsel-lipat-makin-murah', 301)
 ON CONFLICT DO NOTHING;
 
+-- ---------- referensi & sumber media (0002) ---------------------------
+INSERT INTO article_references (id, site_id, article_id, position, title, url, publisher, kind) VALUES
+  ('01930000-0000-7000-8000-000000000b01', '01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000000611',
+   1, 'Rendang, warisan kuliner Minangkabau', 'https://contoh.test/rendang-minangkabau', 'Contoh Ensiklopedia', 'ARTICLE'),
+  ('01930000-0000-7000-8000-000000000b02', '01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000000611',
+   2, 'Video: memasak rendang 4 jam', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'YouTube', 'VIDEO')
+ON CONFLICT DO NOTHING;
+
+UPDATE media SET source_url = 'https://contoh.test/galeri/rendang', credit = coalesce(credit, 'Foto: Arsip Contoh')
+ WHERE id = '01930000-0000-7000-8000-000000000212' AND source_url IS NULL;
+
+-- ---------- hasil AI menunggu approval (ADR-010) ----------------------
+-- Satu valid (tag baru = peringatan), satu dengan galat (kategori tidak
+-- ada, heading level 1, gambar yang file-nya tidak ada, tanpa referensi).
+INSERT INTO generated_articles (id, site_id, external_id, payload, agent_note, generated_at) VALUES
+  ('01930000-0000-7000-8000-000000000c01', '01930000-0000-7000-8000-000000000102', 'seed/sambal-ijo',
+   '{"version": 1,
+     "title": "Sambal ijo Padang yang tidak cepat basi",
+     "excerpt": "Rahasianya ada di cabai yang dikukus, bukan direbus.",
+     "category": "resep",
+     "author": "redaksi",
+     "tags": ["Pedas", "Sambal Hijau"],
+     "body": {"version": 1, "blocks": [
+       {"type": "paragraph", "text": "Sambal ijo khas Padang memakai cabai hijau keriting dan tomat hijau."},
+       {"type": "heading", "level": 2, "text": "Langkah"},
+       {"type": "list", "style": "numbered", "items": ["Kukus cabai dan tomat", "Tumbuk kasar", "Tumis dengan minyak banyak"]},
+       {"type": "embed", "provider": "youtube", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}]},
+     "references": [
+       {"title": "Teknik mengukus cabai", "url": "https://contoh.test/mengukus-cabai", "publisher": "Contoh Kuliner"},
+       {"title": "Video sambal ijo", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "publisher": "YouTube", "kind": "VIDEO"}],
+     "seo": {"description": "Resep sambal ijo Padang yang tahan lama."}}',
+   'Dua sumber dicek. Takaran minyak dari sumber 1.', '2026-11-22 04:30:00+07'),
+  ('01930000-0000-7000-8000-000000000c02', '01930000-0000-7000-8000-000000000102', 'seed/es-teler-rusak',
+   '{"version": 1,
+     "title": "Es teler segar",
+     "category": "minuman",
+     "cover": "cover",
+     "images": [{"key": "cover", "storageKey": "dapur-nusantara/2026/11/es-teler-tidak-ada.webp", "altText": "Es teler"}],
+     "body": {"version": 1, "blocks": [
+       {"type": "heading", "level": 1, "text": "Es teler"},
+       {"type": "paragraph", "text": "Alpukat, kelapa muda, dan nangka."}]}}',
+   NULL, '2026-11-22 04:45:00+07')
+ON CONFLICT DO NOTHING;
+
 COMMIT;

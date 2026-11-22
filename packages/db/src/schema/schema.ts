@@ -6,10 +6,31 @@
 // Schema ini hanya untuk query bertipe. Constraint ditegakkan database;
 // mis. ON DELETE SET NULL (kolom) tertulis di sini sebagai "set null" saja.
 // =====================================================================
-import { pgTable, uuid, text, integer, boolean, timestamp, smallint, jsonb, bigint, numeric, customType, index, uniqueIndex, foreignKey, primaryKey, unique, check, type PgTableExtraConfigValue } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, integer, boolean, smallint, timestamp, jsonb, bigint, numeric, customType, index, uniqueIndex, foreignKey, primaryKey, unique, check, type PgTableExtraConfigValue } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 
+
+export const articleReferences = pgTable("article_references", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	siteId: uuid("site_id").notNull(),
+	articleId: uuid("article_id").notNull(),
+	position: smallint().notNull(),
+	title: text().notNull(),
+	url: text().notNull(),
+	publisher: text(),
+	kind: text().default("ARTICLE").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.siteId, table.articleId],
+		foreignColumns: [articles.siteId, articles.id],
+		name: "fk_article_references_same_site"
+	}).onDelete("cascade"),
+	uniqueIndex("uq_article_references_position").using("btree", table.articleId.asc().nullsLast(), table.position.asc().nullsLast()),
+	uniqueIndex("uq_article_references_url").using("btree", table.articleId.asc().nullsLast(), table.url.asc().nullsLast()),
+check("article_references_kind_valid", sql`(kind = ANY (ARRAY['ARTICLE'::text, 'VIDEO'::text, 'IMAGE'::text, 'OTHER'::text]))`),check("article_references_position_positive", sql`("position" > 0)`),check("article_references_publisher_length", sql`((publisher IS NULL) OR ((length(btrim(publisher)) >= 1) AND (length(btrim(publisher)) <= 200)))`),check("article_references_title_length", sql`((length(btrim(title)) >= 1) AND (length(btrim(title)) <= 300))`),check("article_references_url_format", sql`((url ~ '^https?://[^[:space:]]+$'::text) AND (length(url) <= 2048))`),]);
 
 export const articleRevisions = pgTable("article_revisions", {
 	id: uuid().default(sql`uuidv7()`).primaryKey(),
@@ -176,6 +197,40 @@ export const categories = pgTable("categories", {
 	uniqueIndex("uq_categories_site_slug").using("btree", table.siteId.asc().nullsLast(), table.slug.asc().nullsLast()),
 	unique("categories_site_id_id").on(table.siteId, table.id),check("categories_not_own_parent", sql`(parent_id IS DISTINCT FROM id)`),check("categories_seo_object", sql`(jsonb_typeof(seo) = 'object'::text)`),check("categories_slug_format", sql`((slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text) AND (length(slug) <= 200))`),check("categories_status_valid", sql`(status = ANY (ARRAY['ACTIVE'::text, 'HIDDEN'::text]))`),]);
 
+export const generatedArticles = pgTable("generated_articles", {
+	id: uuid().default(sql`uuidv7()`).primaryKey(),
+	siteId: uuid("site_id").notNull(),
+	externalId: text("external_id").notNull(),
+	status: text().default("READY_TO_PUBLISH").notNull(),
+	payload: jsonb().notNull(),
+	agentNote: text("agent_note"),
+	generatedAt: timestamp("generated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	reviewNote: text("review_note"),
+	reviewedBy: uuid("reviewed_by"),
+	reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+	articleId: uuid("article_id"),
+	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+	foreignKey({
+		columns: [table.siteId, table.articleId],
+		foreignColumns: [articles.siteId, articles.id],
+		name: "fk_generated_articles_article_same_site"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.reviewedBy],
+		foreignColumns: [users.id],
+		name: "generated_articles_reviewed_by_fkey"
+	}).onDelete("set null"),
+	foreignKey({
+		columns: [table.siteId],
+		foreignColumns: [sites.id],
+		name: "generated_articles_site_id_fkey"
+	}).onDelete("cascade"),
+	index("idx_generated_articles_queue").using("btree", table.siteId.asc().nullsLast(), table.generatedAt.desc().nullsFirst()).where(sql`(status = 'READY_TO_PUBLISH'::text)`),
+	uniqueIndex("uq_generated_articles_external").using("btree", table.siteId.asc().nullsLast(), table.externalId.asc().nullsLast()),
+check("generated_articles_agent_note_length", sql`((agent_note IS NULL) OR (length(agent_note) <= 5000))`),check("generated_articles_archived_has_note", sql`((status <> 'ARCHIVED'::text) OR (length(btrim(COALESCE(review_note, ''::text))) > 0))`),check("generated_articles_article_only_approved", sql`((article_id IS NULL) OR (status = 'APPROVED'::text))`),check("generated_articles_external_id_length", sql`((length(external_id) >= 1) AND (length(external_id) <= 200))`),check("generated_articles_payload_object", sql`(jsonb_typeof(payload) = 'object'::text)`),check("generated_articles_reviewed_when_decided", sql`((status = 'READY_TO_PUBLISH'::text) = (reviewed_at IS NULL))`),check("generated_articles_status_valid", sql`(status = ANY (ARRAY['READY_TO_PUBLISH'::text, 'APPROVED'::text, 'ARCHIVED'::text]))`),]);
+
 export const media = pgTable("media", {
 	id: uuid().default(sql`uuidv7()`).primaryKey(),
 	siteId: uuid("site_id").notNull(),
@@ -192,6 +247,7 @@ export const media = pgTable("media", {
 	createdBy: uuid("created_by"),
 	createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+	sourceUrl: text("source_url"),
 }, (table): PgTableExtraConfigValue[] => [
 	foreignKey({
 		columns: [table.createdBy],
@@ -205,7 +261,7 @@ export const media = pgTable("media", {
 	}).onDelete("cascade"),
 	index("idx_media_site_created").using("btree", table.siteId.asc().nullsLast(), table.createdAt.desc().nullsFirst()),
 	uniqueIndex("uq_media_storage_key").using("btree", table.storageKey.asc().nullsLast()),
-	unique("media_site_id_id").on(table.siteId, table.id),check("media_dimensions", sql`(((width IS NULL) = (height IS NULL)) AND ((width IS NULL) OR ((width > 0) AND (height > 0))))`),check("media_focal_range", sql`(((focal_x >= (0)::numeric) AND (focal_x <= (1)::numeric)) AND ((focal_y >= (0)::numeric) AND (focal_y <= (1)::numeric)))`),check("media_size_positive", sql`(size_bytes > 0)`),]);
+	unique("media_site_id_id").on(table.siteId, table.id),check("media_dimensions", sql`(((width IS NULL) = (height IS NULL)) AND ((width IS NULL) OR ((width > 0) AND (height > 0))))`),check("media_focal_range", sql`(((focal_x >= (0)::numeric) AND (focal_x <= (1)::numeric)) AND ((focal_y >= (0)::numeric) AND (focal_y <= (1)::numeric)))`),check("media_size_positive", sql`(size_bytes > 0)`),check("media_source_url_format", sql`((source_url IS NULL) OR ((source_url ~ '^https?://[^[:space:]]+$'::text) AND (length(source_url) <= 2048)))`),]);
 
 export const menuItems = pgTable("menu_items", {
 	id: uuid().default(sql`uuidv7()`).primaryKey(),

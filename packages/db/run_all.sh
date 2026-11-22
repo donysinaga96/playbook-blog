@@ -5,8 +5,9 @@
 #   2. runner menolak migration yang sudah diubah
 #   3. role aplikasi
 #   4. seed (2x; jumlah baris harus sama)
-#   5. 42 test integritas
+#   5. 61 test integritas
 #   6. hak akses role aplikasi
+#   7. hak akses role AI agent (ADR-010)
 #
 # Pemakaian:  APP_DB_PASSWORD=... ./run_all.sh [nama_db]
 # Koneksi lewat PGHOST, PGPORT, PGUSER, PGPASSWORD (pemilik schema).
@@ -21,6 +22,7 @@ set -euo pipefail
 DB="${1:-blog_framework_test}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_USER="${APP_DB_USER:-blog_app}"
+AGENT_USER="${AGENT_DB_USER:-blog_agent}"
 APP_PASS="${APP_DB_PASSWORD:?APP_DB_PASSWORD wajib diisi (samakan dengan .env); tidak ada default agar password blog_app di database dev tidak tertimpa}"
 export PGOPTIONS="-c client_min_messages=warning"
 
@@ -49,8 +51,11 @@ fi
 rm -rf "$TMP"
 pass "runner menolak migration yang sudah diubah"
 
-echo "== 3. Role aplikasi"
+echo "== 3. Role aplikasi dan role AI agent"
 APP_DB_USER="$APP_USER" APP_DB_PASSWORD="$APP_PASS" sh "$DIR/scripts/app_role.sh"
+# Tanpa password: role agent yang sudah ada (mis. milik database dev) tidak
+# diubah login/password-nya; pemeriksaan di bagian 7 memakai SET ROLE.
+AGENT_DB_USER="$AGENT_USER" AGENT_DB_PASSWORD="" sh "$DIR/scripts/agent_role.sh"
 
 count_rows() {
   psql -X -tA -c "
@@ -70,7 +75,9 @@ count_rows() {
       SELECT 'pages', count(*) FROM pages UNION ALL
       SELECT 'menus', count(*) FROM menus UNION ALL
       SELECT 'menu_items', count(*) FROM menu_items UNION ALL
-      SELECT 'redirects', count(*) FROM redirects) x"
+      SELECT 'redirects', count(*) FROM redirects UNION ALL
+      SELECT 'article_references', count(*) FROM article_references UNION ALL
+      SELECT 'generated_articles', count(*) FROM generated_articles) x"
 }
 
 echo "== 4. Seed"
@@ -100,5 +107,58 @@ if app_psql -c "DROP TABLE redirects" >/dev/null 2>&1; then fail "role aplikasi 
 pass "role aplikasi tidak bisa menghapus tabel"
 if app_psql -c "SELECT 1 FROM schema_migrations" >/dev/null 2>&1; then fail "role aplikasi bisa membaca schema_migrations"; fi
 pass "role aplikasi tidak bisa membaca schema_migrations"
+
+echo "== 7. Hak akses role AI agent ($AGENT_USER)"
+# Setiap pemeriksaan berjalan sebagai agent (SET LOCAL ROLE) di transaksi
+# yang di-ROLLBACK. Hasil yang sudah diputuskan disiapkan pemilik schema.
+SITE_B="01930000-0000-7000-8000-000000000102"
+agent_sql() {
+  psql -X -tA -v ON_ERROR_STOP=1 2>&1 <<SQL
+BEGIN;
+INSERT INTO generated_articles (id, site_id, external_id, payload, status, review_note, reviewed_at)
+VALUES ('01930000-0000-7000-8000-000000009902', '$SITE_B', 'uji-agent-diputuskan', '{}', 'ARCHIVED', 'uji', now());
+SET LOCAL ROLE "$AGENT_USER";
+$1;
+ROLLBACK;
+SQL
+}
+agent_ok() {
+  local out
+  out="$(agent_sql "$2")" || fail "$1 -> $out"
+  pass "$1"
+}
+agent_denied() {
+  local out
+  if out="$(agent_sql "$2")"; then fail "$1 -> berhasil, padahal harus ditolak"; fi
+  grep -q "$3" <<<"$out" || fail "$1 -> galat lain: $out"
+  pass "$1"
+}
+agent_ok "agent membaca kode site, kategori, penulis, tag" \
+  "SELECT s.code, c.slug, a.slug, t.slug FROM sites s JOIN categories c ON c.site_id = s.id
+     LEFT JOIN authors a ON a.site_id = s.id LEFT JOIN tags t ON t.site_id = s.id LIMIT 1"
+agent_ok "agent menulis hasil AI lalu memperbaruinya lewat external_id (status otomatis READY_TO_PUBLISH)" \
+  "INSERT INTO generated_articles (site_id, external_id, payload, agent_note) VALUES ('$SITE_B', 'uji-agent', '{\"version\": 1}', 'catatan');
+   INSERT INTO generated_articles (site_id, external_id, payload) VALUES ('$SITE_B', 'uji-agent', '{\"version\": 1, \"title\": \"baru\"}')
+     ON CONFLICT (site_id, external_id) DO UPDATE SET payload = EXCLUDED.payload, generated_at = now()
+     WHERE generated_articles.status = 'READY_TO_PUBLISH';
+   DO \$\$ BEGIN IF (SELECT status <> 'READY_TO_PUBLISH' OR payload->>'title' <> 'baru' FROM generated_articles
+     WHERE external_id = 'uji-agent') THEN RAISE EXCEPTION 'hasil upsert salah'; END IF; END \$\$"
+agent_denied "agent tidak bisa mengisi status saat INSERT" \
+  "INSERT INTO generated_articles (site_id, external_id, payload, status) VALUES ('$SITE_B', 'x', '{}', 'APPROVED')" "permission denied"
+agent_denied "agent tidak bisa mengubah status" \
+  "UPDATE generated_articles SET status = 'APPROVED'" "permission denied"
+agent_denied "agent tidak bisa mengisi keputusan (review_note)" \
+  "UPDATE generated_articles SET review_note = 'x'" "permission denied"
+agent_denied "agent tidak bisa mengubah isi hasil yang sudah diputuskan" \
+  "UPDATE generated_articles SET payload = '{\"diubah\": true}' WHERE external_id = 'uji-agent-diputuskan'" "sudah diputuskan"
+agent_denied "agent tidak bisa menghapus hasil AI" \
+  "DELETE FROM generated_articles" "permission denied"
+agent_denied "agent tidak bisa menulis articles" \
+  "INSERT INTO articles (site_id, category_id, title, slug) VALUES ('$SITE_B', '01930000-0000-7000-8000-000000000411', 'x', 'x')" "permission denied"
+agent_denied "agent tidak bisa membaca articles" "SELECT 1 FROM articles" "permission denied"
+agent_denied "agent tidak bisa membaca users" "SELECT 1 FROM users" "permission denied"
+agent_denied "agent tidak bisa membaca sites.settings" "SELECT settings FROM sites" "permission denied"
+agent_denied "agent tidak bisa menulis media" \
+  "UPDATE media SET source_url = 'https://x.test'" "permission denied"
 
 echo "== SELESAI: semua pemeriksaan lulus"

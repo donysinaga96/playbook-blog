@@ -212,7 +212,80 @@ SELECT pg_temp.expect_true('tidak ada baris tersisa milik site yang dihapus',
         + (SELECT count(*) FROM article_tags WHERE site_id = '01930000-0000-7000-8000-00000000d001')
         + (SELECT count(*) FROM menu_items   WHERE site_id = '01930000-0000-7000-8000-00000000d001') = 0));
 
-\echo '--- 7. Index dipakai pada 100.000 artikel ---'
+\echo '--- 7. Hasil AI, referensi, sumber media (0002, ADR-010) ---'
+-- Artikel uji di site B (dihapus di akhir bagian ini, semuanya di-ROLLBACK).
+INSERT INTO articles (id, site_id, category_id, title, slug)
+VALUES ('01930000-0000-7000-8000-000000009801', '01930000-0000-7000-8000-000000000102',
+        '01930000-0000-7000-8000-000000000411', 'Uji referensi', 'uji-referensi');
+
+SELECT pg_temp.expect_error('referensi site A menunjuk artikel site B', '23503', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000101', '01930000-0000-7000-8000-000000009801', 1, 'x', 'https://x.test') $q$);
+SELECT pg_temp.expect_error('URL referensi javascript:', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'x', 'javascript:alert(1)') $q$);
+SELECT pg_temp.expect_error('URL referensi berisi spasi', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'x', 'https://x.test/a b') $q$);
+SELECT pg_temp.expect_error('posisi referensi 0', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 0, 'x', 'https://x.test') $q$);
+SELECT pg_temp.expect_error('jenis referensi tidak dikenal', '23514', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url, kind)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'x', 'https://x.test', 'PODCAST') $q$);
+INSERT INTO article_references (site_id, article_id, position, title, url, publisher, kind)
+VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 1, 'Sumber', 'http://x.test/a', 'X', 'ARTICLE');
+SELECT pg_temp.expect_error('URL referensi dobel di artikel yang sama', '23505', $q$
+  INSERT INTO article_references (site_id, article_id, position, title, url)
+  VALUES ('01930000-0000-7000-8000-000000000102', '01930000-0000-7000-8000-000000009801', 2, 'y', 'http://x.test/a') $q$);
+SELECT pg_temp.expect_error('source_url media bukan http(s)', '23514', $q$
+  UPDATE media SET source_url = 'ftp://x.test/a.jpg' WHERE id = '01930000-0000-7000-8000-000000000211' $q$);
+
+SELECT pg_temp.expect_error('status hasil AI tidak dikenal', '23514', $q$
+  INSERT INTO generated_articles (site_id, external_id, payload, status)
+  VALUES ('01930000-0000-7000-8000-000000000102', 'uji-status', '{}', 'PUBLISHED') $q$);
+SELECT pg_temp.expect_error('payload hasil AI bukan object', '23514', $q$
+  INSERT INTO generated_articles (site_id, external_id, payload)
+  VALUES ('01930000-0000-7000-8000-000000000102', 'uji-array', '[]') $q$);
+INSERT INTO generated_articles (id, site_id, external_id, payload)
+VALUES ('01930000-0000-7000-8000-000000009901', '01930000-0000-7000-8000-000000000102', 'uji-1', '{"version": 1}');
+SELECT pg_temp.expect_error('external_id dobel di site yang sama', '23505', $q$
+  INSERT INTO generated_articles (site_id, external_id, payload)
+  VALUES ('01930000-0000-7000-8000-000000000102', 'uji-1', '{}') $q$);
+INSERT INTO generated_articles (site_id, external_id, payload)
+VALUES ('01930000-0000-7000-8000-000000000101', 'uji-1', '{}');
+SELECT pg_temp.expect_true('external_id sama boleh di site lain',
+  (SELECT count(*) FROM generated_articles WHERE external_id = 'uji-1') = 2);
+SELECT pg_temp.expect_error('ditolak tanpa alasan', '23514', $q$
+  UPDATE generated_articles SET status = 'ARCHIVED', reviewed_at = now()
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('diputuskan tanpa reviewed_at', '23514', $q$
+  UPDATE generated_articles SET status = 'APPROVED', article_id = '01930000-0000-7000-8000-000000009801'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('article_id pada hasil yang belum diputuskan', '23514', $q$
+  UPDATE generated_articles SET article_id = '01930000-0000-7000-8000-000000009801'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('hasil AI site B menunjuk artikel site A', '23503', $q$
+  UPDATE generated_articles SET status = 'APPROVED', reviewed_at = now(), article_id = '01930000-0000-7000-8000-000000000601'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+UPDATE generated_articles
+   SET status = 'APPROVED', reviewed_at = now(), article_id = '01930000-0000-7000-8000-000000009801'
+ WHERE id = '01930000-0000-7000-8000-000000009901';
+SELECT pg_temp.expect_error('payload hasil yang sudah diputuskan diubah', 'P0001', $q$
+  UPDATE generated_articles SET payload = '{"version": 2}' WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('keputusan diubah (APPROVED -> ARCHIVED)', 'P0001', $q$
+  UPDATE generated_articles SET status = 'ARCHIVED', review_note = 'ganti pikiran'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+SELECT pg_temp.expect_error('hasil yang sudah diputuskan dipindah ke artikel lain', 'P0001', $q$
+  UPDATE generated_articles SET article_id = '01930000-0000-7000-8000-000000000611'
+   WHERE id = '01930000-0000-7000-8000-000000009901' $q$);
+DELETE FROM articles WHERE id = '01930000-0000-7000-8000-000000009801';
+SELECT pg_temp.expect_true('hapus artikel: referensi ikut terhapus, hasil AI tetap APPROVED tanpa article_id',
+  NOT EXISTS (SELECT 1 FROM article_references WHERE article_id = '01930000-0000-7000-8000-000000009801')
+  AND (SELECT status = 'APPROVED' AND article_id IS NULL FROM generated_articles
+        WHERE id = '01930000-0000-7000-8000-000000009901'));
+
+\echo '--- 8. Index dipakai pada 100.000 artikel ---'
 INSERT INTO articles (site_id, category_id, title, slug, body_text, status, published_at)
 SELECT '01930000-0000-7000-8000-000000000101',
        CASE WHEN g % 2 = 0 THEN '01930000-0000-7000-8000-000000000401'::uuid

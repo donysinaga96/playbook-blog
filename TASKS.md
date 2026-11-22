@@ -12,7 +12,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
 | M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
-| M5a — Alur konten AI dan approval | 3 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5a — Alur konten AI dan approval | 8 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
 | M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
 **Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
@@ -307,15 +307,15 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 - [x] `docs/kontrak-agent.md`: kolom `generated_articles`, skema payload, cara merujuk kategori/tag/penulis (slug) dan gambar (`storage_key`), provider embed, referensi, contoh SQL satu hasil lengkap — contoh payload di dokumen divalidasi test, jadi kontrak tidak bisa basi diam-diam; tambahan kolom `agent_note` (ringkasan tinjauan AI, tampil di approval)
 
 **5a.1 Migration 0002 [K1] [K6] [K7]**
-- [ ] Tabel `generated_articles`: `site_id`, `external_id` (unik per site), `agent_note`, `status` (`READY_TO_PUBLISH`, `APPROVED`, `ARCHIVED`), `payload`, `generated_at`, `review_note`, `reviewed_by`, `reviewed_at`, `article_id` (composite FK ke artikel site yang sama)
-- [ ] Tabel `article_references`: posisi, judul, URL (CHECK http/https), penerbit, jenis; composite FK; unik (artikel, posisi); `media.source_url`
-- [ ] Role `blog_agent` (`agent_role.sql`, idempotent, pola `app_role.sql`): INSERT/UPDATE `generated_articles`, SELECT sites/categories/tags/authors; tanpa akses tulis ke tabel lain
-- [ ] Hak kolom: `blog_agent` hanya INSERT/UPDATE kolom isi (`site_id`, `external_id`, `payload`, `agent_note`, `generated_at`), jadi status dan kolom keputusan tidak bisa diisi agent; trigger: isi hasil yang sudah diputuskan tidak bisa diubah siapa pun
-- [ ] Test integritas + hak akses role; `drizzle-kit pull`; seed dev: 2 hasil AI (satu valid, satu dengan galat) beserta referensi
+- [x] Tabel `generated_articles`: `site_id`, `external_id` (unik per site), `agent_note`, `status` (`READY_TO_PUBLISH`, `APPROVED`, `ARCHIVED`), `payload`, `generated_at`, `review_note`, `reviewed_by`, `reviewed_at`, `article_id` (composite FK ke artikel site yang sama) — `0002_konten_ai.sql`; CHECK keputusan (READY ⇔ tanpa `reviewed_at`, ARCHIVED wajib alasan, `article_id` hanya APPROVED dan site yang sama)
+- [x] Tabel `article_references`: posisi, judul, URL (CHECK http/https), penerbit, jenis; composite FK; unik (artikel, posisi); `media.source_url` — URL dan posisi unik per artikel; ikut terhapus bersama artikel
+- [x] Role `blog_agent` (`agent_role.sql`, idempotent, pola `app_role.sql`): INSERT/UPDATE `generated_articles`, SELECT sites/categories/tags/authors; tanpa akses tulis ke tabel lain — password kosong = NOLOGIN dan role yang ada tidak diubah; dirangkai di `setup.sh`, compose, `.env.example`, CI
+- [x] Hak kolom: `blog_agent` hanya INSERT/UPDATE kolom isi (`site_id`, `external_id`, `payload`, `agent_note`, `generated_at`), jadi status dan kolom keputusan tidak bisa diisi agent; trigger: isi hasil yang sudah diputuskan tidak bisa diubah siapa pun — trigger `generated_articles_guard` (P0001)
+- [x] Test integritas + hak akses role; `drizzle-kit pull`; seed dev: 2 hasil AI (satu valid, satu dengan galat) beserta referensi — 19 test integritas baru (bagian 7, total 61), 12 pemeriksaan role agent lewat `SET LOCAL ROLE` (bagian 7 `run_all.sh`), total 81 pemeriksaan; schema Drizzle 18 tabel; snapshot view model diperbarui (kredit gambar rendang di seed)
 
 **5a.2 Pemeriksaan dan approve di core [K3] [K4]**
 - [ ] `reviewGenerated(siteId, id)`: galat dan peringatan sesuai tabel di docs/usulan-konten-ai.md
-- [ ] `approveGenerated`: satu transaksi, `FOR UPDATE`, periksa ulang, buat media + artikel (`PUBLISHED` sekarang/terjadwal, atau `DRAFT`) + tag + referensi, hitung `body_text`, revisi pertama mencatat asal hasil AI, tandai `APPROVED` + `article_id`
+- [ ] `approveGenerated`: satu transaksi, `FOR UPDATE`, periksa ulang, buat media (pakai ulang baris yang `storage_key`-nya sudah ada di site yang sama, karena `uq_media_storage_key` unik global; milik site lain = galat) + artikel (`PUBLISHED` sekarang/terjadwal, atau `DRAFT`) + tag + referensi, hitung `body_text`, revisi pertama mencatat asal hasil AI, tandai `APPROVED` + `article_id`
 - [ ] `rejectGenerated`: alasan wajib → `ARCHIVED` + `review_note`
 - [ ] Referensi untuk artikel biasa: repository editor membaca/menulis `article_references`
 - [ ] Test: tiap jenis galat, transisi terlarang, dua approve bersamaan = satu artikel, slug bentrok di tengah transaksi, isolasi site

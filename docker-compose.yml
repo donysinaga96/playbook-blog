@@ -2,7 +2,7 @@
 # Development stack - framework web artikel multi-site / multi-template
 #
 #   docker compose up -d                              # db + migration + role app + seed
-#   docker compose --profile test  run --rm db-test   # 50 pemeriksaan packages/db
+#   docker compose --profile test  run --rm db-test   # 81 pemeriksaan packages/db
 #   docker compose --profile tools up -d adminer      # UI database di http://localhost:8080
 #
 # Aplikasi Nuxt TIDAK jalan di sini saat development: jalankan `pnpm dev`
@@ -49,7 +49,7 @@ services:
       retries: 20
       start_period: 10s
 
-  # Sekali jalan: migration -> role aplikasi -> seed dev. Aman diulang.
+  # Sekali jalan: migration -> role aplikasi -> role AI agent -> seed dev. Aman diulang.
   db-migrate:
     image: *pg-image
     depends_on:
@@ -61,6 +61,8 @@ services:
       <<: *pg-owner-env
       APP_DB_USER: ${APP_DB_USER:-blog_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+      AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:-}
       SEED_DEV_DATA: ${SEED_DEV_DATA:-true}
     volumes:
       - ./packages/db:/db:ro
@@ -79,6 +81,7 @@ services:
       PGDATABASE: postgres
       APP_DB_USER: ${APP_DB_USER:-blog_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}
+      AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
     volumes:
       - ./packages/db:/db:ro
 

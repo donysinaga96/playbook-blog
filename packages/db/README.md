@@ -4,14 +4,16 @@ Schema database framework web artikel multi-site / multi-template.
 
 ```
 migrations/0001_core.sql    schema v1: 16 tabel, constraint, index, trigger (tanpa BEGIN/COMMIT)
+migrations/0002_konten_ai.sql  hasil AI (generated_articles), article_references, media.source_url (ADR-010)
 seed/dev_seed.sql           2 site contoh dengan topik & template berbeda (idempotent)
-tests/integrity_test.sql    42 test integritas + pemakaian index (di-ROLLBACK)
+tests/integrity_test.sql    61 test integritas + pemakaian index (di-ROLLBACK)
 scripts/migrate.sh          runner migration: urut, satu transaksi per file, checksum di schema_migrations
 scripts/app_role.sql/.sh    role aplikasi (DML saja, tanpa DDL, tanpa BYPASSRLS)
+scripts/agent_role.sql/.sh  role AI agent: tulis kolom isi generated_articles saja (ADR-010)
 scripts/seed.sh             menjalankan seed/*.sql
-scripts/setup.sh            migrate -> app_role -> seed (entry point service db-migrate)
+scripts/setup.sh            migrate -> app_role -> agent_role -> seed (entry point service db-migrate)
 scripts/pull-schema.mjs     drizzle-kit pull -> src/schema/ (buang migration hasil drizzle-kit)
-run_all.sh                  uji lengkap: 50 pemeriksaan pada database baru
+run_all.sh                  uji lengkap: 81 pemeriksaan pada database baru
 src/client.ts               createDatabase(): pool pg + Drizzle; databaseUrlFromEnv()
 src/schema/                 schema.ts + relations.ts HASIL GENERATE (jangan diedit tangan)
 drizzle.config.ts           konfigurasi drizzle-kit, hanya untuk pull

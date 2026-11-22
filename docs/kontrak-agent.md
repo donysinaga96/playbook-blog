@@ -4,7 +4,7 @@ Dokumen ini untuk pembuat AI agent konten (di luar repo ini). Isinya: apa yang b
 
 Sumber kebenaran bentuk payload adalah skema Zod `generatedPayloadSchema` di [packages/core/src/generated/payload.ts](../packages/core/src/generated/payload.ts). Contoh payload di dokumen ini diuji otomatis terhadap skema itu (`payload.test.ts`). Kalau test itu gagal, dokumen ini sudah tidak sesuai dengan kode.
 
-> Status: tabel `generated_articles`, `article_references`, dan role `blog_agent` dibuat di migration 0002 (task 5a.1). Sebelum itu, dokumen ini adalah rancangan yang sudah disetujui.
+> Tabel dibuat oleh [migration 0002](../packages/db/migrations/0002_konten_ai.sql); hak role diatur oleh [agent_role.sql](../packages/db/scripts/agent_role.sql) dan diuji di `packages/db/run_all.sh` (bagian 7).
 
 ## Alur
 
@@ -19,7 +19,7 @@ Sumber kebenaran bentuk payload adalah skema Zod `generatedPayloadSchema` di [pa
 
 ## Koneksi
 
-Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatur lewat env `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` saat role dibuat (`packages/db/scripts/agent_role.sh`).
+Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatur lewat env `AGENT_DB_USER` dan `AGENT_DB_PASSWORD` saat role dibuat (`packages/db/scripts/agent_role.sh`, dijalankan otomatis oleh `pnpm db:migrate`). Bila `AGENT_DB_PASSWORD` kosong, role dibuat `NOLOGIN`: haknya terpasang, tetapi agent belum bisa login.
 
 | Tabel | Hak `blog_agent` |
 |---|---|
@@ -27,8 +27,10 @@ Agent login ke PostgreSQL sebagai role `blog_agent`. Username dan password diatu
 | `categories` | SELECT: kategori yang bisa dipakai (`slug`, `name`, `status`, `parent_id`) |
 | `authors` | SELECT: penulis (`slug`, `name`, `status`) |
 | `tags` | SELECT: tag yang sudah ada (`slug`, `name`) |
-| `generated_articles` | SELECT; INSERT dan UPDATE hanya kolom isi (`site_id`, `external_id`, `payload`, `agent_note`, `generated_at`) |
-| Tabel lain | Tidak ada akses |
+| `generated_articles` | SELECT semua kolom; INSERT hanya `site_id`, `external_id`, `payload`, `agent_note`, `generated_at`; UPDATE hanya `payload`, `agent_note`, `generated_at`. Tanpa DELETE |
+| Tabel lain (termasuk `articles`, `media`, `users`) | Tidak ada akses |
+
+Karena kolom `status` dan kolom keputusan tidak bisa diisi agent, setiap baris yang ditulis agent pasti `READY_TO_PUBLISH`. Kolom yang dipilih dengan `SELECT` harus kolom yang diizinkan: `SELECT * FROM sites` ditolak, `SELECT id, code FROM sites` diterima.
 
 Hanya kategori dan penulis dengan `status = 'ACTIVE'` yang lolos pemeriksaan approval.
 
@@ -63,7 +65,7 @@ ON CONFLICT (site_id, external_id) DO UPDATE
   WHERE generated_articles.status = 'READY_TO_PUBLISH';
 ```
 
-Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah apa pun (0 baris). Pakai `external_id` baru untuk hasil baru.
+Kalau baris dengan `external_id` itu sudah diputuskan, `UPDATE` tidak mengubah apa pun (0 baris). Tanpa klausa `WHERE` itu, database menolak dengan galat "sudah diputuskan" (trigger `generated_articles_guard`). Pakai `external_id` baru untuk hasil baru.
 
 ## Payload v1
 
