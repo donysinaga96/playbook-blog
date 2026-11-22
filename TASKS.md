@@ -11,10 +11,11 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M1 — Database v1 | 12 / 12 | ✅ Lulus 19 Nov 2026 — pipeline hijau (commit fea423a) |
 | M2 — Tampilan pertama | 30 / 30 | ✅ Lulus 20 Nov 2026 — pipeline hijau (commit c312b05) |
 | M3 — Template kedua (titik evaluasi) | 25 / 25 | ✅ Lulus 21 Nov 2026 — pipeline hijau (commit a0b1a23) |
-| M4 — Admin minimal | 27 / 27 | ⏳ Lulus lokal 22 Nov 2026; menunggu pipeline |
-| M5 — Produksi pertama (titik evaluasi) | 0 / 23 | — (draf; usulan A–F menunggu persetujuan) |
+| M4 — Admin minimal | 27 / 27 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit bbc42fb) |
+| M5a — Alur konten AI dan approval | 0 / 22 | — (usulan K1, K3–K7 disetujui 22 Nov 2026) |
+| M5 — Produksi pertama (titik evaluasi) | 0 / 28 | — (draf; dievaluasi ulang 22 Nov 2026, usulan A–I menunggu persetujuan; task deploy ditahan sejak 22 Nov 2026) |
 
-**Task berikutnya:** M4 (diputuskan pada evaluasi M3, 21 Nov 2026; usulan A–G disetujui, E ditunda), 4.pre, 4.0 (21 Nov 2026), 4.1 + sebagian 4.5, 4.2, 4.3, 4.4, dan 4.6 (22 Nov 2026) selesai; gate M4 lulus lokal, tinggal konfirmasi pipeline. Berikutnya: evaluasi rincian M5 (usulan A–F). Rincian M4–M5 (21 Nov 2026) masih draf; usulannya ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md) dan ditinjau lagi pada evaluasi M3. Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** M0–M4 selesai; gate M4 lulus 22 Nov 2026 (pipeline hijau, commit bbc42fb). 22 Nov 2026: tujuan produk diperjelas (AI agent di luar repo menulis ke tabel hasil AI berstatus `READY_TO_PUBLISH`; approve memindahkannya ke tabel konten; status `articles` tetap; referensi wajib tampil). Semua task deploy M5 **ditahan**; development lokal diselesaikan dulu, mulai dari [M5a](#m5a--alur-konten-ai-dan-approval). Usulan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -271,7 +272,7 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 
 **4.6 Test pembukti gate dan penutup [F]**
 - [x] [F] Skrip gate `apps/web/scripts/gate-admin.mjs`, masuk CI job `build`: login → buat artikel → jadwalkan `published_at` beberapa detik ke depan → sebelum waktunya 404 dan tidak ada di home, sitemap, RSS → sesudahnya tampil — `GATE_SCHEDULE_LEAD_MS` (bawaan 6 detik); request pertama setelah jadwal sudah tampil di URL artikel, home, sitemap, RSS; `publicPath` API sama; artikel uji diarsipkan di `finally`. `gate-admin` 53 pemeriksaan
-- [x] Bab tutorial, commit, pipeline hijau, retro mini M4 — bab "Menjadwalkan Artikel dan Menutup Admin"; pipeline menunggu konfirmasi
+- [x] Bab tutorial, commit, pipeline hijau, retro mini M4 — bab "Menjadwalkan Artikel dan Menutup Admin"; pipeline hijau pada bbc42fb (dikonfirmasi 22 Nov 2026)
 - › Skill: `/security-review` dan `/code-review` (level high) untuk seluruh diff M4 sebelum commit
 - Code review (level high, 22 Nov 2026, seluruh diff M4): 6 temuan diperbaiki: media bisa terhapus di tengah simpan artikel yang baru memakainya (kini `FOR SHARE` di `ensureOwned` + `deleteMedia` satu transaksi dengan `FOR UPDATE`; test meniru balapan), "Muat lagi" galeri dobel/terlewat setelah unggah atau hapus (`nextMediaPage` + `appendUnique`), galat hapus file setelah catatan terhapus jadi 500 (kini dicatat saja), percent-encoding rusak di `/media` dan `/admin/preview-media` = 500 (kini 404), artikel uji gate tertinggal terbit bila gate melempar (arsip di `finally`), `demo:saksang --remove` menghapus redirect lain yang memuat "saksang" (kini hanya redirect demo dan yang menunjuk artikel demo).
 - Security review (22 Nov 2026, seluruh diff M4): tidak ada temuan. Catatan tanpa dampak: item menu ROUTE menerima `/\evil.com` (browser membacanya seperti `//evil.com`), tetapi hanya admin site yang bisa mengisinya dan admin memang boleh menambah URL eksternal; pratinjau merender konten site di origin admin, aman selama tidak ada `v-html` di template (jaga bila template baru menambah HTML mentah).
@@ -283,7 +284,66 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 - Ternyata tidak perlu: scheduler atau queue untuk artikel terjadwal; filter `published_at <= now()` yang sudah ada sejak M2 cukup, dan gate membuktikannya terhadap build. Tabel sesi juga tidak perlu (cookie tersegel, batasnya dicatat di ADR-009).
 - Perlu diubah di roadmap: M5 (cache HTML) harus menetapkan TTL sebagai toleransi "tepat waktu" artikel terjadwal dan menyesuaikan gate ini. Penghapusan EXIF dan pulihkan revisi (usulan E) tetap di backlog. Gate admin kini 53 pemeriksaan dan menulis data (artikel arsip uji) ke database lokal; pertimbangkan site uji khusus bila mulai mengganggu.
 
+## M5a — Alur konten AI dan approval
+
+Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI agent pembuat konten dibangun di luar repo ini dan menulis ke tabel hasil AI tersendiri; status tabel konten (`articles`) tetap. Approve di admin memindahkan hasil AI ke tabel konten. Usulan, alur, dan tabel keputusan: [docs/usulan-konten-ai.md](docs/usulan-konten-ai.md).
+
+### Pemeriksaan terhadap kode (22 Nov 2026)
+
+| Kebutuhan | Kondisi repo |
+|---|---|
+| Tabel hasil AI dengan status `READY_TO_PUBLISH` | Belum ada. Status `articles` (`DRAFT, REVIEW, PUBLISHED, ARCHIVED`) tetap dan tidak diubah |
+| Approval pagi hari | Belum ada antrian, pratinjau hasil AI, pemeriksaan, atau pemindahan ke tabel konten |
+| Agent menulis langsung ke database | Hanya ada role `blog_app` (semua DML); belum ada role terbatas untuk agent |
+| Gambar dari object storage | `media.storage_key` (bukan URL) + storage adapter; baru adapter disk lokal; `media.credit` ada, URL sumber belum |
+| Video dari alamat asli | Block `embed` (YouTube, Vimeo, X) membangun iframe dari URL asli; belum ada tautan ke sumber di tampilan |
+| Referensi | Belum ada tempat penyimpanan maupun tampilan |
+
+### Rincian
+
+**5a.0 Kontrak dan keputusan [K1] [K7]**
+- [ ] ADR-010 alur konten AI: tabel hasil AI terpisah, agent sebagai `blog_agent`, approve = pindah ke tabel konten dalam satu transaksi (ADR infrastruktur M5 bergeser ke ADR-011)
+- [ ] Skema payload hasil AI v1 (Zod, berversi) di `packages/core`
+- [ ] `docs/kontrak-agent.md`: kolom `generated_articles`, skema payload, cara merujuk kategori/tag/penulis (slug) dan gambar (`storage_key`), provider embed, referensi, contoh SQL satu hasil lengkap
+
+**5a.1 Migration 0002 [K1] [K6] [K7]**
+- [ ] Tabel `generated_articles`: `site_id`, `external_id` (unik per site), `status` (`READY_TO_PUBLISH`, `APPROVED`, `ARCHIVED`), `payload`, `generated_at`, `review_note`, `reviewed_by`, `reviewed_at`, `article_id` (composite FK ke artikel site yang sama)
+- [ ] Tabel `article_references`: posisi, judul, URL (CHECK http/https), penerbit, jenis; composite FK; unik (artikel, posisi); `media.source_url`
+- [ ] Role `blog_agent` (`agent_role.sql`, idempotent, pola `app_role.sql`): INSERT/UPDATE `generated_articles`, SELECT sites/categories/tags/authors; tanpa akses tulis ke tabel lain
+- [ ] Trigger: `blog_agent` hanya boleh menulis `READY_TO_PUBLISH` dan tidak boleh mengubah hasil yang sudah diputuskan
+- [ ] Test integritas + hak akses role; `drizzle-kit pull`; seed dev: 2 hasil AI (satu valid, satu dengan galat) beserta referensi
+
+**5a.2 Pemeriksaan dan approve di core [K3] [K4]**
+- [ ] `reviewGenerated(siteId, id)`: galat dan peringatan sesuai tabel di docs/usulan-konten-ai.md
+- [ ] `approveGenerated`: satu transaksi, `FOR UPDATE`, periksa ulang, buat media + artikel (`PUBLISHED` sekarang/terjadwal, atau `DRAFT`) + tag + referensi, hitung `body_text`, revisi pertama mencatat asal hasil AI, tandai `APPROVED` + `article_id`
+- [ ] `rejectGenerated`: alasan wajib → `ARCHIVED` + `review_note`
+- [ ] Referensi untuk artikel biasa: repository editor membaca/menulis `article_references`
+- [ ] Test: tiap jenis galat, transisi terlarang, dua approve bersamaan = satu artikel, slug bentrok di tengah transaksi, isolasi site
+
+**5a.3 Antrian approval di admin [K3]**
+- [ ] API `/api/admin/generated` (semua site milik user) + detail, approve, reject, approve massal (hanya item tanpa galat)
+- [ ] Halaman "Antrian terbit": daftar per site dengan jumlah galat/peringatan; jumlah antrian di navigasi admin
+- [ ] Halaman detail: pratinjau hasil AI dengan template site (SSR di host admin, `noindex`, `no-store`, hanya admin site itu), daftar pemeriksaan, daftar referensi, tombol Terbitkan sekarang / Jadwalkan / Pindahkan sebagai draft / Tolak (alasan wajib)
+- [ ] Editor artikel: bagian referensi
+- › Skill: `frontend-design:frontend-design` untuk halaman antrian; `/run` untuk memeriksa alur di browser
+
+**5a.4 Referensi di halaman konten [K6]**
+- [ ] View model artikel: `references` + sumber gambar (`credit`, `source_url`) + URL asli embed
+- [ ] Komponen base "Sumber dan referensi" di akhir artikel untuk semua template tanpa override; kredit dan tautan sumber di bawah gambar; tautan "Tonton di sumber asli" di bawah embed
+- [ ] JSON-LD artikel: `citation`; snapshot view model diperbarui; cek browser 3.4 untuk tiga template
+
+**5a.5 Gate dan penutup [K5]**
+- [ ] Skrip `gate-content.mjs` di CI: INSERT hasil AI sebagai `blog_agent` → tidak ada yang tampil di web → agent tidak bisa menulis `articles` → hasil rusak tidak bisa di-approve → tolak = `ARCHIVED` → approve lewat API admin → artikel tampil dengan referensinya, juga di home, sitemap, RSS
+- [ ] Bab tutorial, commit, pipeline hijau, retro mini M5a
+- › Skill: `/security-review` (role dan trigger agent, pratinjau, API antrian) dan `/code-review` (level high) untuk seluruh diff M5a
+
+**Gate:** hasil AI di database tidak tampil di web sampai di-approve di admin; hasil yang tidak sesuai aturan tidak bisa dipindahkan ke tabel konten; konten yang terbit menampilkan semua referensinya.
+
+---
+
 ## M5 — Produksi pertama (titik evaluasi)
+
+> **Ditahan sejak 22 Nov 2026** atas keputusan pemilik proyek: semua task yang berkaitan dengan deploy (5.0, 5.1, 5.2, 5.3 bagian luar VPS, 5.4 bagian proxy, uptime check, 5.6) menunggu development lokal selesai. Task lokal (5.1b `site:create`, header cache di aplikasi, log JSON, skrip backup/restore yang diuji lokal) dikerjakan setelah M5a.
 
 ### Pemeriksaan poin yang ada (21 Nov 2026)
 
@@ -295,25 +355,46 @@ Usulan A–G di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m4--admin-minimal) d
 | Monitoring dasar: error, latency, ukuran database | `/api/health` sudah mengecek database. Log masih teks bebas ke stdout (`[page]`, `[site]`). | Latency dan error per site butuh log terstruktur. Alat (layanan hosted atau self-host) belum dipilih (usulan E). |
 | Gate: satu site nyata live; restore backup berhasil | Domain, DNS, dan VPS harus disediakan pemilik proyek. | Bila evaluasi M3 menaruh M5 sebelum M4, konten site nyata diisi lewat seed atau SQL manual. |
 
+### Pemeriksaan ulang setelah M4 (22 Nov 2026)
+
+Tabel di atas ditulis sebelum M4. M4 menambah admin, sesi, upload, dan pratinjau. Akibatnya untuk produksi:
+
+| Temuan di kode | Akibat di produksi | Ditangani di |
+|---|---|---|
+| Belum ada cara membuat site + domain selain `dev_seed.sql` (admin hanya mengelola isi site yang sudah ada; seed produksi tidak dijalankan) | Gate "satu site nyata live" hanya bisa lewat SQL manual, padahal gate M4 menetapkan tanpa SQL manual | Usulan G |
+| `admin:create` dan `demo:saksang` jalan lewat `tsx` dari source workspace; image produksi hanya berisi `.output` | Admin pertama tidak bisa dibuat dari dalam container | Usulan G |
+| Admin multi-site di `ADMIN_HOST` (dev `admin.localhost`) | Host admin butuh DNS dan TLS sendiri; endpoint "ask" on-demand TLS harus mengizinkan `ADMIN_HOST`, bukan hanya `site_domains` | Usulan A (diperluas) |
+| Cek `Origin` dan atribut `Secure` cookie memakai `X-Forwarded-Proto`; IP rate limit login memakai entri terakhir `X-Forwarded-For` bila `TRUST_PROXY=true` | Tanpa `X-Forwarded-Proto: https`, semua POST admin ditolak 403 (origin `http` ≠ `https`). Tanpa `TRUST_PROXY`, semua klien terhitung satu IP (IP proxy): 30 percobaan gagal dari siapa pun mengunci login semua orang | Usulan H |
+| Pembatas login (`login-throttle.ts`) dan draf pratinjau (`preview-drafts.ts`) disimpan di memori proses | Lebih dari satu replika aplikasi = batas login bisa dilewati dan pratinjau acak 404 | Usulan I |
+| HTML publik belum punya header cache; mode `single` menaruh admin di domain site | Cache harus dilewati bila ada cookie `blog_admin`. Artikel yang diedit atau diterbitkan terlambat tampil paling lama TTL; `gate-admin` mengharuskan "langsung tampil", jadi gate itu tetap memukul aplikasi langsung, dan pemeriksaan lewat cache memakai toleransi TTL | Usulan D (diperluas) |
+| `MEDIA_DIR` di disk lokal; `ADMIN_SESSION_SECRET` wajib | Media harus di volume dan ikut backup (sudah di C). Rotasi secret mengeluarkan semua admin; perlu tertulis di runbook | Usulan C, F |
+
 ### Usulan (menunggu persetujuan)
 
-Usulan A–F untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--produksi-pertama). Rincian di bawah adalah draf yang memakai usulan itu.
+Usulan A–I untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--produksi-pertama). Rincian di bawah adalah draf yang memakai usulan itu; G–I ditambahkan 22 Nov 2026 setelah pemeriksaan ulang.
 
 ### Rincian (draf; disesuaikan setelah usulan disetujui)
 
 **5.0 Riset dan keputusan infrastruktur [A] [E]**
 - [ ] Bandingkan reverse proxy (TLS otomatis multi-domain), penyedia VPS, tujuan backup, dan alat monitoring; catat sebagai ADR-010
+- [ ] [I] ADR-010 menetapkan satu replika aplikasi selama pembatas login dan draf pratinjau ada di memori
 - › Skill: `anthropic-skills:deep-research` untuk perbandingan ini, dengan sumber yang dikutip di ADR
 
 **5.1 Image dan konfigurasi produksi [A]**
 - [ ] Dockerfile multi-stage untuk `apps/web` (hasil `.output`, user non-root, healthcheck `/api/health`)
 - [ ] `compose.prod.yml`: app, db (port tidak dipublikasikan), migrate sekali jalan, reverse proxy
-- [ ] Env produksi: secret hanya di VPS, aplikasi memakai role `blog_app` (bukan superuser), `SITE_MODE` sesuai site
+- [ ] Env produksi: secret hanya di VPS (termasuk `ADMIN_SESSION_SECRET`), aplikasi memakai role `blog_app` (bukan superuser), `SITE_MODE` sesuai site, `SEED_DEV_DATA` tidak di-set (compose dev memakai bawaan `true`)
+- [ ] [G] Stage `tools` di Dockerfile yang sama (source workspace + tsx) untuk migrate, `admin:create`, `site:create`
 - [ ] CI: build image + `/api/health` dari image itu
 
-**5.2 VPS, TLS, deploy [A] [B]**
+**5.1b Membuat site produksi tanpa SQL [G]**
+- [ ] CLI `pnpm site:create` (kode, nama, template, domain primary, mode) + `pnpm site:domain` (tambah/hapus alias); validasi template dan config lewat manifest
+- [ ] Test CLI + dijalankan di gate CI terhadap database kosong hasil migrate
+
+**5.2 VPS, TLS, deploy [A] [B] [H]**
 - [ ] VPS dasar: login SSH key saja, firewall 22/80/443, update keamanan otomatis
-- [ ] Reverse proxy: TLS otomatis per domain (hanya domain yang ada di `site_domains`), meneruskan Host asli
+- [ ] Reverse proxy: TLS otomatis per domain (hanya domain di `site_domains` dan `ADMIN_HOST`), meneruskan Host asli
+- [ ] [H] Kontrak proxy: `X-Forwarded-Proto`, `X-Forwarded-For` ditambahkan (bukan ditimpa klien), `TRUST_PROXY=true`; smoke di CI melewati proxy: login admin + satu POST lolos cek Origin, cookie `Secure`, rate limit memakai IP klien
 - [ ] [B] Deploy dari CI (job manual): push image bertag commit → VPS pull → migrate → restart; rollback ke tag sebelumnya
 - › Skill: `/security-review` pada Dockerfile, compose, konfigurasi proxy, dan job deploy
 
@@ -323,9 +404,9 @@ Usulan A–F untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--pro
 - [ ] Uji restore sekali; catat tanggal, durasi, dan ukuran di TASKS.md
 
 **5.4 Cache publik [D]**
-- [ ] Header cache HTML publik dengan TTL pendek, hanya untuk respons tanpa cookie sesi; admin dan preview `no-store`
+- [ ] Header cache HTML publik dengan TTL pendek, hanya untuk respons tanpa cookie sesi (`blog_admin`); admin dan preview `no-store`
 - [ ] Cache di reverse proxy dengan kunci Host + path + query; gate paralel M2 dijalankan ulang melewati cache
-- [ ] Test: artikel terjadwal tampil paling lambat TTL setelah `published_at`
+- [ ] Test: artikel terjadwal tampil paling lambat TTL setelah `published_at` (gate M4 tetap memukul aplikasi langsung)
 - [ ] R2: tidak dikerjakan sampai pemicunya terpenuhi (angka ditetapkan di ADR-010); storage adapter sudah menjadi titik gantinya
 
 **5.5 Monitoring [E]**
@@ -336,7 +417,7 @@ Usulan A–F untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--pro
 - › Skill: `dataviz` bila latency dan ukuran database ditampilkan sebagai grafik
 
 **5.6 Go-live dan penutup [F]**
-- [ ] Domain + DNS site nyata, konten awal (lewat admin bila M4 sudah selesai)
+- [ ] Domain + DNS site nyata dan host admin; site dibuat dengan `site:create`, admin dengan `admin:create`, konten awal lewat admin
 - [ ] Cek produksi: canonical, sitemap, RSS, dan `robots.txt` memakai domain produksi
 - [ ] [F] Runbook `docs/operasional.md`: deploy, rollback, restore, rotasi secret
 - [ ] Bab tutorial, commit, retro mini M5, evaluasi backlog
