@@ -1,0 +1,108 @@
+# =====================================================================
+# Produksi satu VPS (ADR-012). Di VPS file ini bernama /srv/blog/compose.yml
+# dan diperbarui otomatis oleh deploy.sh dari image tools versi yang dipasang.
+# Nilai dari /srv/blog/.env (dibuat bootstrap.sh, tidak pernah di Git);
+# APP_TAG diisi deploy.sh / bin/tools dari file current-tag.
+#
+#   caddy : TLS + reverse proxy, satu-satunya yang membuka port
+#   app   : Nuxt (.output), SATU replika: pembatas login dan draf pratinjau
+#           ada di memori proses (usulan M5-I)
+#   db    : PostgreSQL 18, tanpa port ke luar
+#   tools : perintah sekali jalan (bin/tools <perintah>)
+# =====================================================================
+name: blog
+
+x-pg-owner-env: &pg-owner-env
+  PGHOST: db
+  PGPORT: "5432"
+  PGUSER: ${POSTGRES_USER:-blog}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+  PGDATABASE: ${DB_NAME:-blog}
+
+x-app-db-url: &app-db-url postgres://${APP_DB_USER:-blog_app}:${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}@db:5432/${DB_NAME:-blog}
+
+services:
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  app:
+    image: ${REGISTRY_IMAGE:?isi REGISTRY_IMAGE di .env}/app:${APP_TAG:?APP_TAG diisi deploy.sh}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # Kredensial sumber pendapatan dan setelan tambahan (opsional).
+    env_file:
+      - path: ./app.env
+        required: false
+    environment:
+      DATABASE_URL: *app-db-url
+      SITE_MODE: multi
+      ADMIN_HOST: ${ADMIN_HOST:?isi ADMIN_HOST di .env}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?isi ADMIN_SESSION_SECRET di .env}
+      TRUST_PROXY: "true"
+      MEDIA_DIR: /media
+      PUBLIC_CACHE_TTL: ${PUBLIC_CACHE_TTL:-60}
+      REVENUE_TIMEZONE: Asia/Jakarta
+    volumes:
+      - ./media:/media
+
+  db:
+    image: postgres:18.7
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-blog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+      # Database aplikasi dibuat oleh `tools migrate` atau `tools restore`.
+      POSTGRES_DB: postgres
+    command: ["postgres", "-c", "timezone=UTC", "-c", "log_min_duration_statement=500"]
+    volumes:
+      - pgdata:/var/lib/postgresql
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  tools:
+    profiles: ["tools"]
+    image: ${REGISTRY_IMAGE}/tools:${APP_TAG}
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: ./app.env
+        required: false
+    environment:
+      <<: *pg-owner-env
+      DATABASE_URL: *app-db-url
+      APP_DB_USER: ${APP_DB_USER:-blog_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      AGENT_DB_USER: ${AGENT_DB_USER:-blog_agent}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:-}
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      MEDIA_SRC: /media
+      REVENUE_TIMEZONE: Asia/Jakarta
+    volumes:
+      - ./backups:/backups
+      - ./media:/media
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

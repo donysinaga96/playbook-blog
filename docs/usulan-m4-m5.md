@@ -40,9 +40,9 @@ Usulan ini mengandaikan usulan M3 (terutama B, manifest server, dan D, `migrateC
 | M4-E — Pulihkan revisi | Ditunda | Masuk backlog setelah M5 |
 | M4-F — Gate M4 di CI | Ya, 21 Nov 2026 | |
 | M4-G — Pengamanan dasar admin | Ya, 21 Nov 2026 | |
-| M5-A — Proxy TLS per domain (ADR-011) | Ditahan | Menunggu deploy (22 Nov 2026) |
-| M5-B — Deploy dari CI | Ditahan | Menunggu deploy (22 Nov 2026) |
-| M5-C — Backup + restore | Ya (bagian lokal), 22 Nov 2026 | Skrip backup/restore diuji lokal; tujuan di luar VPS ditahan bersama deploy |
+| M5-A — Proxy TLS per domain (ADR-012) | Ya, 25 Nov 2026 | Caddy on-demand TLS; domain sementara sslip.io sampai beritakonoha.id aktif |
+| M5-B — Deploy dari CI | Ya, 25 Nov 2026 | Image dari CI ke GitLab Registry, job deploy manual |
+| M5-C — Backup + restore | Ya, 22 Nov 2026 (lokal) dan 25 Nov 2026 (tujuan) | Tujuan backup: Cloudflare R2 |
 | M5-D — Kunci cache dengan Host | Ya (bagian aplikasi), 22 Nov 2026 | Header cache di aplikasi; cache di proxy ditahan bersama deploy |
 | M5-E — Monitoring dari log | Ya (bagian lokal), 22 Nov 2026 | Log JSON per request; alat monitoring ditahan bersama deploy |
 | M5-F — Runbook | Ditahan | Menunggu deploy (22 Nov 2026) |

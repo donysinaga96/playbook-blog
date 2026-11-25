@@ -1,0 +1,40 @@
+# =====================================================================
+# Reverse proxy produksi (ADR-012, usulan M5-A dan M5-H).
+#
+# - TLS otomatis per domain (on-demand): sebelum menerbitkan sertifikat,
+#   Caddy bertanya ke aplikasi apakah domain itu ada di site_domains atau
+#   sama dengan ADMIN_HOST. Site/domain baru tidak perlu mengubah file ini.
+# - Host asli diteruskan apa adanya (site dipilih dari Host, ADR-001).
+# - X-Forwarded-For diisi IP klien (Caddy tidak mempercayai nilai dari klien
+#   karena trusted_proxies tidak diatur) dan X-Forwarded-Proto = https;
+#   aplikasi berjalan dengan TRUST_PROXY=true.
+# - /api/internal/* hanya untuk jaringan compose, tidak dari internet.
+# =====================================================================
+{
+	on_demand_tls {
+		ask http://app:3000/api/internal/tls-ask
+	}
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+
+	@internal path /api/internal/*
+	respond @internal 404
+
+	header {
+		Strict-Transport-Security "max-age=15552000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	encode zstd gzip
+	reverse_proxy app:3000
+}
+
+http:// {
+	redir https://{host}{uri} 308
+}

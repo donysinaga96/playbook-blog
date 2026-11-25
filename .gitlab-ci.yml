@@ -10,10 +10,19 @@
 #           (health 200 + halaman tekno/kuliner dirender), lalu gate M2:
 #           request SSR paralel ke dua domain tidak saling tertukar; gate admin
 #           (M4) dan gate konten AI (M5a)
+#   image : (main saja, setelah semua job check lulus) build image produksi
+#           runtime + tools, uji image itu tanpa source repo
+#           (deploy/ci-image-check.sh), push ke GitLab Container Registry
+#           bertag commit SHA (ADR-012)
+#   deploy: (main, manual) SSH ke VPS dengan key yang hanya boleh menjalankan
+#           deploy-ssh; VPS menarik image commit ini, backup, migrate,
+#           restart, rollback otomatis bila tidak sehat
 # =====================================================================
 
 stages:
   - check
+  - image
+  - deploy
 
 workflow:
   rules:
@@ -160,3 +169,47 @@ db:
   script:
     - for i in $(seq 1 30); do pg_isready -q && break; sleep 1; done
     - bash packages/db/run_all.sh blog_framework_test
+
+image:
+  stage: image
+  image: docker:28
+  services:
+    - name: docker:28-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - APP="$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA"
+    - TOOLS="$CI_REGISTRY_IMAGE/tools:$CI_COMMIT_SHA"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build --target runtime -t "$APP" .
+    - docker build --target tools -t "$TOOLS" .
+    - sh deploy/ci-image-check.sh "$APP" "$TOOLS"
+    - docker push "$APP"
+    - docker push "$TOOLS"
+
+# Variabel CI/CD (Protected): DEPLOY_HOST (IP VPS), DEPLOY_SSH_KEY (private
+# key deploy, base64 satu baris, Masked). Host key VPS ada di deploy/known_hosts.
+deploy:
+  stage: deploy
+  image: alpine:3.22
+  needs: ["image"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  environment:
+    name: production
+  resource_group: production
+  script:
+    - apk add --no-cache -q openssh-client
+    - install -d -m 700 ~/.ssh
+    - echo "$DEPLOY_SSH_KEY" | base64 -d > ~/.ssh/id_deploy
+    - chmod 600 ~/.ssh/id_deploy
+    - cp deploy/known_hosts ~/.ssh/known_hosts
+    - printf '%s\n%s\n' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "deploy@$DEPLOY_HOST" "deploy $CI_COMMIT_SHA"

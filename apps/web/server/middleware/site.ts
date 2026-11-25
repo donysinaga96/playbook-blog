@@ -24,8 +24,8 @@ import { isPreviewPath, preparePreview } from '../utils/theme-preview'
 import { useSiteMode } from '../utils/site-mode'
 import { log } from '../utils/log'
 
-/** Route yang tidak butuh site: health check container dan aset build Nuxt. */
-const BYPASS_PREFIXES = ['/api/health', '/_nuxt/', '/__nuxt']
+/** Route yang tidak butuh site: health check container, izin TLS Caddy (Host = app:3000), dan aset build Nuxt. */
+const BYPASS_PREFIXES = ['/api/health', '/api/internal/tls-ask', '/_nuxt/', '/__nuxt']
 /**
  * Webhook pendapatan (ADR-011): tanpa site dan di Host mana pun, diamankan
  * tanda tangan. Dicocokkan persis pada path yang dilihat router (setelah

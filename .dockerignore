@@ -1,0 +1,23 @@
+# Konteks build image produksi (Dockerfile). Rahasia, data lokal, dan hasil
+# build tidak boleh ikut masuk image.
+.git
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/.nuxt
+**/.output
+**/.nitro
+.data
+.pnpm-store
+_archive
+backups
+*.dump
+*.log
+coverage
+test-results
+playwright-report
+.browser-check
+.vscode
+.claude
+docs/tutorial.md

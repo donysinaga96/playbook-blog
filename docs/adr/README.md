@@ -16,3 +16,4 @@ Alternatif yang ditolak, Konsekuensi, dan Status (Diusulkan, Diterima, Diganti o
 | [009](009-admin.md) | Admin: host khusus (multi) / domain site (single), SPA, sesi cookie terenkripsi, Argon2id, CLI admin pertama | Diterima |
 | [010](010-alur-konten-ai.md) | Alur konten AI: tabel hasil AI terpisah (`generated_articles`), role `blog_agent`, approval memindahkan ke tabel konten, referensi tampil | Diterima |
 | [011](011-dashboard-pendapatan.md) | Dashboard pendapatan: ledger terpadu, idempotensi per sumber, revisi via trigger, kredensial hanya di env, hanya superadmin, webhook publik bertanda tangan | Diterima |
+| [012](012-infrastruktur-produksi.md) | Produksi pertama: satu VPS, Docker Compose, Caddy TLS on-demand (izin dari `site_domains`), domain sementara sslip.io, image dari CI, deploy SSH forced command, backup harian ke R2 | Diterima |

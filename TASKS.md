@@ -15,7 +15,7 @@ Diambil dari dokumen pada 19 Nov 2026. Sejak itu file ini menjadi daftar task ke
 | M5a — Alur konten AI dan approval | 22 / 22 | ✅ Lulus 22 Nov 2026 — pipeline hijau (commit e7a7cdb) |
 | M5 — Produksi pertama (titik evaluasi) | 6 / 28 | — task lokal selesai, pipeline hijau 9d18074; task deploy ditahan sejak 22 Nov 2026 |
 
-**Task berikutnya:** M0–M4 selesai. M5a (alur konten AI dan approval) 22/22, gate lulus 22 Nov 2026 (pipeline hijau, e7a7cdb). Task deploy M5 **ditahan**; task lokal M5 selesai dan pipeline hijau pada 9d18074 (22 Nov 2026): 5.1b `site:create`, header cache di aplikasi, log JSON, backup/restore; sisa M5 adalah deploy (ditahan). Daftar task berikutnya: [Antrian task berikutnya](#antrian-task-berikutnya). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
+**Task berikutnya:** deploy pertama ke VPS, lalu UI blog dan dashboard: [Rencana 25 Nov 2026](#rencana-25-nov-2026-deploy-pertama-lalu-ui-blog-dan-dashboard). M0–M4 dan M5a selesai; task lokal M5 selesai (pipeline hijau 9d18074). Task lainnya: [Antrian task berikutnya](#antrian-task-berikutnya). Kontrak untuk AI agent: [docs/kontrak-agent.md](docs/kontrak-agent.md). Skill Claude Code per task: lihat [Skill Claude Code](#skill-claude-code).
 
 Aturan roadmap: setiap fase hanya dimulai setelah gate fase sebelumnya lulus. Urutan M4 dan M5 boleh ditukar pada evaluasi M3. Setelah M3 dan M5 roadmap ditinjau ulang.
 
@@ -349,6 +349,66 @@ Ditambahkan 22 Nov 2026 setelah pemilik proyek memperjelas tujuan produk. AI age
 
 ---
 
+## Rencana 25 Nov 2026: deploy pertama, lalu UI blog dan dashboard
+
+**Keputusan pemilik proyek (25 Nov 2026):** task deploy M5 tidak ditahan lagi. VPS belum ada (spesifikasi dipilihkan), domain belum dibeli, deploy memakai image dari CI (usulan M5-B), backup dikirim ke Cloudflare R2 (usulan M5-C).
+
+**Supaya domain tidak menahan deploy:** site tayang dulu di alamat sementara `beritakonoha.<ip-vps>.sslip.io` dan admin di `admin.<ip-vps>.sslip.io` (sslip.io mengarahkan nama itu ke IP VPS; TLS tetap asli dari Let's Encrypt). Setelah beritakonoha.id aktif, domain ditambahkan dengan `pnpm site:domain` tanpa deploy ulang.
+
+**Susunan produksi (satu VPS, Docker Compose):** `caddy` (TLS otomatis per domain; sertifikat hanya untuk domain yang ada di `site_domains` dan `ADMIN_HOST`, usulan M5-A) → `app` (Nuxt `.output`, satu replika, usulan M5-I) → `db` (PostgreSQL 18, port tidak dibuka ke internet). Ditambah `tools` (migrate, `admin:create`, `site:create`, backup) yang dijalankan sekali-sekali, dan timer backup harian ke R2.
+
+Urutan: A1–A4 dan K1–K4 bisa berjalan bersamaan. K5 menunggu A2. A6 menunggu K4 dan A4–A5.
+
+### A. Bagian pemilik proyek
+
+- [ ] **A1. Pasang skill (±10 menit).** Di terminal WSL: `sudo apt-get install -y libnss3 libnspr4 libasound2t64` (library Chromium yang belum ada, supaya Playwright jalan). Di chat Claude Code ketik satu per satu: `/plugin install playwright@claude-plugins-official`, `/plugin install context7@claude-plugins-official`, `/plugin install gitlab@claude-plugins-official`, lalu restart Claude Code. Login GitLab saat diminta (`/mcp`). Alasan per skill: lihat [Skill Claude Code](#skill-claude-code).
+- [ ] **A2. Beli VPS.** 2 vCPU, 4 GB RAM, ≥ 60 GB SSD, Ubuntu 24.04 LTS, lokasi Singapura (terdekat ke pembaca Indonesia yang tersedia di banyak penyedia). Saat membuat VPS, tempel SSH public key dari `cat ~/.ssh/id_ed25519.pub` (login root dengan key, tanpa password). Kirim IP-nya ke Claude. 4 GB karena PostgreSQL + Nuxt + Caddy berjalan bersama dan nanti worker agent menyusul; image dibangun di CI, jadi VPS tidak perlu RAM untuk build.
+- [ ] **A3. Cloudflare R2 untuk backup.** Buat akun Cloudflare (gratis), aktifkan R2, buat bucket `beritakonoha-backup`, lalu buat R2 API token dengan izin *Object Read & Write* untuk bucket itu saja. Simpan Access Key ID, Secret Access Key, dan endpoint S3 (`https://<account-id>.r2.cloudflarestorage.com`). Jangan kirim nilainya ke chat.
+- [ ] **A4. GitLab CI/CD variables** (Settings → CI/CD → Variables → Add variable, centang *Protect variable*): `DEPLOY_HOST` = IP VPS; `DEPLOY_SSH_KEY` = hasil `cat ~/.ssh/blog_deploy.b64` (private key deploy dalam base64 satu baris, sudah dibuat Claude), dengan *Visibility: Masked*. Container Registry GitLab tidak perlu diatur; job deploy login memakai token job.
+- [ ] **A5. Isi kunci R2 di VPS** setelah K5: `ssh root@<ip> nano /srv/blog/.env`, isi tiga baris `R2_*` yang masih kosong.
+- [ ] **A6. Deploy pertama.** Setelah Claude push (K4), buka pipeline commit itu di GitLab, tunggu job `image` hijau, lalu klik ▶ pada job manual `deploy`.
+- [ ] **A7. Akun admin produksi.** Jalankan perintah dari Claude (`ssh root@<ip> /srv/blog/bin/tools admin:create ...`) dan ketik password baru sendiri. Password dev tidak dipakai di produksi.
+- [ ] **A8. Cek di browser** (HP dan laptop): beranda, satu artikel, login admin, Antrian terbit. Approve atau tolak contoh hasil AI.
+- [ ] **A9. Domain** (bisa menyusul): beli beritakonoha.id (registrar .id biasanya meminta verifikasi KTP; bisa makan waktu), pindahkan nameserver ke Cloudflare, buat record A `@`, `www`, `admin` → IP VPS dengan proxy Cloudflare **mati** (awan abu-abu) supaya Caddy bisa menerbitkan sertifikat. Kabari Claude.
+
+### B. Bagian Claude
+
+- [x] **K1. Berkas produksi.** Dockerfile multi-stage (`runtime`: `.output`, user non-root, healthcheck `/api/health`; `tools`: source workspace + tsx + klien psql untuk migrate, `admin:create`, `site:create`, `revenue:sync`, backup/restore), `deploy/compose.prod.yml`, `deploy/Caddyfile`, endpoint ask TLS di aplikasi (domain ada di `site_domains` atau sama dengan `ADMIN_HOST`, selain itu 404) + test. `TRUST_PROXY=true`, `SITE_MODE=multi`, log JSON, `REVENUE_MOCK` mati, `SEED_DEV_DATA` tidak di-set. ADR-012 (infrastruktur: Caddy, satu replika, R2, deploy dari CI). › Skill: `context7` (dokumentasi Caddy, Docker, Nuxt 4 terbaru) — 25 Nov 2026: selesai; image diuji lokal dengan `deploy/ci-image-check.sh` (12 pemeriksaan lulus)
+- [x] **K2. Skrip VPS.** `deploy/bootstrap.sh` (sekali jalan: user `deploy`, SSH hanya key, firewall 22/80/443, update keamanan otomatis, Docker, `/srv/blog/.env` dengan password acak yang dibuat di VPS sehingga tidak pernah lewat chat atau Git), `deploy/deploy.sh <tag>` (pull image → backup → migrate → up → cek health → otomatis kembali ke tag sebelumnya bila gagal), backup harian ke R2 lewat systemd timer dengan retensi. — 25 Nov 2026: selesai; diuji lokal pada simulasi VPS (registry lokal + Caddy sertifikat internal): deploy pertama, deploy kedua dengan backup sebelum migrate, deploy rusak kembali otomatis (berikut compose.yml/Caddyfile), rollback manual
+- [x] **K3. Data awal produksi.** Salinan dev DB dipangkas jadi hanya Berita Konoha (tanpa site demo kabar-tekno/kuliner, tanpa akun dev, tanpa data contoh pendapatan) + media yang dipakai, sebagai satu backup yang direstore ke VPS dengan `db:restore`. Alasan: struktur Berita Konoha hanya ada di dev DB. — 25 Nov 2026: set `blog-blog_prod_init-20261125T065648Z` (Berita Konoha saja: 8 kategori, 3 halaman, 6 contoh di antrian; tanpa user, site demo, data contoh pendapatan) di scratchpad; diuji restore + ganti nama database + `site:domain` sslip.io
+- [x] **K4. CI + uji lokal.** Stage `image` di `.gitlab-ci.yml` (build image bertag commit, cek `/api/health` dari image itu, push ke registry, hanya branch `main`) dan job manual `deploy` (SSH ke VPS, jalankan `deploy.sh <commit>`). Coba `compose.prod.yml` di laptop dulu. Buat key deploy `~/.ssh/blog_deploy`. `/security-review` untuk semua berkas deploy, lalu commit + push. › Skill: `/security-review`, `gitlab` (baca status pipeline dan log job sendiri) — 25 Nov 2026: selesai; `/security-review` tanpa temuan (catatan: aktifkan protected container tags bila ada anggota proyek lain), test 675 lulus
+- [ ] **K5. Siapkan VPS** lewat SSH setelah A2: `bootstrap.sh`, restore data K3, domain sementara sslip.io (`site:domain`), `ADMIN_HOST`.
+- [ ] **K6. Periksa produksi** setelah A6: health, TLS, halaman publik, canonical/sitemap/RSS/robots memakai domain produksi, header cache, login admin + satu POST lolos cek Origin (kontrak proxy, usulan M5-H, diuji langsung di VPS; versi CI menyusul), backup pertama terkirim ke R2 lalu **uji restore dari R2** ke database baru (syarat gate M5). › Skill: `playwright` (layar HP dan desktop)
+- [x] **K7. Runbook** `docs/operasional.md` (deploy, rollback, restore, rotasi secret, tambah domain; usulan M5-F) dan TASKS.md diperbarui. — 25 Nov 2026: `docs/operasional.md` ditulis; diperbarui setelah deploy pertama
+
+**Gate M5 setelah ini:** site nyata live (sslip.io dulu, beritakonoha.id menyusul) + restore dari backup R2 berhasil. Yang tetap menyusul dan tidak menahan go-live: cache di Caddy (TTL 60 detik di aplikasi cukup untuk trafik awal), notifikasi galat dan uptime check eksternal (5.5), kontrak proxy di CI.
+
+### C. Setelah deploy: UI blog (perlu persetujuan arah desain)
+
+Tampilan blog masih kasar. Batasannya tetap: semua template memakai komponen `templates/base`; perbedaan lewat token, CSS, dan layout section (keputusan 17 Nov 2026).
+
+- [ ] **U1. Audit tampilan** Berita Konoha di 3 lebar layar (360, 768, 1280 px): beranda, rubrik, artikel, halaman, pencarian, 404. Hasil: daftar masalah + tangkapan layar. › Skill: `playwright`
+- [ ] **U2. Arah desain** untuk portal berita: tipografi (huruf judul dan isi, ukuran baca ±18 px di HP), grid kartu, header + menu HP, halaman artikel (lebar baca, referensi, sumber gambar, artikel terkait), footer, tempat slot iklan yang tidak merusak bacaan. 2–3 arah disajikan dengan tangkapan layar, pemilik proyek memilih. › Skill: `frontend-design`
+- [ ] **U3. Implementasi** di `templates/base` + token `news`/Berita Konoha; magazine dan base ikut dicek supaya tidak rusak. Core Web Vitals dijaga: gambar responsif dengan ukuran tetap, font di-preload. › Skill: `frontend-design`, `playwright`, `/run`, lalu `/simplify` dan `/code-review` (high)
+- [ ] **U4.** `browser-check` + snapshot view model tetap hijau, deploy.
+
+### D. Setelah deploy: dashboard sebagai pusat semua usaha (usulan, menunggu persetujuan)
+
+Dashboard sekarang mencatat pendapatan per sumber dan per situs. Untuk mengelola semua usaha (iklan blog, jualan, affiliate, dan lainnya), usulan berikut masing-masing dengan alasan. Urutan yang disarankan: D1, D2, D3 dulu; D4–D5 saat affiliate dan iklan mulai jalan.
+
+- [ ] **D1. Halaman "Hari ini".** Satu layar pagi: pendapatan kemarin, bulan berjalan dibanding bulan lalu, jumlah Antrian terbit per site, konektor yang gagal, status backup terakhir. *Alasan:* setiap pagi pemilik proyek membuka admin untuk approve; semua yang perlu ditindaklanjuti ada di satu tempat.
+- [ ] **D2. Proyek sebagai satuan.** Sumber pendapatan dan situs dikelompokkan ke proyek (blog, produk digital, affiliate, jasa, ...), dengan laporan per proyek. *Alasan:* sekarang pengelompokan hanya per sumber dan per situs, padahal satu usaha bisa punya beberapa sumber (mis. blog = AdSense + Adsterra + affiliate).
+- [ ] **D3. Biaya dan laba.** Biaya sekali dan berulang per proyek (VPS, domain, pemakaian Claude API, iklan berbayar, alat) → laba bersih dan ROI per proyek per bulan. *Alasan:* pendapatan tanpa biaya bisa menyesatkan; biaya Claude API per artikel menentukan apakah konten AI untung.
+- [ ] **D4. Link affiliate dan klik.** Tautan `/go/<kode>` di blog yang mencatat klik per artikel lalu meneruskan ke link affiliate; konversi masuk lewat impor CSV jaringan affiliate yang sudah ada → pendapatan per klik per link dan per artikel. *Alasan:* jaringan affiliate tidak tahu artikel mana yang menghasilkan klik. Hanya ke tujuan yang terdaftar (bukan open redirect). › Skill: `/security-review`
+- [ ] **D5. Kunjungan per artikel** (pageview first-party tanpa cookie, dihitung di server) → pendapatan iklan per 1.000 kunjungan per rubrik. *Alasan:* menunjukkan topik mana yang menghasilkan uang, dan bisa dipakai sebagai arahan prompt Agent AI.
+- [ ] **D6. Target, proyeksi, dan notifikasi Telegram** (usulan 5 dan 6 di [catatan-pendapatan.md](docs/catatan-pendapatan.md)): target bulanan per proyek, proyeksi dari laju bulan berjalan, ringkasan harian + peringatan konektor gagal ke Telegram.
+- [ ] **D7. Ekspor CSV dan kurs otomatis harian** (usulan 3 dan 7 di catatan yang sama), untuk pembukuan dan pajak.
+- › Skill semua D: `dataviz` (grafik dan kartu angka), `frontend-design` (tata letak konsol), `playwright` (cek layar), `/code-review` (high)
+
+Menu Agent AI tetap di antrian; tiga pertanyaannya ditanyakan saat task itu diambil. Nomor ADR-nya bergeser menjadi ADR-013 karena ADR-012 dipakai untuk infrastruktur.
+
+---
+
 ## Antrian task berikutnya
 
 Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesai. Urutan bukan prioritas; prioritas ditentukan pemilik proyek saat mengambil task.
@@ -371,7 +431,7 @@ Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesa
   - [ ] Sumber gambar untuk mode Claude (belum ada sampul) dan block `embed` untuk video
 - [ ] Adapter object storage (S3-compatible, uji lokal dengan MinIO) setelah pemilik proyek memilih provider
 - [ ] **Menu Agent AI: dashboard untuk mengelola agent, tugasnya, dan pemakaian token** (permintaan pemilik proyek, 23 Nov 2026). Menu baru di konsol superadmin `/admin`, sejajar dengan Pendapatan. Tujuannya: pemilik proyek bisa membuat dan mengatur beberapa agent (mis. satu per site atau per rubrik), menulis prompt untuk tiap agent, menjalankannya terjadwal atau manual, lalu melihat hasil, biaya, dan mutunya di satu tempat.
-  - **Keputusan dulu (ADR-012), menunggu persetujuan pemilik proyek.** Task ini mengubah ADR-010: agent tidak lagi hanya di luar repo, tetapi dijalankan oleh aplikasi. Usulan:
+  - **Keputusan dulu (ADR-013), menunggu persetujuan pemilik proyek.** Task ini mengubah ADR-010: agent tidak lagi hanya di luar repo, tetapi dijalankan oleh aplikasi. Usulan:
     - Agent berjalan di **proses worker terpisah** (`pnpm agent:worker`, satu replika), bukan di proses web. Satu run bisa berjalan beberapa menit dan tidak boleh menahan request admin.
     - Worker tetap login sebagai `blog_agent`, jadi jaminan ADR-010 tetap berlaku: hasil hanya masuk Antrian terbit dan tidak pernah tampil tanpa approve.
     - Kode `examples/agent-minimal` dipindah menjadi paket workspace (mis. `packages/agent`) yang dipakai worker dan CLI.
@@ -388,11 +448,11 @@ Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesa
     - **Pemakaian token:** grafik harian per agent dan per model (input/output/cache), total bulan berjalan, dan sisa batas. Angka dari `usage` respons API adalah perkiraan; tagihan resmi tetap di Claude Console. Harga per model disimpan sebagai konfigurasi, tidak ditulis mati di kode, karena harga bisa berubah.
   - **Scheduler di worker:** membaca jadwal agent aktif, membuat `agent_runs` `QUEUED` saat waktunya tiba, dan tidak menjalankan dua run bersamaan untuk agent yang sama. Run yang terlewat saat worker mati tidak dijalankan beruntun; cukup dicatat. Sebelum memanggil API, batas biaya diperiksa: bila terlampaui, run menjadi `SKIPPED_BUDGET`.
   - **Uji:** client Claude tiruan (tanpa biaya) untuk worker dan scheduler; gate admin untuk API agent (401 tanpa sesi, 404 untuk non-superadmin); uji bahwa worker tetap tidak bisa menulis selain `generated_articles`; uji batas biaya dan pembatalan run.
-  - Pertanyaan untuk pemilik proyek sebelum mulai: (1) setuju worker di dalam repo (ADR-012), atau agent tetap di luar dan dashboard hanya memicu lewat antrian di database? (2) batas biaya bawaan per agent? (3) perlu notifikasi (email/Telegram) saat run gagal atau ada hasil baru di antrian?
+  - Pertanyaan untuk pemilik proyek sebelum mulai: (1) setuju worker di dalam repo (ADR-013), atau agent tetap di luar dan dashboard hanya memicu lewat antrian di database? (2) batas biaya bawaan per agent? (3) perlu notifikasi (email/Telegram) saat run gagal atau ada hasil baru di antrian?
 - [x] Dashboard pendapatan multi-sumber (ADR-011, 22 Nov 2026; permintaan pemilik proyek, spesifikasi docs/enhance-admin.md): tampilan awal superadmin di `/admin` (Dashboard, Sumber pemasukan, Situs, Transaksi, Impor file, Koneksi & log, Kurs), Admin Blog lewat tombol. Migration 0003 (ledger terpadu + 7 tabel pendukung, trigger revisi), adapter Lynk.id (webhook), Adsterra dan AdSense (API + mock), impor CSV/XLSX/JSON, input manual/adjustment/refund, headless (kerangka, nonaktif), `pnpm revenue:sync`, `pnpm revenue:demo`; gate:admin +7 pemeriksaan. Panduan: [docs/pendapatan.md](docs/pendapatan.md). Pipeline hijau pada 5bd09d2 (22 Nov 2026)
   - [ ] Kredensial asli + hapus data contoh + kurs resmi: lihat [docs/catatan-pendapatan.md](docs/catatan-pendapatan.md) (juga usulan lanjutan)
 
-**Deploy (M5, ditahan sampai pemilik proyek memutuskan)**
+**Deploy (M5; tidak ditahan lagi sejak 25 Nov 2026, dikerjakan lewat [Rencana 25 Nov 2026](#rencana-25-nov-2026-deploy-pertama-lalu-ui-blog-dan-dashboard))**
 - [ ] 5.0 Riset VPS, reverse proxy (TLS otomatis per domain), tujuan backup, alat monitoring → ADR-011
 - [ ] 5.1 Dockerfile multi-stage + stage `tools`, `compose.prod.yml`, env produksi, image di CI
 - [ ] 5.2 VPS dasar, TLS per domain + `ADMIN_HOST`, kontrak proxy (usulan H) teruji di CI, deploy dari CI dengan rollback
@@ -405,7 +465,7 @@ Dicatat 22 Nov 2026 atas permintaan pemilik proyek, setelah task lokal M5 selesa
 
 ## M5 — Produksi pertama (titik evaluasi)
 
-> **Ditahan sejak 22 Nov 2026** atas keputusan pemilik proyek: semua task yang berkaitan dengan deploy (5.0, 5.1, 5.2, 5.3 bagian luar VPS, 5.4 bagian proxy, uptime check, 5.6) menunggu development lokal selesai. Task lokal (5.1b `site:create`, header cache di aplikasi, log JSON, skrip backup/restore yang diuji lokal) dikerjakan setelah M5a.
+> **Tidak ditahan lagi sejak 25 Nov 2026** (deploy pertama, lihat Rencana 25 Nov 2026). Sebelumnya ditahan sejak 22 Nov 2026 atas keputusan pemilik proyek: semua task yang berkaitan dengan deploy (5.0, 5.1, 5.2, 5.3 bagian luar VPS, 5.4 bagian proxy, uptime check, 5.6) menunggu development lokal selesai. Task lokal (5.1b `site:create`, header cache di aplikasi, log JSON, skrip backup/restore yang diuji lokal) dikerjakan setelah M5a.
 
 ### Pemeriksaan poin yang ada (21 Nov 2026)
 
@@ -512,7 +572,9 @@ Usulan A–I untuk M5 ada di [docs/usulan-m4-m5.md](docs/usulan-m4-m5.md#m5--pro
 
 ## Skill Claude Code
 
-Skill yang dipakai di rincian M3–M5. Semuanya dari Anthropic: skill bawaan Claude Code, `anthropic-skills`, dan plugin `frontend-design` dari marketplace resmi `anthropics/claude-plugins-official` (author: Anthropic).
+Skill yang dipakai di rincian M3–M5 dan Rencana 25 Nov 2026: skill bawaan Claude Code, `anthropic-skills`, dan plugin dari marketplace resmi `anthropics/claude-plugins-official` (dikurasi Anthropic). `frontend-design` (Anthropic) adalah skill desain yang paling banyak dipasang; `playwright`, `context7`, dan `gitlab` ditambahkan 25 Nov 2026.
+
+Ditimbang tetapi tidak dipasang: `superpowers` (populer, tetapi membawa alur brainstorm/TDD sendiri yang tumpang tindih dengan TASKS.md + DoD dan menambah token), `security-guidance` (hook di setiap akhir giliran = token tambahan; `/security-review` di titik penting sudah cukup), `sentry` (baru relevan bila Sentry dipilih untuk notifikasi galat di 5.5).
 
 | Skill | Dipakai di | Untuk |
 |---|---|---|
@@ -522,7 +584,10 @@ Skill yang dipakai di rincian M3–M5. Semuanya dari Anthropic: skill bawaan Cla
 | `frontend-design:frontend-design` | M3 (section base, template news), M4 (UI admin, form tema) | Arah visual yang jelas dan tidak generik, tetap lewat token dan CSS (tanpa override komponen) |
 | `/run` | Setiap perubahan yang terlihat di browser | Menjalankan app dan memeriksa perubahan di app sungguhan, bukan hanya test |
 | `anthropic-skills:deep-research` | M5 (5.0) | Perbandingan reverse proxy, VPS, backup, dan monitoring dengan sumber, untuk ADR-010 |
-| `dataviz` | M5 (5.5), bila ada grafik | Grafik latency dan ukuran database yang konsisten |
+| `dataviz` | M5 (5.5), dashboard D1–D7 | Grafik dan kartu angka yang konsisten |
+| `playwright` (plugin, Microsoft) | Deploy K6, UI U1–U4, dashboard D | Claude membuka halaman di browser sungguhan, mengambil tangkapan layar di lebar HP/desktop, mengisi form. Menggantikan skrip Playwright sementara di scratchpad. Dipasang lewat A1 |
+| `context7` (plugin, Upstash) | Deploy K1, semua task kode | Dokumentasi versi terbaru (Nuxt 4, Caddy, Docker, GitLab CI) diambil saat dibutuhkan, supaya tidak menulis dari ingatan yang usang |
+| `gitlab` (plugin, GitLab) | Deploy K4–K6, setiap push | Claude membaca status pipeline dan log job sendiri; sebelumnya status pipeline harus disampaikan pemilik proyek |
 
 Usulan tambahan (menunggu persetujuan):
 - **[S1] `/init` untuk membuat `CLAUDE.md`.** *Alasan:* repo belum punya `CLAUDE.md`; aturan kerja (TASKS.md sebagai daftar task, tutorial digenerate dari `tutorial.tpl.md`, `.localhost`, `pnpm check`/smoke/gate) sekarang hanya tersimpan di memori satu mesin. Dengan `CLAUDE.md`, sesi lain dan reviewer membaca aturan yang sama.
@@ -547,3 +612,4 @@ Ditunda sampai pemicunya terjadi. MVP = M0–M5.
 | API terpisah (NestJS) | Butuh API untuk aplikasi mobile atau pihak ketiga | `packages/core` bisa dipasang ke NestJS tanpa ditulis ulang |
 | Komentar, newsletter | Ada permintaan pembaca | — |
 | Pulihkan revisi artikel (usulan M4-E) | Ada kebutuhan mengembalikan isi lama tanpa SQL | Ditunda pada persetujuan M4 21 Nov 2026; revisi tetap disimpan otomatis di M4 |
+
